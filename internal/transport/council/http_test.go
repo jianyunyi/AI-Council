@@ -11,16 +11,20 @@ import (
 func TestHealthRoute(t *testing.T) {
 	server := NewServer(rest.RestConf{Host: "127.0.0.1", Port: 18080})
 	routes := server.Routes()
-	if len(routes) != 1 {
-		t.Fatalf("route count = %d, want 1", len(routes))
+	var health rest.Route
+	for _, route := range routes {
+		if route.Method == http.MethodGet && route.Path == "/healthz" {
+			health = route
+			break
+		}
 	}
-	if routes[0].Method != http.MethodGet || routes[0].Path != "/healthz" {
-		t.Fatalf("route = %s %s, want GET /healthz", routes[0].Method, routes[0].Path)
+	if health.Path == "" {
+		t.Fatalf("health route missing from %d routes", len(routes))
 	}
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	routes[0].Handler(recorder, request)
+	health.Handler(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", recorder.Code)
 	}

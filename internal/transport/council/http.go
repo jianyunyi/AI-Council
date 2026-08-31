@@ -13,6 +13,10 @@ func NewServer(conf rest.RestConf) *rest.Server {
 		Path:    "/healthz",
 		Handler: healthHandler,
 	})
+	api := NewAPI()
+	for _, route := range api.Routes() {
+		server.AddRoute(route)
+	}
 	return server
 }
 
