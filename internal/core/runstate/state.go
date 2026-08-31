@@ -3,32 +3,32 @@ package runstate
 type State string
 
 const (
-	DRAFT             State = "DRAFT"
-	ANALYZING         State = "ANALYZING"
-	PROPOSING         State = "PROPOSING"
-	REVIEWING         State = "REVIEWING"
-	JUDGING           State = "JUDGING"
-	RED_TEAM          State = "RED_TEAM"
-	AWAITING_APPROVAL State = "AWAITING_APPROVAL"
-	EXECUTING         State = "EXECUTING"
-	VERIFYING         State = "VERIFYING"
-	REPLANNING        State = "REPLANNING"
-	SUCCEEDED         State = "SUCCEEDED"
-	FAILED            State = "FAILED"
-	CANCELLED         State = "CANCELLED"
+	Draft            State = "DRAFT"
+	Analyzing        State = "ANALYZING"
+	Proposing        State = "PROPOSING"
+	Reviewing        State = "REVIEWING"
+	Judging          State = "JUDGING"
+	RedTeam          State = "RED_TEAM"
+	AwaitingApproval State = "AWAITING_APPROVAL"
+	Executing        State = "EXECUTING"
+	Verifying        State = "VERIFYING"
+	Replanning       State = "REPLANNING"
+	Succeeded        State = "SUCCEEDED"
+	Failed           State = "FAILED"
+	Cancelled        State = "CANCELLED"
 )
 
 var legalTransitions = map[State]map[State]bool{
-	DRAFT:             {ANALYZING: true, CANCELLED: true},
-	ANALYZING:         {PROPOSING: true, FAILED: true, CANCELLED: true},
-	PROPOSING:         {REVIEWING: true, FAILED: true, CANCELLED: true},
-	REVIEWING:         {JUDGING: true, FAILED: true, CANCELLED: true},
-	JUDGING:           {RED_TEAM: true, FAILED: true, CANCELLED: true},
-	RED_TEAM:          {JUDGING: true, AWAITING_APPROVAL: true, FAILED: true, CANCELLED: true},
-	AWAITING_APPROVAL: {EXECUTING: true, CANCELLED: true},
-	EXECUTING:         {VERIFYING: true, FAILED: true, CANCELLED: true},
-	VERIFYING:         {SUCCEEDED: true, REPLANNING: true, FAILED: true, CANCELLED: true},
-	REPLANNING:        {REVIEWING: true, FAILED: true, CANCELLED: true},
+	Draft:            {Analyzing: true, Cancelled: true},
+	Analyzing:        {Proposing: true, Failed: true, Cancelled: true},
+	Proposing:        {Reviewing: true, Failed: true, Cancelled: true},
+	Reviewing:        {Judging: true, Failed: true, Cancelled: true},
+	Judging:          {RedTeam: true, Failed: true, Cancelled: true},
+	RedTeam:          {Judging: true, AwaitingApproval: true, Failed: true, Cancelled: true},
+	AwaitingApproval: {Executing: true, Cancelled: true},
+	Executing:        {Verifying: true, Failed: true, Cancelled: true},
+	Verifying:        {Succeeded: true, Replanning: true, Failed: true, Cancelled: true},
+	Replanning:       {Reviewing: true, Failed: true, Cancelled: true},
 }
 
 func CanTransition(from, to State) bool {
