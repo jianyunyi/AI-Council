@@ -1,0 +1,2 @@
+import {test,expect} from '@playwright/test'
+test('task setup exposes manual approval workflow',async({page})=>{await page.goto('/tasks/new');await expect(page.getByRole('heading',{name:'新建任务'})).toBeVisible();await expect(page.getByRole('button',{name:'开始协作分析'})).toBeVisible();await page.getByLabel('需求').fill('add ready endpoint');await page.getByLabel('验收标准').fill('tests pass');await expect(page.getByRole('spinbutton',{name:'Quorum'})).toHaveValue('2')})
