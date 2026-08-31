@@ -1,6 +1,29 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
+)
+
+var (
+	ErrUnauthorized  = errors.New("provider unauthorized")
+	ErrRateLimited   = errors.New("provider rate limited")
+	ErrInvalidOutput = errors.New("provider invalid output")
+)
+
+type APIError struct {
+	Provider string
+	Status   int
+	Kind     error
+	Message  string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s: status %d: %s", e.Provider, e.Status, e.Message)
+}
+
+func (e *APIError) Unwrap() error { return e.Kind }
 
 type Message struct {
 	Role    string
