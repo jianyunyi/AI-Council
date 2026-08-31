@@ -150,6 +150,59 @@ func (e *Engine) Review(ctx context.Context, proposals []Generated[schema.Propos
 	return results, nil
 }
 
+func (e *Engine) Judge(ctx context.Context, proposals []Generated[schema.Proposal], reviews []Generated[schema.PeerReview], judge Seat) (Generated[schema.CouncilDecision], error) {
+	for _, p := range proposals {
+		if p.Seat.ID == judge.ID {
+			return Generated[schema.CouncilDecision]{}, errors.New("judge seat must not be a proposer")
+		}
+	}
+	p, ok := e.registry.Get(judge.Provider)
+	if !ok {
+		return Generated[schema.CouncilDecision]{}, fmt.Errorf("provider %q not found", judge.Provider)
+	}
+	payload, _ := json.Marshal(map[string]any{"proposals": proposals, "reviews": reviews})
+	schemaJSON, _ := json.Marshal(schema.CouncilDecision{})
+	resp, err := p.Generate(ctx, provider.Request{Model: judge.Model, Messages: []provider.Message{{Role: "user", Content: fmt.Sprintf("Select the best proposals from this council record:\n%s\nReturn only JSON matching this schema:\n%s", payload, schemaJSON)}}})
+	if err != nil {
+		return Generated[schema.CouncilDecision]{}, err
+	}
+	var decision schema.CouncilDecision
+	if json.Unmarshal(resp.Content, &decision) != nil {
+		resp, err = p.Generate(ctx, provider.Request{Model: judge.Model, Messages: []provider.Message{{Role: "user", Content: "Repair the previous response into valid JSON only for the CouncilDecision schema."}}})
+		if err != nil || json.Unmarshal(resp.Content, &decision) != nil {
+			return Generated[schema.CouncilDecision]{}, ErrInvalidArtifact
+		}
+	}
+	return Generated[schema.CouncilDecision]{Seat: judge, Value: decision, Usage: resp.Usage}, nil
+}
+
+func (e *Engine) RedTeam(ctx context.Context, decision schema.CouncilDecision, redTeam Seat) (Generated[schema.RedTeamReport], error) {
+	p, ok := e.registry.Get(redTeam.Provider)
+	if !ok {
+		return Generated[schema.RedTeamReport]{}, fmt.Errorf("provider %q not found", redTeam.Provider)
+	}
+	payload, _ := json.Marshal(decision)
+	schemaJSON, _ := json.Marshal(schema.RedTeamReport{})
+	message := fmt.Sprintf("Find blocking risks in this decision:\n%s\nReturn only JSON matching this schema:\n%s", payload, schemaJSON)
+	resp, err := p.Generate(ctx, provider.Request{Model: redTeam.Model, Messages: []provider.Message{{Role: "user", Content: message}}})
+	if err != nil {
+		return Generated[schema.RedTeamReport]{}, err
+	}
+	var report schema.RedTeamReport
+	if json.Unmarshal(resp.Content, &report) != nil {
+		return Generated[schema.RedTeamReport]{}, ErrInvalidArtifact
+	}
+	return Generated[schema.RedTeamReport]{Seat: redTeam, Value: report, Usage: resp.Usage}, nil
+}
+
+func BuildExecutionPlan(decision schema.CouncilDecision, report schema.RedTeamReport, acceptance []string) (schema.ExecutionPlan, error) {
+	if len(report.Blocking) > 0 {
+		return schema.ExecutionPlan{}, errors.New("red-team report contains blocking findings")
+	}
+	plan := schema.ExecutionPlan{Version: 1, Acceptance: append([]string(nil), acceptance...), Recovery: []string{"restore workspace snapshot if verification fails"}}
+	return plan, nil
+}
+
 func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout <= 0 {
 		return context.WithCancel(ctx)
