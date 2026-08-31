@@ -1,0 +1,1 @@
+export default function Providers(){return <><h1>模型 Provider</h1><div className="card"><p>API Key 仅用于测试请求，不写入 URL 或浏览器存储。</p><label>厂商<select><option>OpenAI</option><option>Anthropic</option><option>DeepSeek</option></select></label><label>API Key<input type="password" autoComplete="off" /></label><button>测试连接</button></div></>}
