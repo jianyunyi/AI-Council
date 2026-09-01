@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aicouncil/aicouncil/internal/observability/metrics"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
 	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	"github.com/zeromicro/go-zero/rest"
@@ -27,6 +28,7 @@ type API struct {
 	approvalRepo *sqlite.ApprovalRepository
 	artifactRepo *sqlite.ArtifactRepository
 	runnerClient runClient
+	metrics      *metrics.Metrics
 }
 type runClient interface {
 	ExecuteApprovedPlan(context.Context, *runnerv1.ExecuteApprovedPlanRequest, ...grpc.CallOption) (*runnerv1.ExecuteApprovedPlanResponse, error)
@@ -80,7 +82,9 @@ type approvalRequest struct {
 	ApprovalHash string `json:"approval_hash"`
 }
 
-func NewAPI() *API { return &API{tasks: map[string]*task{}, workspaces: map[string]workspace{}} }
+func NewAPI() *API {
+	return &API{tasks: map[string]*task{}, workspaces: map[string]workspace{}, metrics: metrics.New()}
+}
 func NewPersistentAPI(db *gorm.DB) *API {
 	a := NewAPI()
 	a.db = db
@@ -156,6 +160,7 @@ func (a *API) createTask(w http.ResponseWriter, r *http.Request) {
 	id := "task-" + strconv.FormatInt(a.nextID, 10)
 	t := &task{ID: id, State: "DRAFT", WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, Acceptance: in.Acceptance, PlanVersion: 1}
 	a.tasks[id] = t
+	a.metrics.TasksCreated.Add(1)
 	if a.db != nil {
 		raw, _ := json.Marshal(in.Acceptance)
 		_ = a.db.Save(&sqlite.TaskRecord{ID: id, WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, AcceptanceJSON: raw, State: t.State, PlanVersion: t.PlanVersion}).Error
@@ -258,6 +263,7 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.runnerClient != nil {
+		a.metrics.Executions.Add(1)
 		resp, err := a.runnerClient.ExecuteApprovedPlan(r.Context(), &runnerv1.ExecuteApprovedPlanRequest{RequestId: "rest-" + strconv.FormatInt(time.Now().UnixNano(), 10), RunId: t.ID, WorkspaceId: t.WorkspaceID, PlanVersion: int32(t.PlanVersion), ApprovalHash: t.ApprovalHash})
 		if err != nil {
 			writeErr(w, 502, "runner_unavailable", err.Error())

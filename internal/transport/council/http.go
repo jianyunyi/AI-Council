@@ -29,6 +29,7 @@ func NewServerWithAPIAndAuth(conf rest.RestConf, api *API, token string) *rest.S
 		Path:    "/healthz",
 		Handler: healthHandler,
 	})
+	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/metrics", Handler: api.metrics.Handler})
 	for _, route := range api.Routes() {
 		server.AddRoute(route)
 	}

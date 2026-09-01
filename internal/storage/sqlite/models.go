@@ -80,3 +80,18 @@ type ExecutionRecord struct {
 	ResponseJSON []byte `gorm:"not null"`
 	CreatedAt    time.Time
 }
+type UserRecord struct {
+	ID        string `gorm:"primaryKey;size:64"`
+	Subject   string `gorm:"uniqueIndex;size:128"`
+	TokenHash string `gorm:"size:128"`
+	Disabled  bool
+	CreatedAt time.Time
+}
+type RoleRecord struct {
+	ID   string `gorm:"primaryKey;size:64"`
+	Name string `gorm:"uniqueIndex;size:64"`
+}
+type UserRoleRecord struct {
+	UserID string `gorm:"primaryKey;size:64"`
+	RoleID string `gorm:"primaryKey;size:64"`
+}
