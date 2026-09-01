@@ -9,9 +9,11 @@ import (
 	"sync"
 	"time"
 
+	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
 	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	"github.com/zeromicro/go-zero/rest"
 	"github.com/zeromicro/go-zero/rest/pathvar"
+	"google.golang.org/grpc"
 	"gorm.io/gorm"
 )
 
@@ -23,6 +25,11 @@ type API struct {
 	db           *gorm.DB
 	eventRepo    *sqlite.EventRepository
 	approvalRepo *sqlite.ApprovalRepository
+	artifactRepo *sqlite.ArtifactRepository
+	runnerClient runClient
+}
+type runClient interface {
+	ExecuteApprovedPlan(context.Context, *runnerv1.ExecuteApprovedPlanRequest, ...grpc.CallOption) (*runnerv1.ExecuteApprovedPlanResponse, error)
 }
 type workspace struct {
 	ID    string `json:"id"`
@@ -79,6 +86,7 @@ func NewPersistentAPI(db *gorm.DB) *API {
 	a.db = db
 	a.eventRepo = sqlite.NewEventRepository(db)
 	a.approvalRepo = sqlite.NewApprovalRepository(db)
+	a.artifactRepo = sqlite.NewArtifactRepository(db, ".data/artifacts")
 	var rows []sqlite.TaskRecord
 	_ = db.Find(&rows).Error
 	for _, r := range rows {
@@ -92,6 +100,13 @@ func NewPersistentAPI(db *gorm.DB) *API {
 	}
 	return a
 }
+func (a *API) WithArtifactRoot(root string) *API {
+	if a.db != nil {
+		a.artifactRepo = sqlite.NewArtifactRepository(a.db, root)
+	}
+	return a
+}
+func (a *API) WithRunnerClient(client runClient) *API { a.runnerClient = client; return a }
 func (a *API) Routes() []rest.Route {
 	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/providers/test", Handler: a.testProvider}, {Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
 }
@@ -218,8 +233,17 @@ func (a *API) rejectTask(w http.ResponseWriter, r *http.Request) {
 	a.append(t, "approval.rejected", map[string]string{"state": t.State})
 	writeData(w, 200, t)
 }
-func (a *API) getArtifact(w http.ResponseWriter, _ *http.Request) {
-	writeErr(w, 404, "not_found", "artifact not found")
+func (a *API) getArtifact(w http.ResponseWriter, r *http.Request) {
+	if a.artifactRepo == nil {
+		writeErr(w, 404, "not_found", "artifact not found")
+		return
+	}
+	env, err := a.artifactRepo.Load(r.Context(), pathvar.Vars(r)["artifactId"])
+	if err != nil {
+		writeErr(w, 404, "not_found", "artifact not found")
+		return
+	}
+	writeData(w, 200, env)
 }
 func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
@@ -232,6 +256,17 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	if t.ApprovalHash == "" {
 		writeErr(w, 403, "approval_required", "manual approval required")
 		return
+	}
+	if a.runnerClient != nil {
+		resp, err := a.runnerClient.ExecuteApprovedPlan(r.Context(), &runnerv1.ExecuteApprovedPlanRequest{RequestId: "rest-" + strconv.FormatInt(time.Now().UnixNano(), 10), RunId: t.ID, WorkspaceId: t.WorkspaceID, PlanVersion: int32(t.PlanVersion), ApprovalHash: t.ApprovalHash})
+		if err != nil {
+			writeErr(w, 502, "runner_unavailable", err.Error())
+			return
+		}
+		if resp.Status != "SUCCEEDED" {
+			writeErr(w, 409, "execution_failed", resp.ErrorCode)
+			return
+		}
 	}
 	t.State = "EXECUTING"
 	a.append(t, "state.changed", map[string]string{"state": t.State})

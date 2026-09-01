@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/aicouncil/aicouncil/internal/provider"
 )
@@ -37,12 +38,32 @@ func DoJSONWithHeaders(ctx context.Context, client *http.Client, method, url str
 			req.Header.Set(key, value)
 		}
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("%s: request failed: %w", providerName, err)
+	var resp *http.Response
+	var data []byte
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 && req.GetBody != nil {
+			req.Body, _ = req.GetBody()
+		}
+		resp, err = client.Do(req)
+		if err != nil {
+			return fmt.Errorf("%s: request failed: %w", providerName, err)
+		}
+		data, err = io.ReadAll(io.LimitReader(resp.Body, maxErrorBody+1))
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("%s: read response: %w", providerName, err)
+		}
+		if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
+			break
+		}
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(1<<attempt) * 100 * time.Millisecond):
+			}
+		}
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody+1))
 	if err != nil {
 		return fmt.Errorf("%s: read response: %w", providerName, err)
 	}
