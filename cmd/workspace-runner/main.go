@@ -13,6 +13,7 @@ import (
 
 	runnergrpc "github.com/aicouncil/aicouncil/internal/runner/grpc"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
+	storage "github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	transport "github.com/aicouncil/aicouncil/internal/transport/runner"
 	"google.golang.org/grpc"
 )
@@ -21,6 +22,8 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8081", "HTTP listen address")
 	grpcListen := flag.String("grpc-listen", "127.0.0.1:9091", "gRPC listen address")
 	workspaceRoot := flag.String("workspace-root", ".", "workspace root")
+	dbPath := flag.String("db", ".data/runner.db", "SQLite database path")
+	token := flag.String("token", "", "gRPC bearer token")
 	flag.Parse()
 
 	server := &http.Server{
@@ -28,11 +31,15 @@ func main() {
 		Handler:           transport.NewRouter(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	rpcService, err := runnergrpc.NewService(*workspaceRoot)
+	db, err := storage.Open(*dbPath)
 	if err != nil {
 		panic(err)
 	}
-	grpcServer := grpc.NewServer()
+	rpcService, err := runnergrpc.NewServiceWithDB(*workspaceRoot, db)
+	if err != nil {
+		panic(err)
+	}
+	grpcServer := grpc.NewServer(runnergrpc.UnaryAuthInterceptor(*token))
 	runnerv1.RegisterWorkspaceRunnerServer(grpcServer, rpcService)
 	grpcListener, err := net.Listen("tcp", *grpcListen)
 	if err != nil {

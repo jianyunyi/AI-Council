@@ -74,3 +74,9 @@ type ModelInvocationRecord struct {
 	DurationMillis      int64
 	ErrorCode           string
 }
+
+type ExecutionRecord struct {
+	RequestID    string `gorm:"primaryKey;size:128"`
+	ResponseJSON []byte `gorm:"not null"`
+	CreatedAt    time.Time
+}

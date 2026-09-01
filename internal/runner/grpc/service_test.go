@@ -43,3 +43,15 @@ func TestExecuteApprovedPlanRejectsTamperedApproval(t *testing.T) {
 	_, err = svc.ExecuteApprovedPlan(context.Background(), &runnerv1.ExecuteApprovedPlanRequest{RequestId: "req-1", RunId: "run-1", WorkspaceId: "ws-1", PlanVersion: 1, ApprovalHash: "tampered"})
 	require.Error(t, err)
 }
+
+func TestDescribeWorkspaceDetectsGitAndStacks(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte("module sample\n"), 0o600))
+	svc, err := NewService(root)
+	require.NoError(t, err)
+	resp, err := svc.DescribeWorkspace(context.Background(), &runnerv1.DescribeWorkspaceRequest{})
+	require.NoError(t, err)
+	require.True(t, resp.IsGit)
+	require.Contains(t, resp.DetectedStacks, "go")
+}

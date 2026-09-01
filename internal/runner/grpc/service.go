@@ -3,6 +3,9 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/aicouncil/aicouncil/internal/approval"
@@ -14,6 +17,7 @@ import (
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"gorm.io/gorm"
 )
 
 type Service struct {
@@ -26,14 +30,35 @@ type Service struct {
 }
 
 func NewService(root string) (*Service, error) {
+	return NewServiceWithDB(root, nil)
+}
+func NewServiceWithDB(root string, db *gorm.DB) (*Service, error) {
 	guard, err := pathguard.New(root, 16<<20)
 	if err != nil {
 		return nil, err
 	}
-	return &Service{root: guard.Root(), guard: guard, executor: command.NewExecutor(guard), transaction: files.NewTransaction(guard), idem: idempotency.New()}, nil
+	idem := idempotency.New()
+	if db != nil {
+		idem = idempotency.NewWithDB(db)
+	}
+	return &Service{root: guard.Root(), guard: guard, executor: command.NewExecutor(guard), transaction: files.NewTransaction(guard), idem: idem}, nil
 }
-func (s *Service) DescribeWorkspace(context.Context, *runnerv1.DescribeWorkspaceRequest) (*runnerv1.DescribeWorkspaceResponse, error) {
-	return &runnerv1.DescribeWorkspaceResponse{Root: s.root, DetectedStacks: []string{"go"}}, nil
+func (s *Service) DescribeWorkspace(ctx context.Context, _ *runnerv1.DescribeWorkspaceRequest) (*runnerv1.DescribeWorkspaceResponse, error) {
+	resp := &runnerv1.DescribeWorkspaceResponse{Root: s.root}
+	if _, err := os.Stat(s.root + string(os.PathSeparator) + ".git"); err == nil {
+		resp.IsGit = true
+		cmd := exec.CommandContext(ctx, "git", "-C", s.root, "status", "--porcelain")
+		if out, e := cmd.Output(); e == nil {
+			resp.Dirty = len(strings.TrimSpace(string(out))) > 0
+		}
+	}
+	if _, err := os.Stat(s.root + string(os.PathSeparator) + "go.mod"); err == nil {
+		resp.DetectedStacks = append(resp.DetectedStacks, "go")
+	}
+	if _, err := os.Stat(s.root + string(os.PathSeparator) + "package.json"); err == nil {
+		resp.DetectedStacks = append(resp.DetectedStacks, "node")
+	}
+	return resp, nil
 }
 func (s *Service) GetExecution(_ context.Context, req *runnerv1.GetExecutionRequest) (*runnerv1.ExecuteApprovedPlanResponse, error) {
 	if v, ok := s.idem.Get(req.RequestId); ok {
