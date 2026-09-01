@@ -1,0 +1,1 @@
+{"title":"AI Council","schemaVersion":39,"panels":[{"type":"timeseries","title":"HTTP requests","targets":[{"expr":"aicouncil_http_requests_total"}]},{"type":"stat","title":"Tasks created","targets":[{"expr":"aicouncil_tasks_created_total"}]},{"type":"stat","title":"Executions","targets":[{"expr":"aicouncil_executions_total"}]}]}
