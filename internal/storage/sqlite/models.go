@@ -52,6 +52,8 @@ type TaskRecord struct {
 	State           string
 	PlanVersion     int
 	ApprovalHash    string
+	ApprovalGranted bool
+	PlanJSON        []byte
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -77,6 +79,7 @@ type ModelInvocationRecord struct {
 
 type ExecutionRecord struct {
 	RequestID    string `gorm:"primaryKey;size:128"`
+	Status       string `gorm:"size:16;index"`
 	ResponseJSON []byte `gorm:"not null"`
 	CreatedAt    time.Time
 }

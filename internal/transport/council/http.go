@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/aicouncil/aicouncil/internal/security/rbac"
 	"github.com/zeromicro/go-zero/rest"
 )
 
@@ -20,7 +21,7 @@ func NewServerWithAPIAndAuth(conf rest.RestConf, api *API, token string) *rest.S
 	conf.Middlewares.Metrics = true
 	conf.Middlewares.Recover = true
 	server := rest.MustNewServer(conf)
-	server.Use(RequestLogger(slog.Default()))
+	server.Use(RequestLoggerWithMetrics(slog.Default(), api.metrics))
 	if token != "" {
 		server.Use(BearerAuth(token))
 	}
@@ -29,6 +30,24 @@ func NewServerWithAPIAndAuth(conf rest.RestConf, api *API, token string) *rest.S
 		Path:    "/healthz",
 		Handler: healthHandler,
 	})
+	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/metrics", Handler: api.metrics.Handler})
+	for _, route := range api.Routes() {
+		server.AddRoute(route)
+	}
+	return server
+}
+
+// NewServerWithAPIAndRBAC creates a REST server backed by the persistent
+// user/role database instead of a single shared bearer token.
+func NewServerWithAPIAndRBAC(conf rest.RestConf, api *API, service *rbac.Service, role string) *rest.Server {
+	conf.Middlewares.Log = true
+	conf.Middlewares.Prometheus = true
+	conf.Middlewares.Metrics = true
+	conf.Middlewares.Recover = true
+	server := rest.MustNewServer(conf)
+	server.Use(RequestLoggerWithMetrics(slog.Default(), api.metrics))
+	server.Use(RBACAuth(service, role))
+	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/healthz", Handler: healthHandler})
 	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/metrics", Handler: api.metrics.Handler})
 	for _, route := range api.Routes() {
 		server.AddRoute(route)

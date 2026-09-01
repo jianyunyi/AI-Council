@@ -3,8 +3,8 @@ package command
 import (
 	"bytes"
 	"context"
+	"os"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/aicouncil/aicouncil/internal/runner/pathguard"
@@ -79,10 +79,12 @@ func (b *limitBuffer) Write(p []byte) (int, error) {
 	return b.Buffer.Write(p)
 }
 func safeEnvironment() []string {
-	out := make([]string, 0)
-	for _, item := range strings.Split(strings.Join([]string{}, ""), "\x00") {
-		if item != "" {
-			out = append(out, item)
+	out := make([]string, 0, 5)
+	// Keep only process-discovery and temporary-directory variables. This is
+	// enough for argv execution on Windows while avoiding arbitrary secret env.
+	for _, key := range []string{"PATH", "PATHEXT", "SystemRoot", "ComSpec", "TEMP", "TMP"} {
+		if value, ok := os.LookupEnv(key); ok {
+			out = append(out, key+"="+value)
 		}
 	}
 	return out

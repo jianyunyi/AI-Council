@@ -13,9 +13,11 @@ import (
 
 	runnergrpc "github.com/aicouncil/aicouncil/internal/runner/grpc"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
+	"github.com/aicouncil/aicouncil/internal/security/tlsconfig"
 	storage "github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	transport "github.com/aicouncil/aicouncil/internal/transport/runner"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 func main() {
@@ -24,6 +26,8 @@ func main() {
 	workspaceRoot := flag.String("workspace-root", ".", "workspace root")
 	dbPath := flag.String("db", ".data/runner.db", "SQLite database path")
 	token := flag.String("token", "", "gRPC bearer token")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate file for gRPC (hot reloaded)")
+	tlsKey := flag.String("tls-key", "", "TLS private key file for gRPC (hot reloaded)")
 	flag.Parse()
 
 	server := &http.Server{
@@ -39,7 +43,18 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	grpcServer := grpc.NewServer(runnergrpc.UnaryAuthInterceptor(*token))
+	grpcOptions := []grpc.ServerOption{runnergrpc.UnaryAuthInterceptor(*token)}
+	if (*tlsCert == "") != (*tlsKey == "") {
+		panic("tls-cert and tls-key must be provided together")
+	}
+	if *tlsCert != "" {
+		reloader, err := tlsconfig.New(*tlsCert, *tlsKey)
+		if err != nil {
+			panic(err)
+		}
+		grpcOptions = append(grpcOptions, grpc.Creds(credentials.NewTLS(reloader.Config())))
+	}
+	grpcServer := grpc.NewServer(grpcOptions...)
 	runnerv1.RegisterWorkspaceRunnerServer(grpcServer, rpcService)
 	grpcListener, err := net.Listen("tcp", *grpcListen)
 	if err != nil {

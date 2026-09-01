@@ -9,6 +9,9 @@ import (
 	"sync"
 	"time"
 
+	appTask "github.com/aicouncil/aicouncil/internal/app/task"
+	"github.com/aicouncil/aicouncil/internal/approval"
+	"github.com/aicouncil/aicouncil/internal/council/schema"
 	"github.com/aicouncil/aicouncil/internal/observability/metrics"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
 	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
@@ -28,6 +31,7 @@ type API struct {
 	approvalRepo *sqlite.ApprovalRepository
 	artifactRepo *sqlite.ArtifactRepository
 	runnerClient runClient
+	council      appTask.CouncilPort
 	metrics      *metrics.Metrics
 }
 type runClient interface {
@@ -40,14 +44,16 @@ type workspace struct {
 	Dirty bool   `json:"dirty"`
 }
 type task struct {
-	ID           string   `json:"id"`
-	State        string   `json:"state"`
-	WorkspaceID  string   `json:"workspace_id"`
-	Requirement  string   `json:"requirement"`
-	Acceptance   []string `json:"acceptance"`
-	PlanVersion  int      `json:"plan_version"`
-	ApprovalHash string   `json:"approval_hash,omitempty"`
-	Events       []Event  `json:"-"`
+	ID           string               `json:"id"`
+	State        string               `json:"state"`
+	WorkspaceID  string               `json:"workspace_id"`
+	Requirement  string               `json:"requirement"`
+	Acceptance   []string             `json:"acceptance"`
+	PlanVersion  int                  `json:"plan_version"`
+	ApprovalHash string               `json:"approval_hash,omitempty"`
+	Approved     bool                 `json:"approved"`
+	Plan         schema.ExecutionPlan `json:"plan,omitempty"`
+	Events       []Event              `json:"-"`
 }
 type Event struct {
 	ID        int64     `json:"id"`
@@ -100,7 +106,9 @@ func NewPersistentAPI(db *gorm.DB) *API {
 		if state == "" {
 			state = "DRAFT"
 		}
-		a.tasks[r.ID] = &task{ID: r.ID, State: state, WorkspaceID: r.WorkspaceID, Requirement: r.Requirement, Acceptance: acceptance, PlanVersion: r.PlanVersion, ApprovalHash: r.ApprovalHash}
+		var plan schema.ExecutionPlan
+		_ = json.Unmarshal(r.PlanJSON, &plan)
+		a.tasks[r.ID] = &task{ID: r.ID, State: state, WorkspaceID: r.WorkspaceID, Requirement: r.Requirement, Acceptance: acceptance, PlanVersion: r.PlanVersion, ApprovalHash: r.ApprovalHash, Approved: r.ApprovalGranted, Plan: plan}
 	}
 	return a
 }
@@ -110,7 +118,8 @@ func (a *API) WithArtifactRoot(root string) *API {
 	}
 	return a
 }
-func (a *API) WithRunnerClient(client runClient) *API { a.runnerClient = client; return a }
+func (a *API) WithRunnerClient(client runClient) *API       { a.runnerClient = client; return a }
+func (a *API) WithCouncil(council appTask.CouncilPort) *API { a.council = council; return a }
 func (a *API) Routes() []rest.Route {
 	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/providers/test", Handler: a.testProvider}, {Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
 }
@@ -159,6 +168,7 @@ func (a *API) createTask(w http.ResponseWriter, r *http.Request) {
 	a.nextID++
 	id := "task-" + strconv.FormatInt(a.nextID, 10)
 	t := &task{ID: id, State: "DRAFT", WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, Acceptance: in.Acceptance, PlanVersion: 1}
+	t.Plan.Version = t.PlanVersion
 	a.tasks[id] = t
 	a.metrics.TasksCreated.Add(1)
 	if a.db != nil {
@@ -182,16 +192,58 @@ func (a *API) getTask(w http.ResponseWriter, r *http.Request) {
 }
 func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	t := a.tasks[taskID(r)]
 	if t == nil {
+		a.mu.Unlock()
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
 	if t.State != "DRAFT" {
+		a.mu.Unlock()
 		writeErr(w, 409, "invalid_state", "task already started")
 		return
 	}
+	requirement := t.Requirement
+	a.mu.Unlock()
+	var plan schema.ExecutionPlan
+	if a.council != nil {
+		a.metrics.CouncilRuns.Add(1)
+		if err := a.council.Analyze(r.Context(), requirement); err != nil {
+			a.metrics.CouncilFailures.Add(1)
+			writeErr(w, http.StatusBadGateway, "council_unavailable", err.Error())
+			return
+		}
+		var err error
+		plan, err = a.council.Deliberate(r.Context(), requirement)
+		if err != nil {
+			a.metrics.CouncilFailures.Add(1)
+			writeErr(w, http.StatusBadGateway, "council_failed", err.Error())
+			return
+		}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if t.State != "DRAFT" {
+		writeErr(w, 409, "invalid_state", "task already started")
+		return
+	}
+	if a.council != nil {
+		t.Plan = plan
+		if t.Plan.Version == 0 {
+			t.Plan.Version = t.PlanVersion
+		} else {
+			t.PlanVersion = t.Plan.Version
+		}
+		if len(t.Plan.Acceptance) == 0 {
+			t.Plan.Acceptance = append([]string(nil), t.Acceptance...)
+		}
+	}
+	hash, err := approval.Hash(t.ID, t.WorkspaceID, t.Plan)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "plan_hash_failed", err.Error())
+		return
+	}
+	t.ApprovalHash = hash
 	for _, s := range []string{"ANALYZING", "PROPOSING", "REVIEWING", "JUDGING", "REDTEAM", "AWAITING_APPROVAL"} {
 		t.State = s
 		a.append(t, "state.changed", map[string]string{"state": s})
@@ -216,7 +268,12 @@ func (a *API) approveTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "invalid_state", "task is not awaiting matching approval")
 		return
 	}
+	if in.ApprovalHash != t.ApprovalHash {
+		writeErr(w, http.StatusConflict, "approval_mismatch", "approval hash does not match immutable plan")
+		return
+	}
 	t.ApprovalHash = in.ApprovalHash
+	t.Approved = true
 	if a.approvalRepo != nil {
 		_ = a.approvalRepo.Invalidate(r.Context(), t.ID)
 		_ = a.approvalRepo.Save(r.Context(), sqlite.ApprovalRecord{ID: strconv.FormatInt(time.Now().UnixNano(), 10), RunID: t.ID, PlanVersion: in.PlanVersion, SnapshotHash: in.ApprovalHash, Decision: "approved", Actor: "user", CreatedAt: time.Now().UTC()})
@@ -234,6 +291,7 @@ func (a *API) rejectTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.State = "CANCELLED"
+	t.Approved = false
 	a.persistTask(t)
 	a.append(t, "approval.rejected", map[string]string{"state": t.State})
 	writeData(w, 200, t)
@@ -258,18 +316,27 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
-	if t.ApprovalHash == "" {
+	if !t.Approved {
 		writeErr(w, 403, "approval_required", "manual approval required")
 		return
 	}
 	if a.runnerClient != nil {
 		a.metrics.Executions.Add(1)
-		resp, err := a.runnerClient.ExecuteApprovedPlan(r.Context(), &runnerv1.ExecuteApprovedPlanRequest{RequestId: "rest-" + strconv.FormatInt(time.Now().UnixNano(), 10), RunId: t.ID, WorkspaceId: t.WorkspaceID, PlanVersion: int32(t.PlanVersion), ApprovalHash: t.ApprovalHash})
+		req := &runnerv1.ExecuteApprovedPlanRequest{RequestId: "rest-" + strconv.FormatInt(time.Now().UnixNano(), 10), RunId: t.ID, WorkspaceId: t.WorkspaceID, PlanVersion: int32(t.PlanVersion), ApprovalHash: t.ApprovalHash, Acceptance: append([]string(nil), t.Plan.Acceptance...)}
+		for _, p := range t.Plan.Patches {
+			req.Patches = append(req.Patches, &runnerv1.ApprovedPatch{Path: p.Path, UnifiedDiff: p.UnifiedDiff, BeforeHash: p.BeforeHash})
+		}
+		for _, c := range t.Plan.Commands {
+			req.Commands = append(req.Commands, &runnerv1.ApprovedCommand{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, TimeoutSeconds: int32(c.TimeoutSeconds), Purpose: c.Purpose})
+		}
+		resp, err := a.runnerClient.ExecuteApprovedPlan(r.Context(), req)
 		if err != nil {
+			a.metrics.ExecutionFailures.Add(1)
 			writeErr(w, 502, "runner_unavailable", err.Error())
 			return
 		}
 		if resp.Status != "SUCCEEDED" {
+			a.metrics.ExecutionFailures.Add(1)
 			writeErr(w, 409, "execution_failed", resp.ErrorCode)
 			return
 		}
@@ -291,6 +358,7 @@ func (a *API) cancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.State = "CANCELLED"
+	t.Approved = false
 	a.persistTask(t)
 	a.append(t, "state.changed", map[string]string{"state": t.State})
 	writeData(w, 200, t)
@@ -310,7 +378,8 @@ func (a *API) persistTask(t *task) {
 		return
 	}
 	raw, _ := json.Marshal(t.Acceptance)
-	_ = a.db.Model(&sqlite.TaskRecord{}).Where("id = ?", t.ID).Updates(map[string]any{"state": t.State, "plan_version": t.PlanVersion, "approval_hash": t.ApprovalHash, "acceptance_json": raw})
+	plan, _ := json.Marshal(t.Plan)
+	_ = a.db.Model(&sqlite.TaskRecord{}).Where("id = ?", t.ID).Updates(map[string]any{"state": t.State, "plan_version": t.PlanVersion, "approval_hash": t.ApprovalHash, "approval_granted": t.Approved, "acceptance_json": raw, "plan_json": plan})
 }
 func writeData(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

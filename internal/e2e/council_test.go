@@ -40,7 +40,7 @@ func TestCouncilApprovalRunnerVerificationFlow(t *testing.T) {
 	created, err := svc.Create(ctx, "ws-1", "verify", []string{"tests pass"})
 	require.NoError(t, err)
 	require.NoError(t, svc.Start(ctx, created.ID))
-	plan := schema.ExecutionPlan{Version: 1, Acceptance: []string{}, Patches: []schema.Patch{}, Commands: []schema.Command{}}
+	plan := created.Plan
 	hash, err := approval.Hash(created.ID, "ws-1", plan)
 	require.NoError(t, err)
 	require.NoError(t, svc.Approve(ctx, created.ID, hash, "operator", 1))

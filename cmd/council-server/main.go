@@ -1,16 +1,25 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
+	"time"
 
+	councilengine "github.com/aicouncil/aicouncil/internal/council"
+	"github.com/aicouncil/aicouncil/internal/provider"
+	"github.com/aicouncil/aicouncil/internal/provider/anthropic"
+	"github.com/aicouncil/aicouncil/internal/provider/deepseek"
+	"github.com/aicouncil/aicouncil/internal/provider/openai"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
 	storage "github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	transport "github.com/aicouncil/aicouncil/internal/transport/council"
 	"github.com/zeromicro/go-zero/rest"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -19,6 +28,8 @@ func main() {
 	dbPath := flag.String("db", ".data/council.db", "SQLite database path")
 	token := flag.String("token", "", "REST bearer token (empty disables auth)")
 	runnerAddr := flag.String("runner", "", "Runner gRPC address")
+	runnerTLS := flag.Bool("runner-tls", false, "Use TLS for Runner gRPC")
+	runnerTLSServerName := flag.String("runner-tls-server-name", "", "TLS server name for Runner gRPC")
 	flag.Parse()
 
 	host, port, err := splitListenAddress(*listen)
@@ -30,9 +41,16 @@ func main() {
 		panic(err)
 	}
 	api := transport.NewPersistentAPI(db)
+	if workflow := configuredWorkflow(); workflow != nil {
+		api.WithCouncil(workflow)
+	}
 	var runnerConn *grpc.ClientConn
 	if *runnerAddr != "" {
-		runnerConn, err = grpc.Dial(*runnerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		var creds credentials.TransportCredentials = insecure.NewCredentials()
+		if *runnerTLS {
+			creds = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13, ServerName: *runnerTLSServerName})
+		}
+		runnerConn, err = grpc.Dial(*runnerAddr, grpc.WithTransportCredentials(creds))
 		if err != nil {
 			panic(err)
 		}
@@ -43,6 +61,48 @@ func main() {
 	defer server.Stop()
 	fmt.Printf("council-server listening on %s\n", *listen)
 	server.Start()
+}
+
+func configuredWorkflow() *councilengine.Workflow {
+	items := make([]provider.ModelProvider, 0, 3)
+	seats := make([]councilengine.Seat, 0, 3)
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		model := envOr("OPENAI_MODEL", "gpt-4o")
+		items = append(items, provider.WithCostMeter(openai.New(openai.Config{APIKey: key, Model: model})))
+		seats = append(seats, councilengine.Seat{ID: "openai", Provider: "openai", Model: model, Role: "proposer"})
+	}
+	if key := os.Getenv("DEEPSEEK_API_KEY"); key != "" {
+		model := envOr("DEEPSEEK_MODEL", "deepseek-chat")
+		items = append(items, provider.WithCostMeter(deepseek.New(deepseek.Config{APIKey: key, Model: model})))
+		seats = append(seats, councilengine.Seat{ID: "deepseek", Provider: "deepseek", Model: model, Role: "proposer"})
+	}
+	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		model := envOr("ANTHROPIC_MODEL", "claude-3-5-sonnet")
+		items = append(items, provider.WithCostMeter(anthropic.New(anthropic.Config{APIKey: key, Model: model})))
+		seats = append(seats, councilengine.Seat{ID: "anthropic", Provider: "anthropic", Model: model, Role: "proposer"})
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	registry := provider.NewRegistry(items...)
+	engine := councilengine.NewEngine(registry, nil, councilengine.Limits{Timeout: 2 * time.Minute})
+	// Use separate role identities even when a deployment configures one vendor.
+	proposers := append([]councilengine.Seat(nil), seats...)
+	reviewers := append([]councilengine.Seat(nil), seats...)
+	judge := seats[0]
+	judge.ID += "-judge"
+	judge.Role = "judge"
+	redTeam := seats[0]
+	redTeam.ID += "-redteam"
+	redTeam.Role = "redteam"
+	return councilengine.NewWorkflow(engine, proposers, reviewers, judge, redTeam)
+}
+
+func envOr(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func splitListenAddress(address string) (string, int, error) {

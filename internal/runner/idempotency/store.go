@@ -29,7 +29,7 @@ func (s *Store) Get(id string) (*runnerv1.ExecuteApprovedPlanResponse, bool) {
 	v, ok := s.done[id]
 	if !ok && s.db != nil {
 		var rec sqlite.ExecutionRecord
-		if err := s.db.First(&rec, "request_id = ?", id).Error; err == nil {
+		if err := s.db.First(&rec, "request_id = ?", id).Error; err == nil && rec.Status != "running" {
 			v = &runnerv1.ExecuteApprovedPlanResponse{}
 			if protojson.Unmarshal(rec.ResponseJSON, v) == nil {
 				s.done[id] = v
@@ -48,6 +48,26 @@ func (s *Store) Begin(id string) (func(), error) {
 	if _, ok := s.running[id]; ok {
 		return nil, ErrInProgress
 	}
+	if s.db != nil {
+		var rec sqlite.ExecutionRecord
+		err := s.db.First(&rec, "request_id = ?", id).Error
+		if err == nil {
+			if rec.Status == "running" {
+				return nil, ErrInProgress
+			}
+			if v := decodeResponse(rec.ResponseJSON); v != nil {
+				s.done[id] = v
+				return func() {}, nil
+			}
+		}
+		if err := s.db.Create(&sqlite.ExecutionRecord{RequestID: id, Status: "running", ResponseJSON: []byte("{}")}).Error; err != nil {
+			// Another process may have won the insert race.
+			if s.db.First(&rec, "request_id = ?", id).Error == nil && rec.Status == "running" {
+				return nil, ErrInProgress
+			}
+			return nil, ErrInProgress
+		}
+	}
 	s.running[id] = struct{}{}
 	return func() { s.mu.Lock(); delete(s.running, id); s.mu.Unlock() }, nil
 }
@@ -58,7 +78,15 @@ func (s *Store) Complete(id string, response *runnerv1.ExecuteApprovedPlanRespon
 	s.done[id] = response
 	if s.db != nil {
 		if raw, err := protojson.Marshal(response); err == nil {
-			_ = s.db.Save(&sqlite.ExecutionRecord{RequestID: id, ResponseJSON: raw}).Error
+			_ = s.db.Save(&sqlite.ExecutionRecord{RequestID: id, Status: "complete", ResponseJSON: raw}).Error
 		}
 	}
+}
+
+func decodeResponse(raw []byte) *runnerv1.ExecuteApprovedPlanResponse {
+	v := &runnerv1.ExecuteApprovedPlanResponse{}
+	if protojson.Unmarshal(raw, v) != nil || v.RequestId == "" {
+		return nil
+	}
+	return v
 }

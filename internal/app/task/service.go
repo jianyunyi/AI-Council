@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/aicouncil/aicouncil/internal/approval"
 	"github.com/aicouncil/aicouncil/internal/core/runstate"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
@@ -79,6 +80,7 @@ func (s *Service) Create(ctx context.Context, workspace, requirement string, acc
 	}
 	t := &Task{ID: id, RunID: id, WorkspaceID: workspace, Requirement: requirement, Acceptance: acceptance, State: runstate.Draft, PlanVersion: 1}
 	t.Plan.Version = t.PlanVersion
+	t.Plan.Acceptance = append([]string(nil), acceptance...)
 	s.mu.Lock()
 	s.tasks[id] = t
 	s.mu.Unlock()
@@ -93,6 +95,24 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	s.mu.Unlock()
 	if t == nil {
 		return errors.New("task not found")
+	}
+	if s.council != nil {
+		if err := s.council.Analyze(ctx, t.Requirement); err != nil {
+			return err
+		}
+		plan, err := s.council.Deliberate(ctx, t.Requirement)
+		if err != nil {
+			return err
+		}
+		t.Plan = plan
+		if t.Plan.Version == 0 {
+			t.Plan.Version = t.PlanVersion
+		} else {
+			t.PlanVersion = t.Plan.Version
+		}
+		if len(t.Plan.Acceptance) == 0 {
+			t.Plan.Acceptance = append([]string(nil), t.Acceptance...)
+		}
 	}
 	for _, next := range []runstate.State{runstate.Analyzing, runstate.Proposing, runstate.Reviewing, runstate.Judging, runstate.RedTeam, runstate.AwaitingApproval} {
 		if err := s.runs.Transition(ctx, t.RunID, next, "system", "task lifecycle"); err != nil {
@@ -114,6 +134,9 @@ func (s *Service) Approve(ctx context.Context, id, hash, actor string, version i
 	}
 	if t.State != runstate.AwaitingApproval || version != t.PlanVersion {
 		return errors.New("task is not awaiting matching plan")
+	}
+	if err := approval.Verify(hash, t.RunID, t.WorkspaceID, t.Plan); err != nil {
+		return err
 	}
 	if err := s.approvals.Invalidate(ctx, t.RunID); err != nil {
 		return err
