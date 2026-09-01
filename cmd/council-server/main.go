@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	councilengine "github.com/aicouncil/aicouncil/internal/council"
@@ -15,18 +18,25 @@ import (
 	"github.com/aicouncil/aicouncil/internal/provider/deepseek"
 	"github.com/aicouncil/aicouncil/internal/provider/openai"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
+	"github.com/aicouncil/aicouncil/internal/security/rbac"
 	storage "github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	transport "github.com/aicouncil/aicouncil/internal/transport/council"
 	"github.com/zeromicro/go-zero/rest"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"gorm.io/gorm"
 )
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
 	dbPath := flag.String("db", ".data/council.db", "SQLite database path")
 	token := flag.String("token", "", "REST bearer token (empty disables auth)")
+	tlsCert := flag.String("tls-cert", "", "REST TLS certificate file (hot reloaded)")
+	tlsKey := flag.String("tls-key", "", "REST TLS private key file (hot reloaded)")
+	rbacRole := flag.String("rbac-role", "", "Enable SQLite RBAC and require this role")
+	rbacSubject := flag.String("rbac-bootstrap-subject", "", "Optional RBAC bootstrap user subject")
+	rbacToken := flag.String("rbac-bootstrap-token", "", "Optional RBAC bootstrap user token")
 	runnerAddr := flag.String("runner", "", "Runner gRPC address")
 	runnerTLS := flag.Bool("runner-tls", false, "Use TLS for Runner gRPC")
 	runnerTLSServerName := flag.String("runner-tls-server-name", "", "TLS server name for Runner gRPC")
@@ -57,7 +67,40 @@ func main() {
 		defer runnerConn.Close()
 		api.WithRunnerClient(runnerv1.NewWorkspaceRunnerClient(runnerConn))
 	}
-	server := transport.NewServerWithAPIAndAuth(rest.RestConf{Host: host, Port: port}, api, *token)
+	var server *rest.Server
+	if (*tlsCert == "") != (*tlsKey == "") {
+		panic("tls-cert and tls-key must be provided together")
+	}
+	var rbacService *rbac.Service
+	if *rbacRole != "" {
+		rbacService = rbac.New(db)
+		if *rbacSubject != "" && *rbacToken != "" {
+			if err := rbacService.CreateUser(context.Background(), *rbacSubject, *rbacToken); err != nil {
+				// An existing bootstrap user is safe to reuse on restarts.
+				if !errors.Is(err, gorm.ErrDuplicatedKey) && !strings.Contains(strings.ToLower(err.Error()), "unique constraint") {
+					panic(err)
+				}
+			}
+			if err := rbacService.GrantRole(context.Background(), *rbacSubject, *rbacRole); err != nil {
+				panic(err)
+			}
+		}
+	}
+	if *tlsCert != "" && rbacService != nil {
+		server, err = transport.NewTLSServerWithAPIAndRBAC(rest.RestConf{Host: host, Port: port}, api, rbacService, *rbacRole, *tlsCert, *tlsKey)
+		if err != nil {
+			panic(err)
+		}
+	} else if *tlsCert != "" {
+		server, err = transport.NewTLSServerWithAPIAndAuth(rest.RestConf{Host: host, Port: port}, api, *token, *tlsCert, *tlsKey)
+		if err != nil {
+			panic(err)
+		}
+	} else if rbacService != nil {
+		server = transport.NewServerWithAPIAndRBAC(rest.RestConf{Host: host, Port: port}, api, rbacService, *rbacRole)
+	} else {
+		server = transport.NewServerWithAPIAndAuth(rest.RestConf{Host: host, Port: port}, api, *token)
+	}
 	defer server.Stop()
 	fmt.Printf("council-server listening on %s\n", *listen)
 	server.Start()
