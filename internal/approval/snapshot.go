@@ -19,6 +19,18 @@ type payload struct {
 }
 
 func Hash(runID, workspaceID string, plan schema.ExecutionPlan) (string, error) {
+	if plan.Acceptance == nil {
+		plan.Acceptance = []string{}
+	}
+	if plan.Patches == nil {
+		plan.Patches = []schema.Patch{}
+	}
+	if plan.Commands == nil {
+		plan.Commands = []schema.Command{}
+	}
+	if plan.Recovery == nil {
+		plan.Recovery = []string{}
+	}
 	raw, err := json.Marshal(payload{RunID: runID, WorkspaceID: workspaceID, Plan: plan})
 	if err != nil {
 		return "", err

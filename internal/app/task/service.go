@@ -78,6 +78,7 @@ func (s *Service) Create(ctx context.Context, workspace, requirement string, acc
 		return Task{}, err
 	}
 	t := &Task{ID: id, RunID: id, WorkspaceID: workspace, Requirement: requirement, Acceptance: acceptance, State: runstate.Draft, PlanVersion: 1}
+	t.Plan.Version = t.PlanVersion
 	s.mu.Lock()
 	s.tasks[id] = t
 	s.mu.Unlock()

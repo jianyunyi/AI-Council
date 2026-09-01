@@ -79,11 +79,20 @@ func (s *Service) ExecuteApprovedPlan(ctx context.Context, req *runnerv1.Execute
 	}
 	defer release()
 	plan := schema.ExecutionPlan{Version: int(req.PlanVersion), Acceptance: req.Acceptance}
+	if plan.Acceptance == nil {
+		plan.Acceptance = []string{}
+	}
 	for _, p := range req.Patches {
 		plan.Patches = append(plan.Patches, schema.Patch{Path: p.Path, UnifiedDiff: p.UnifiedDiff, BeforeHash: p.BeforeHash})
 	}
 	for _, c := range req.Commands {
 		plan.Commands = append(plan.Commands, schema.Command{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, TimeoutSeconds: int(c.TimeoutSeconds), Purpose: c.Purpose})
+	}
+	if plan.Patches == nil {
+		plan.Patches = []schema.Patch{}
+	}
+	if plan.Commands == nil {
+		plan.Commands = []schema.Command{}
 	}
 	if err := approval.Verify(req.ApprovalHash, req.RunId, req.WorkspaceId, plan); err != nil {
 		return nil, status.Error(codes.PermissionDenied, "approval mismatch")
