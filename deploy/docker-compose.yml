@@ -1,0 +1,21 @@
+services:
+  council:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.council
+    environment:
+      AICOUNCIL_TOKEN: ${AICOUNCIL_TOKEN:?set AICOUNCIL_TOKEN}
+    ports: ["127.0.0.1:8080:8080"]
+    volumes: ["council-data:/app/.data"]
+  runner:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.runner
+    environment:
+      AICOUNCIL_TOKEN: ${AICOUNCIL_TOKEN:?set AICOUNCIL_TOKEN}
+    ports: ["127.0.0.1:8081:8081", "127.0.0.1:9091:9091"]
+    volumes: ["runner-data:/app/.data", "workspace-data:/workspace"]
+volumes:
+  council-data:
+  runner-data:
+  workspace-data:

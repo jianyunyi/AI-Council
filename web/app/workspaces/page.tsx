@@ -1,0 +1,1 @@
+export default function Workspaces(){return <><h1>工作区</h1><div className="card"><label>本地路径<input placeholder="由 Runner 返回规范化路径" /></label><p>执行前会展示 Git 状态、变更文件和风险。</p><button>注册工作区</button></div></>}

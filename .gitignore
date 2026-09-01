@@ -1,1 +1,11 @@
 .worktrees/
+.data/
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+coverage.out
+web/.next/
+web/node_modules/

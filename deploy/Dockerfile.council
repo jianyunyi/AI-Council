@@ -1,0 +1,8 @@
+FROM golang:1.25 AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/council ./cmd/council-server
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /out/council /council
+EXPOSE 8080
+ENTRYPOINT ["/council","-listen","0.0.0.0:8080","-db","/app/.data/council.db"]
