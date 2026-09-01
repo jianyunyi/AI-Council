@@ -1,0 +1,8 @@
+FROM golang:1.25 AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/runner ./cmd/workspace-runner
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /out/runner /runner
+EXPOSE 8081 9091
+ENTRYPOINT ["/runner","-listen","0.0.0.0:8081","-grpc-listen","0.0.0.0:9091","-workspace-root","/workspace","-db","/app/.data/runner.db"]

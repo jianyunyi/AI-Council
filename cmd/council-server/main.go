@@ -14,6 +14,7 @@ import (
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
 	dbPath := flag.String("db", ".data/council.db", "SQLite database path")
+	token := flag.String("token", "", "REST bearer token (empty disables auth)")
 	flag.Parse()
 
 	host, port, err := splitListenAddress(*listen)
@@ -24,7 +25,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	server := transport.NewServerWithAPI(rest.RestConf{Host: host, Port: port}, transport.NewPersistentAPI(db))
+	server := transport.NewServerWithAPIAndAuth(rest.RestConf{Host: host, Port: port}, transport.NewPersistentAPI(db), *token)
 	defer server.Stop()
 	fmt.Printf("council-server listening on %s\n", *listen)
 	server.Start()

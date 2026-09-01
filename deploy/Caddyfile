@@ -1,0 +1,4 @@
+:443 {
+  reverse_proxy council:8080
+  tls {$TLS_CERT} {$TLS_KEY}
+}
