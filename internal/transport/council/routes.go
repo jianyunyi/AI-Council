@@ -13,9 +13,16 @@ import (
 )
 
 type API struct {
-	mu     sync.Mutex
-	tasks  map[string]*task
-	nextID int64
+	mu         sync.Mutex
+	tasks      map[string]*task
+	nextID     int64
+	workspaces map[string]workspace
+}
+type workspace struct {
+	ID    string `json:"id"`
+	Root  string `json:"root"`
+	IsGit bool   `json:"is_git"`
+	Dirty bool   `json:"dirty"`
 }
 type task struct {
 	ID           string   `json:"id"`
@@ -47,14 +54,54 @@ type createTaskRequest struct {
 	Requirement string   `json:"requirement"`
 	Acceptance  []string `json:"acceptance"`
 }
+type providerTestRequest struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	APIKey   string `json:"api_key"`
+}
+type workspaceRequest struct {
+	Root string `json:"root"`
+}
 type approvalRequest struct {
 	PlanVersion  int    `json:"plan_version"`
 	ApprovalHash string `json:"approval_hash"`
 }
 
-func NewAPI() *API { return &API{tasks: map[string]*task{}} }
+func NewAPI() *API { return &API{tasks: map[string]*task{}, workspaces: map[string]workspace{}} }
 func (a *API) Routes() []rest.Route {
-	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
+	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/providers/test", Handler: a.testProvider}, {Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
+}
+
+func (a *API) testProvider(w http.ResponseWriter, r *http.Request) {
+	var in providerTestRequest
+	if json.NewDecoder(r.Body).Decode(&in) != nil || in.Provider == "" || in.Model == "" {
+		writeErr(w, 400, "invalid_provider", "provider and model are required")
+		return
+	}
+	writeData(w, 200, map[string]string{"profile_id": "profile-" + strconv.FormatInt(time.Now().UnixNano(), 10), "provider": in.Provider, "model": in.Model, "status": "ok"})
+}
+func (a *API) createWorkspace(w http.ResponseWriter, r *http.Request) {
+	var in workspaceRequest
+	if json.NewDecoder(r.Body).Decode(&in) != nil || strings.TrimSpace(in.Root) == "" {
+		writeErr(w, 400, "invalid_workspace", "root is required")
+		return
+	}
+	a.mu.Lock()
+	a.nextID++
+	id := "workspace-" + strconv.FormatInt(a.nextID, 10)
+	ws := workspace{ID: id, Root: in.Root, IsGit: false}
+	a.workspaces[id] = ws
+	a.mu.Unlock()
+	writeData(w, 201, ws)
+}
+func (a *API) listWorkspaces(w http.ResponseWriter, _ *http.Request) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]workspace, 0, len(a.workspaces))
+	for _, ws := range a.workspaces {
+		out = append(out, ws)
+	}
+	writeData(w, 200, out)
 }
 func (a *API) createTask(w http.ResponseWriter, r *http.Request) {
 	var in createTaskRequest
@@ -120,6 +167,21 @@ func (a *API) approveTask(w http.ResponseWriter, r *http.Request) {
 	t.ApprovalHash = in.ApprovalHash
 	a.append(t, "approval.created", in)
 	writeData(w, 200, t)
+}
+func (a *API) rejectTask(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t := a.tasks[taskID(r)]
+	if t == nil {
+		writeErr(w, 404, "not_found", "task not found")
+		return
+	}
+	t.State = "CANCELLED"
+	a.append(t, "approval.rejected", map[string]string{"state": t.State})
+	writeData(w, 200, t)
+}
+func (a *API) getArtifact(w http.ResponseWriter, _ *http.Request) {
+	writeErr(w, 404, "not_found", "artifact not found")
 }
 func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
