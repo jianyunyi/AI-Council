@@ -19,7 +19,9 @@ func TestExecutorRunsArgvWithoutShell(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		executable, args = "cmd", []string{"/c", "echo", "literal-value"}
 	}
-	result, err := e.Run(context.Background(), Spec{Executable: executable, Args: args, WorkDir: ".", Timeout: time.Second, OutputLimit: 1024})
+	// Process startup can exceed one second on a busy Windows CI worker. Keep
+	// this test focused on argv execution rather than making it timing-sensitive.
+	result, err := e.Run(context.Background(), Spec{Executable: executable, Args: args, WorkDir: ".", Timeout: 5 * time.Second, OutputLimit: 1024})
 	require.NoError(t, err)
 	require.Equal(t, 0, result.ExitCode)
 	require.False(t, result.TimedOut)
