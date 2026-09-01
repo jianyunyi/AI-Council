@@ -41,21 +41,24 @@ type WorkspaceRecord struct {
 	ID            string `gorm:"primaryKey;size:64"`
 	CanonicalRoot string
 	RunnerID      string
+	IsGit         bool
+	Dirty         bool
 	PolicyJSON    []byte
 }
 type TaskRecord struct {
-	ID              string `gorm:"primaryKey;size:64"`
-	WorkspaceID     string
-	Requirement     string
-	ConstraintsJSON []byte
-	AcceptanceJSON  []byte
-	State           string
-	PlanVersion     int
-	ApprovalHash    string
-	ApprovalGranted bool
-	PlanJSON        []byte
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID               string `gorm:"primaryKey;size:64"`
+	WorkspaceID      string
+	Requirement      string
+	ConstraintsJSON  []byte
+	AcceptanceJSON   []byte
+	State            string
+	PlanVersion      int
+	ApprovalHash     string
+	ApprovalGranted  bool
+	PlanJSON         []byte
+	VerificationJSON []byte
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 type SeatRecord struct {
 	ID                string `gorm:"primaryKey;size:64"`

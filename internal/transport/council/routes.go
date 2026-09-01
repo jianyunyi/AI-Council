@@ -37,6 +37,9 @@ type API struct {
 type runClient interface {
 	ExecuteApprovedPlan(context.Context, *runnerv1.ExecuteApprovedPlanRequest, ...grpc.CallOption) (*runnerv1.ExecuteApprovedPlanResponse, error)
 }
+type workspaceDescriber interface {
+	DescribeWorkspace(context.Context, *runnerv1.DescribeWorkspaceRequest, ...grpc.CallOption) (*runnerv1.DescribeWorkspaceResponse, error)
+}
 type workspace struct {
 	ID    string `json:"id"`
 	Root  string `json:"root"`
@@ -44,16 +47,17 @@ type workspace struct {
 	Dirty bool   `json:"dirty"`
 }
 type task struct {
-	ID           string               `json:"id"`
-	State        string               `json:"state"`
-	WorkspaceID  string               `json:"workspace_id"`
-	Requirement  string               `json:"requirement"`
-	Acceptance   []string             `json:"acceptance"`
-	PlanVersion  int                  `json:"plan_version"`
-	ApprovalHash string               `json:"approval_hash,omitempty"`
-	Approved     bool                 `json:"approved"`
-	Plan         schema.ExecutionPlan `json:"plan,omitempty"`
-	Events       []Event              `json:"-"`
+	ID           string                                `json:"id"`
+	State        string                                `json:"state"`
+	WorkspaceID  string                                `json:"workspace_id"`
+	Requirement  string                                `json:"requirement"`
+	Acceptance   []string                              `json:"acceptance"`
+	PlanVersion  int                                   `json:"plan_version"`
+	ApprovalHash string                                `json:"approval_hash,omitempty"`
+	Approved     bool                                  `json:"approved"`
+	Plan         schema.ExecutionPlan                  `json:"plan,omitempty"`
+	Verification *runnerv1.ExecuteApprovedPlanResponse `json:"verification,omitempty"`
+	Events       []Event                               `json:"-"`
 }
 type Event struct {
 	ID        int64     `json:"id"`
@@ -99,6 +103,11 @@ func NewPersistentAPI(db *gorm.DB) *API {
 	a.artifactRepo = sqlite.NewArtifactRepository(db, ".data/artifacts")
 	var rows []sqlite.TaskRecord
 	_ = db.Find(&rows).Error
+	var workspaceRows []sqlite.WorkspaceRecord
+	_ = db.Find(&workspaceRows).Error
+	for _, r := range workspaceRows {
+		a.workspaces[r.ID] = workspace{ID: r.ID, Root: r.CanonicalRoot, IsGit: r.IsGit, Dirty: r.Dirty}
+	}
 	for _, r := range rows {
 		var acceptance []string
 		_ = json.Unmarshal(r.AcceptanceJSON, &acceptance)
@@ -108,7 +117,23 @@ func NewPersistentAPI(db *gorm.DB) *API {
 		}
 		var plan schema.ExecutionPlan
 		_ = json.Unmarshal(r.PlanJSON, &plan)
-		a.tasks[r.ID] = &task{ID: r.ID, State: state, WorkspaceID: r.WorkspaceID, Requirement: r.Requirement, Acceptance: acceptance, PlanVersion: r.PlanVersion, ApprovalHash: r.ApprovalHash, Approved: r.ApprovalGranted, Plan: plan}
+		var verification runnerv1.ExecuteApprovedPlanResponse
+		_ = json.Unmarshal(r.VerificationJSON, &verification)
+		var v *runnerv1.ExecuteApprovedPlanResponse
+		if verification.RequestId != "" {
+			v = &verification
+		}
+		a.tasks[r.ID] = &task{ID: r.ID, State: state, WorkspaceID: r.WorkspaceID, Requirement: r.Requirement, Acceptance: acceptance, PlanVersion: r.PlanVersion, ApprovalHash: r.ApprovalHash, Approved: r.ApprovalGranted, Plan: plan, Verification: v}
+	}
+	for id := range a.tasks {
+		if n, err := strconv.ParseInt(strings.TrimPrefix(id, "task-"), 10, 64); err == nil && n > a.nextID {
+			a.nextID = n
+		}
+	}
+	for id := range a.workspaces {
+		if n, err := strconv.ParseInt(strings.TrimPrefix(id, "workspace-"), 10, 64); err == nil && n > a.nextID {
+			a.nextID = n
+		}
 	}
 	return a
 }
@@ -142,9 +167,14 @@ func (a *API) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	a.nextID++
 	id := "workspace-" + strconv.FormatInt(a.nextID, 10)
 	ws := workspace{ID: id, Root: in.Root, IsGit: false}
+	if describer, ok := a.runnerClient.(workspaceDescriber); ok {
+		if info, err := describer.DescribeWorkspace(r.Context(), &runnerv1.DescribeWorkspaceRequest{WorkspaceId: id}); err == nil {
+			ws.Root, ws.IsGit, ws.Dirty = info.Root, info.IsGit, info.Dirty
+		}
+	}
 	a.workspaces[id] = ws
 	if a.db != nil {
-		_ = a.db.Save(&sqlite.WorkspaceRecord{ID: id, CanonicalRoot: ws.Root}).Error
+		_ = a.db.Save(&sqlite.WorkspaceRecord{ID: id, CanonicalRoot: ws.Root, IsGit: ws.IsGit, Dirty: ws.Dirty}).Error
 	}
 	a.mu.Unlock()
 	writeData(w, 201, ws)
@@ -340,6 +370,7 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 409, "execution_failed", resp.ErrorCode)
 			return
 		}
+		t.Verification = resp
 	}
 	t.State = "EXECUTING"
 	a.append(t, "state.changed", map[string]string{"state": t.State})
@@ -379,7 +410,8 @@ func (a *API) persistTask(t *task) {
 	}
 	raw, _ := json.Marshal(t.Acceptance)
 	plan, _ := json.Marshal(t.Plan)
-	_ = a.db.Model(&sqlite.TaskRecord{}).Where("id = ?", t.ID).Updates(map[string]any{"state": t.State, "plan_version": t.PlanVersion, "approval_hash": t.ApprovalHash, "approval_granted": t.Approved, "acceptance_json": raw, "plan_json": plan})
+	verification, _ := json.Marshal(t.Verification)
+	_ = a.db.Model(&sqlite.TaskRecord{}).Where("id = ?", t.ID).Updates(map[string]any{"state": t.State, "plan_version": t.PlanVersion, "approval_hash": t.ApprovalHash, "approval_granted": t.Approved, "acceptance_json": raw, "plan_json": plan, "verification_json": verification})
 }
 func writeData(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
