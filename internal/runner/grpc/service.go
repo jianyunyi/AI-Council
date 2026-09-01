@@ -8,6 +8,7 @@ import (
 	"github.com/aicouncil/aicouncil/internal/approval"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	"github.com/aicouncil/aicouncil/internal/runner/command"
+	"github.com/aicouncil/aicouncil/internal/runner/files"
 	"github.com/aicouncil/aicouncil/internal/runner/idempotency"
 	"github.com/aicouncil/aicouncil/internal/runner/pathguard"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
@@ -17,10 +18,11 @@ import (
 
 type Service struct {
 	runnerv1.UnimplementedWorkspaceRunnerServer
-	root     string
-	guard    *pathguard.Guard
-	executor *command.Executor
-	idem     *idempotency.Store
+	root        string
+	guard       *pathguard.Guard
+	executor    *command.Executor
+	transaction *files.Transaction
+	idem        *idempotency.Store
 }
 
 func NewService(root string) (*Service, error) {
@@ -28,7 +30,7 @@ func NewService(root string) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{root: guard.Root(), guard: guard, executor: command.NewExecutor(guard), idem: idempotency.New()}, nil
+	return &Service{root: guard.Root(), guard: guard, executor: command.NewExecutor(guard), transaction: files.NewTransaction(guard), idem: idempotency.New()}, nil
 }
 func (s *Service) DescribeWorkspace(context.Context, *runnerv1.DescribeWorkspaceRequest) (*runnerv1.DescribeWorkspaceResponse, error) {
 	return &runnerv1.DescribeWorkspaceResponse{Root: s.root, DetectedStacks: []string{"go"}}, nil
@@ -62,6 +64,15 @@ func (s *Service) ExecuteApprovedPlan(ctx context.Context, req *runnerv1.Execute
 		return nil, status.Error(codes.PermissionDenied, "approval mismatch")
 	}
 	response := &runnerv1.ExecuteApprovedPlanResponse{RequestId: req.RequestId, Status: "SUCCEEDED"}
+	patchesApplied := len(plan.Patches) > 0
+	if patchesApplied {
+		if _, err := s.transaction.Apply(ctx, plan.Patches); err != nil {
+			response.Status = "FAILED"
+			response.ErrorCode = "patch_failed"
+			s.idem.Complete(req.RequestId, response)
+			return response, nil
+		}
+	}
 	for _, c := range plan.Commands {
 		result, runErr := s.executor.Run(ctx, command.Spec{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, Timeout: time.Duration(c.TimeoutSeconds) * time.Second, OutputLimit: 1 << 20})
 		step := &runnerv1.StepResult{Kind: "command", Name: c.Executable, ExitCode: int32(result.ExitCode), Stdout: result.Stdout, Stderr: result.Stderr, DurationMs: result.Duration.Milliseconds(), Status: "SUCCEEDED"}
@@ -69,6 +80,9 @@ func (s *Service) ExecuteApprovedPlan(ctx context.Context, req *runnerv1.Execute
 			step.Status = "FAILED"
 			response.Status = "FAILED"
 			response.ErrorCode = fmt.Sprintf("command_failed:%s", c.Executable)
+			if patchesApplied {
+				_ = s.transaction.Restore()
+			}
 		}
 		response.Steps = append(response.Steps, step)
 	}
