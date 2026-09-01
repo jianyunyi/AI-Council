@@ -1,3 +1,6 @@
-export type Task = { id:string; state:string; requirement:string; planVersion?:number }
+export type Command = { executable:string; args:string[]; work_dir?:string; timeout_seconds?:number; purpose?:string }
+export type Patch = { path:string; unified_diff:string; before_hash?:string }
+export type ExecutionPlan = { version:number; patches:Patch[]; commands:Command[]; acceptance:string[]; recovery:string[] }
+export type Task = { id:string; state:string; workspace_id?:string; requirement:string; acceptance?:string[]; plan_version?:number; approval_hash?:string; approved?:boolean; plan?:ExecutionPlan }
 export type APIError = { code:string; message:string; fields?:Record<string,string> }
 export type Envelope<T> = { data:T; error?:APIError; request_id:string }
