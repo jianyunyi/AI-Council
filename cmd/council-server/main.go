@@ -6,19 +6,25 @@ import (
 	"net"
 	"strconv"
 
+	storage "github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	transport "github.com/aicouncil/aicouncil/internal/transport/council"
 	"github.com/zeromicro/go-zero/rest"
 )
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
+	dbPath := flag.String("db", ".data/council.db", "SQLite database path")
 	flag.Parse()
 
 	host, port, err := splitListenAddress(*listen)
 	if err != nil {
 		panic(err)
 	}
-	server := transport.NewServer(rest.RestConf{Host: host, Port: port})
+	db, err := storage.Open(*dbPath)
+	if err != nil {
+		panic(err)
+	}
+	server := transport.NewServerWithAPI(rest.RestConf{Host: host, Port: port}, transport.NewPersistentAPI(db))
 	defer server.Stop()
 	fmt.Printf("council-server listening on %s\n", *listen)
 	server.Start()

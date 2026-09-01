@@ -49,6 +49,11 @@ type TaskRecord struct {
 	Requirement     string
 	ConstraintsJSON []byte
 	AcceptanceJSON  []byte
+	State           string
+	PlanVersion     int
+	ApprovalHash    string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 type SeatRecord struct {
 	ID                string `gorm:"primaryKey;size:64"`

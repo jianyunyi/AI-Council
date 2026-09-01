@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"gorm.io/gorm"
 	"time"
 )
@@ -33,7 +34,7 @@ func (r *EventRepository) Append(ctx context.Context, runID, typ string, data an
 	var out Event
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var last EventRecord
-		if err := tx.Where("run_id = ?", runID).Order("sequence DESC").First(&last).Error; err != nil && err != gorm.ErrRecordNotFound {
+		if err := tx.Where("run_id = ?", runID).Order("sequence DESC").First(&last).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
 		rec := EventRecord{RunID: runID, Sequence: last.Sequence + 1, Type: typ, Data: raw, CreatedAt: time.Now().UTC()}

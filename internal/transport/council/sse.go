@@ -21,6 +21,14 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 	}
 	events := append([]Event(nil), t.Events...)
 	a.mu.Unlock()
+	if a.eventRepo != nil {
+		if persisted, err := a.eventRepo.After(r.Context(), t.ID, after, 200); err == nil {
+			events = events[:0]
+			for _, e := range persisted {
+				events = append(events, Event{ID: e.Sequence, Type: e.Type, Data: json.RawMessage(e.Data), CreatedAt: e.CreatedAt})
+			}
+		}
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")

@@ -2,14 +2,44 @@ package council
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	storage "github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zeromicro/go-zero/rest/pathvar"
 )
+
+func TestPersistentAPIRehydratesTasksAndEvents(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	a := NewPersistentAPI(db)
+	routes := a.Routes()
+	var create func(http.ResponseWriter, *http.Request)
+	for _, r := range routes {
+		if r.Method == http.MethodPost && r.Path == "/api/v1/tasks" {
+			create = r.Handler
+		}
+	}
+	rec := httptest.NewRecorder()
+	create(rec, httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewBufferString(`{"workspace_id":"ws","requirement":"persist","acceptance":["ok"]}`)))
+	require.Equal(t, 201, rec.Code)
+	var body responseEnvelope
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	m := body.Data.(map[string]any)
+	id := m["id"].(string)
+	b := NewPersistentAPI(db)
+	require.Contains(t, b.tasks, id)
+	ev, err := b.eventRepo.After(context.Background(), id, 0, 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, ev)
+}
 
 func TestTaskLifecycleRequiresApproval(t *testing.T) {
 	a := NewAPI()
