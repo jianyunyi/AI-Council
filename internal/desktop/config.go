@@ -24,9 +24,9 @@ func LoadConfig(env map[string]string) (Config, error) {
 		return env[key]
 	}
 
-	goos := getenv("GOOS")
-	if goos == "" {
-		goos = runtime.GOOS
+	goos := runtime.GOOS
+	if env != nil && env["GOOS"] != "" {
+		goos = env["GOOS"]
 	}
 
 	dataDir := getenv("AI_COUNCIL_DATA_DIR")

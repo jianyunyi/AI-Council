@@ -60,6 +60,40 @@ func TestConfigNonWindowsUsesUserConfigDirectory(t *testing.T) {
 	}
 }
 
+func TestConfigNilEnvironmentUsesRuntimeGOOS(t *testing.T) {
+	nativeConfigDir := t.TempDir()
+	oppositeConfigDir := t.TempDir()
+
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("GOOS", "linux")
+		t.Setenv("LOCALAPPDATA", nativeConfigDir)
+		t.Setenv("XDG_CONFIG_HOME", oppositeConfigDir)
+	case "darwin":
+		t.Setenv("GOOS", "windows")
+		t.Setenv("HOME", nativeConfigDir)
+		t.Setenv("LOCALAPPDATA", oppositeConfigDir)
+	default:
+		t.Setenv("GOOS", "windows")
+		t.Setenv("XDG_CONFIG_HOME", nativeConfigDir)
+		t.Setenv("LOCALAPPDATA", oppositeConfigDir)
+	}
+
+	cfg, err := LoadConfig(nil)
+	if err != nil {
+		t.Fatalf("LoadConfig(nil) error = %v", err)
+	}
+
+	wantConfigDir := nativeConfigDir
+	if runtime.GOOS == "darwin" {
+		wantConfigDir = filepath.Join(nativeConfigDir, "Library", "Application Support")
+	}
+	wantDataDir := filepath.Join(wantConfigDir, "AI-Council")
+	if cfg.DataDir != wantDataDir {
+		t.Errorf("DataDir = %q, want runtime %s path %q", cfg.DataDir, runtime.GOOS, wantDataDir)
+	}
+}
+
 func TestConfigCreatesPrivateDataAndLogDirectories(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "nested", "data")
 	logDir := filepath.Join(dataDir, "private-logs")
