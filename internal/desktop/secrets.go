@@ -178,39 +178,3 @@ func validSecretKey(key string) bool {
 	}
 	return true
 }
-
-func loadOrCreateMasterKey(path string) ([]byte, error) {
-	key, err := os.ReadFile(path)
-	if err == nil {
-		if len(key) != 32 {
-			return nil, fmt.Errorf("secret store master key has invalid length %d", len(key))
-		}
-		if err := os.Chmod(path, 0o600); err != nil {
-			return nil, fmt.Errorf("secure secret store master key: %w", err)
-		}
-		return key, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("read secret store master key: %w", err)
-	}
-
-	key = make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, key); err != nil {
-		return nil, fmt.Errorf("generate secret store master key: %w", err)
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return loadOrCreateMasterKey(path)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("create secret store master key: %w", err)
-	}
-	if _, err := file.Write(key); err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("write secret store master key: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return nil, fmt.Errorf("close secret store master key: %w", err)
-	}
-	return key, nil
-}
