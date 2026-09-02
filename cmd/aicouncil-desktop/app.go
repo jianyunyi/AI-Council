@@ -32,6 +32,19 @@ type DesktopApp struct {
 	workspace string
 	runtime   *desktop.Runtime
 	lastError string
+	wailsCtx  context.Context
+}
+
+func (a *DesktopApp) setWailsContext(ctx context.Context) {
+	a.mu.Lock()
+	a.wailsCtx = ctx
+	a.mu.Unlock()
+}
+
+func (a *DesktopApp) wailsContext() context.Context {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.wailsCtx
 }
 
 func NewDesktopApp(config desktop.Config, store *desktop.SecretStore, workspace string) (*DesktopApp, error) {

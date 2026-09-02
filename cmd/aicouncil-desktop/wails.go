@@ -21,6 +21,9 @@ func runWails(app *DesktopApp) error {
 		AssetServer: &assetserver.Options{
 			Assets: desktopAssets,
 		},
+		OnStartup: func(ctx context.Context) {
+			app.setWailsContext(ctx)
+		},
 		OnDomReady: func(ctx context.Context) {
 			if _, err := app.Start(); err != nil {
 				runtime.LogError(ctx, fmt.Sprintf("start desktop services: %v", err))
@@ -43,4 +46,24 @@ func runWails(app *DesktopApp) error {
 		},
 		Bind: []interface{}{app},
 	})
+}
+
+// ChooseWorkspace opens the native directory chooser and validates the result
+// before it becomes the Runner workspace.
+func (a *DesktopApp) ChooseWorkspace() (string, error) {
+	ctx := a.wailsContext()
+	if ctx == nil {
+		return "", fmt.Errorf("desktop window is not ready")
+	}
+	path, err := runtime.OpenDirectoryDialog(ctx, runtime.OpenDialogOptions{Title: "选择 AI Council 工作区"})
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		return "", nil
+	}
+	if err := a.OpenWorkspace(path); err != nil {
+		return "", err
+	}
+	return path, nil
 }

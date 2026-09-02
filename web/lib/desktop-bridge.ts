@@ -12,6 +12,7 @@ type BoundDesktopApp = {
   Stop(): Promise<void>
   Status(): Promise<DesktopStatus>
   ExportDiagnostics(destination: string): Promise<string>
+	ChooseWorkspace(): Promise<string>
 }
 
 declare global {
@@ -31,5 +32,6 @@ export function desktopBridge(){
     stop:()=>app.Stop(),
     status:()=>app.Status(),
     exportDiagnostics:(destination:string)=>app.ExportDiagnostics(destination),
+	chooseWorkspace:()=>app.ChooseWorkspace(),
   }
 }
