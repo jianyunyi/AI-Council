@@ -17,4 +17,5 @@ aicouncil-desktop.exe
 dist/
 !cmd/aicouncil-desktop/frontend/
 !cmd/aicouncil-desktop/frontend/dist/
+cmd/aicouncil-desktop/frontend/dist/*
 !cmd/aicouncil-desktop/frontend/dist/index.html
