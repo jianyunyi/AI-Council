@@ -223,6 +223,37 @@ func TestRuntimeStopForceKillsAfterTimeout(t *testing.T) {
 	}
 }
 
+func TestRuntimeStopRequestsAuthenticatedLocalShutdownBeforeFallback(t *testing.T) {
+	starter := &fakeStarter{}
+	var requests []ShutdownRequest
+	runtime := NewRuntime(RuntimeOptions{
+		Config:      Config{DataDir: t.TempDir(), LogDir: t.TempDir(), CouncilBinary: "council", RunnerBinary: "runner"},
+		Starter:     starter,
+		HealthCheck: func(context.Context, string) error { return nil },
+		ShutdownRequest: func(_ context.Context, request ShutdownRequest) error {
+			requests = append(requests, request)
+			return nil
+		},
+	})
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("shutdown requests = %d, want 2", len(requests))
+	}
+	for _, request := range requests {
+		if request.URL == "" || request.Token == "" {
+			t.Fatalf("shutdown request = %#v, want URL and token", request)
+		}
+		if !strings.HasSuffix(request.URL, "/shutdown") {
+			t.Errorf("shutdown URL = %q, want /shutdown", request.URL)
+		}
+	}
+}
+
 func TestRuntimeReportsSanitizedErrorWhenServiceExits(t *testing.T) {
 	starter := &fakeStarter{}
 	runtime := NewRuntime(RuntimeOptions{

@@ -30,9 +30,11 @@ func main() {
 	tlsKey := flag.String("tls-key", "", "TLS private key file for gRPC (hot reloaded)")
 	flag.Parse()
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	server := &http.Server{
 		Addr:              *listen,
-		Handler:           transport.NewRouter(),
+		Handler:           transport.NewRouterWithShutdown(*token, func(context.Context) { stop() }),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	db, err := storage.Open(*dbPath)
@@ -61,8 +63,6 @@ func main() {
 		panic(err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

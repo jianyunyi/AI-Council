@@ -2,9 +2,12 @@ package desktop
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"sync"
 	"time"
@@ -44,31 +47,43 @@ func (check HealthCheckFunc) Check(ctx context.Context, url string) error {
 	return check(ctx, url)
 }
 
+// ShutdownRequest is an authenticated request to a process-local service.
+// The token is deliberately absent from RuntimeStatus and logs.
+type ShutdownRequest struct {
+	URL   string
+	Token string
+}
+
+type ShutdownRequestFunc func(context.Context, ShutdownRequest) error
+
 type RuntimeOptions struct {
-	Config        Config
-	WorkspaceRoot string
-	Starter       CommandStarter
-	HealthChecker HealthChecker
-	HealthCheck   HealthCheckFunc
-	PollInterval  time.Duration
-	StopTimeout   time.Duration
-	TLSCert       string
-	TLSKey        string
-	RBACRole      string
-	RBACSubject   string
-	Environment   map[string]string
+	Config          Config
+	WorkspaceRoot   string
+	Starter         CommandStarter
+	HealthChecker   HealthChecker
+	HealthCheck     HealthCheckFunc
+	ShutdownRequest ShutdownRequestFunc
+	PollInterval    time.Duration
+	StopTimeout     time.Duration
+	TLSCert         string
+	TLSKey          string
+	RBACRole        string
+	RBACSubject     string
+	Environment     map[string]string
 }
 
 type Runtime struct {
 	mu     sync.Mutex
 	stopMu sync.Mutex
 
-	options   RuntimeOptions
-	starter   CommandStarter
-	checker   HealthChecker
-	status    RuntimeStatus
-	children  []*managedProcess
-	stopWatch chan struct{}
+	options      RuntimeOptions
+	starter      CommandStarter
+	checker      HealthChecker
+	shutdown     ShutdownRequestFunc
+	status       RuntimeStatus
+	children     []*managedProcess
+	stopWatch    chan struct{}
+	sessionToken string
 }
 
 type managedProcess struct {
@@ -89,6 +104,10 @@ func NewRuntime(options RuntimeOptions) *Runtime {
 	if checker == nil {
 		checker = HealthCheckFunc(defaultHealthCheck)
 	}
+	shutdown := options.ShutdownRequest
+	if shutdown == nil {
+		shutdown = defaultShutdownRequest
+	}
 	if options.PollInterval <= 0 {
 		options.PollInterval = defaultPollInterval
 	}
@@ -96,10 +115,11 @@ func NewRuntime(options RuntimeOptions) *Runtime {
 		options.StopTimeout = defaultStopTimeout
 	}
 	return &Runtime{
-		options: options,
-		starter: starter,
-		checker: checker,
-		status:  RuntimeStatus{State: StateStopped},
+		options:  options,
+		starter:  starter,
+		checker:  checker,
+		shutdown: shutdown,
+		status:   RuntimeStatus{State: StateStopped},
 	}
 }
 
@@ -198,6 +218,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.status.CouncilURL = serviceURL(councilHTTP, r.options.TLSCert, r.options.TLSKey)
 	r.status.RunnerURL = "http://" + runnerHTTP
 	r.status.RunnerGRPCAddress = runnerGRPC
+	r.sessionToken = token
 	stopWatch := r.stopWatch
 	r.mu.Unlock()
 
@@ -272,11 +293,27 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	}
 	r.status.State = StateStopping
 	children := append([]*managedProcess(nil), r.children...)
+	councilURL := r.status.CouncilURL
+	runnerURL := r.status.RunnerURL
+	token := r.sessionToken
 	if r.stopWatch != nil {
 		close(r.stopWatch)
 		r.stopWatch = nil
 	}
 	r.mu.Unlock()
+
+	for i := len(children) - 1; i >= 0; i-- {
+		request := ShutdownRequest{Token: token}
+		switch children[i].name {
+		case "council":
+			request.URL = councilURL + "/shutdown"
+		case "runner":
+			request.URL = runnerURL + "/shutdown"
+		}
+		if request.URL != "" && request.Token != "" {
+			_ = r.shutdown(ctx, request)
+		}
+	}
 
 	for i := len(children) - 1; i >= 0; i-- {
 		_ = children[i].process.Stop()
@@ -350,6 +387,7 @@ func (r *Runtime) markStopped() {
 	r.children = nil
 	r.status.State = StateStopped
 	r.status.LastError = ""
+	r.sessionToken = ""
 	r.mu.Unlock()
 }
 
@@ -395,6 +433,41 @@ func defaultHealthCheck(ctx context.Context, url string) error {
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("health endpoint returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+func defaultShutdownRequest(ctx context.Context, request ShutdownRequest) error {
+	parsed, err := url.Parse(request.URL)
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("unsupported local shutdown scheme %q", parsed.Scheme)
+	}
+	host := parsed.Hostname()
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("shutdown endpoint %q is not loopback", request.URL)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if parsed.Scheme == "https" {
+		// The URL is allocated locally and the one-time session token
+		// authenticates the peer. This permits a user-supplied self-signed cert.
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true} // #nosec G402
+	}
+	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, request.URL, nil)
+	if err != nil {
+		return err
+	}
+	httpRequest.Header.Set("Authorization", "Bearer "+request.Token)
+	response, err := client.Do(httpRequest)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("shutdown endpoint returned HTTP %d", response.StatusCode)
 	}
 	return nil
 }

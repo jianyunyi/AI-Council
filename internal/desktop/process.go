@@ -56,14 +56,7 @@ func (p *commandProcess) Wait() error {
 }
 
 func (p *commandProcess) Stop() error {
-	if p.cmd.Process == nil {
-		return nil
-	}
-	err := p.cmd.Process.Signal(os.Interrupt)
-	if errors.Is(err, os.ErrProcessDone) {
-		return nil
-	}
-	return err
+	return requestOSProcessStop(p.cmd.Process)
 }
 
 func (p *commandProcess) Kill() error {

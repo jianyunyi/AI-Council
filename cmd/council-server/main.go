@@ -7,9 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	councilengine "github.com/aicouncil/aicouncil/internal/council"
@@ -103,7 +105,13 @@ func main() {
 	} else {
 		server = transport.NewServerWithAPIAndAuth(rest.RestConf{Host: host, Port: port}, api, *token)
 	}
-	defer server.Stop()
+	var stopOnce sync.Once
+	server.AddRoute(rest.Route{
+		Method:  http.MethodPost,
+		Path:    "/shutdown",
+		Handler: transport.ShutdownHandler(func() { stopOnce.Do(server.Stop) }),
+	})
+	defer stopOnce.Do(server.Stop)
 	fmt.Printf("council-server listening on %s\n", *listen)
 	server.Start()
 }
