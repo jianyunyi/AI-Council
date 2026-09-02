@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
@@ -17,7 +18,13 @@ func (s *Service) IssueToken(ctx context.Context, userID string, ttl time.Durati
 	var user sqlite.UserRecord
 	if err := s.db.WithContext(ctx).
 		Where("id = ? OR subject = ?", userID, userID).
-		First(&user).Error; err != nil || user.Disabled {
+		First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", sqlite.AccessTokenRecord{}, ErrUnauthorized
+		}
+		return "", sqlite.AccessTokenRecord{}, fmt.Errorf("load token user: %w", err)
+	}
+	if user.Disabled {
 		return "", sqlite.AccessTokenRecord{}, ErrUnauthorized
 	}
 
@@ -38,7 +45,7 @@ func (s *Service) IssueToken(ctx context.Context, userID string, ttl time.Durati
 		CreatedAt: now,
 	}
 	if err := s.db.WithContext(ctx).Create(&record).Error; err != nil {
-		return "", sqlite.AccessTokenRecord{}, err
+		return "", sqlite.AccessTokenRecord{}, fmt.Errorf("store access token: %w", err)
 	}
 	return plain, record, nil
 }

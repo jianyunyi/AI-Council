@@ -11,6 +11,7 @@ import (
 
 	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrUnauthorized = errors.New("unauthorized")
@@ -134,45 +135,66 @@ func (s *Service) GrantRole(ctx context.Context, subject, role string) error {
 func (s *Service) BootstrapAdmin(ctx context.Context, subject, password string, ttl time.Duration) (string, error) {
 	var token string
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing sqlite.UserRecord
-		err := tx.Where("subject = ?", subject).First(&existing).Error
-		if err == nil {
-			return nil
+		candidate := sqlite.UserRecord{ID: subject, Subject: subject}
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&candidate)
+		if result.Error != nil {
+			return fmt.Errorf("create bootstrap user: %w", result.Error)
 		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
+		created := result.RowsAffected == 1
+
+		var user sqlite.UserRecord
+		if err := tx.Where("subject = ?", subject).First(&user).Error; err != nil {
+			return fmt.Errorf("load bootstrap user: %w", err)
+		}
+		updates := map[string]any{}
+		if user.PasswordHash == nil {
+			hash, err := HashPassword(password)
+			if err != nil {
+				return err
+			}
+			updates["password_hash"] = hash
+			user.PasswordHash = &hash
+		}
+		if user.Disabled {
+			updates["disabled"] = false
+			user.Disabled = false
+		}
+		if len(updates) > 0 {
+			if err := tx.Model(&sqlite.UserRecord{}).Where("id = ?", user.ID).Updates(updates).Error; err != nil {
+				return fmt.Errorf("repair bootstrap user: %w", err)
+			}
 		}
 
-		hash, err := HashPassword(password)
-		if err != nil {
-			return err
+		roleSeed := sqlite.RoleRecord{ID: "admin", Name: "admin"}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&roleSeed).Error; err != nil {
+			return fmt.Errorf("create admin role: %w", err)
 		}
-		user := sqlite.UserRecord{ID: subject, Subject: subject, PasswordHash: &hash}
-		if err := tx.Create(&user).Error; err != nil {
-			return err
-		}
-
 		var role sqlite.RoleRecord
-		if err := tx.Where("name = ?", "admin").FirstOrCreate(
-			&role,
-			&sqlite.RoleRecord{ID: "admin", Name: "admin"},
-		).Error; err != nil {
-			return err
+		if err := tx.Where("name = ?", "admin").First(&role).Error; err != nil {
+			return fmt.Errorf("load admin role: %w", err)
+		}
+		permissionSeed := sqlite.PermissionRecord{ID: "admin:*", Name: "admin:*"}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&permissionSeed).Error; err != nil {
+			return fmt.Errorf("create admin permission: %w", err)
 		}
 		var permission sqlite.PermissionRecord
-		if err := tx.Where("name = ?", "admin:*").FirstOrCreate(
-			&permission,
-			&sqlite.PermissionRecord{ID: "admin:*", Name: "admin:*"},
+		if err := tx.Where("name = ?", "admin:*").First(&permission).Error; err != nil {
+			return fmt.Errorf("load admin permission: %w", err)
+		}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(
+			&sqlite.UserRoleRecord{UserID: user.ID, RoleID: role.ID},
 		).Error; err != nil {
-			return err
+			return fmt.Errorf("assign admin role: %w", err)
 		}
-		if err := tx.FirstOrCreate(&sqlite.UserRoleRecord{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
-			return err
-		}
-		if err := tx.FirstOrCreate(&sqlite.RolePermissionRecord{RoleID: role.ID, PermissionID: permission.ID}).Error; err != nil {
-			return err
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(
+			&sqlite.RolePermissionRecord{RoleID: role.ID, PermissionID: permission.ID},
+		).Error; err != nil {
+			return fmt.Errorf("grant admin permission: %w", err)
 		}
 
+		if !created {
+			return nil
+		}
 		plain, _, err := (&Service{db: tx}).IssueToken(ctx, user.ID, ttl)
 		if err != nil {
 			return err
@@ -201,7 +223,13 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Identity, err
 	// Legacy users store their long-lived token directly on the user record.
 	var user sqlite.UserRecord
 	err = s.db.WithContext(ctx).Where("token_hash = ?", tokenHash).First(&user).Error
-	if err != nil || user.Disabled || subtle.ConstantTimeCompare([]byte(user.TokenHash), []byte(tokenHash)) != 1 {
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return Identity{}, ErrUnauthorized
+		}
+		return Identity{}, fmt.Errorf("load legacy user: %w", err)
+	}
+	if user.Disabled || subtle.ConstantTimeCompare([]byte(user.TokenHash), []byte(tokenHash)) != 1 {
 		return Identity{}, ErrUnauthorized
 	}
 	return s.identityForUser(ctx, user.ID)
@@ -235,7 +263,13 @@ func (s *Service) Authorize(ctx context.Context, token, role string) error {
 
 func (s *Service) identityForUser(ctx context.Context, userID string) (Identity, error) {
 	var user sqlite.UserRecord
-	if err := s.db.WithContext(ctx).Where("id = ?", userID).First(&user).Error; err != nil || user.Disabled {
+	if err := s.db.WithContext(ctx).Where("id = ?", userID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return Identity{}, ErrUnauthorized
+		}
+		return Identity{}, fmt.Errorf("load identity user: %w", err)
+	}
+	if user.Disabled {
 		return Identity{}, ErrUnauthorized
 	}
 
@@ -246,7 +280,7 @@ func (s *Service) identityForUser(ctx context.Context, userID string) (Identity,
 		Where("user_role_records.user_id = ?", user.ID).
 		Order("role_records.name").
 		Pluck("role_records.name", &identity.Roles).Error; err != nil {
-		return Identity{}, err
+		return Identity{}, fmt.Errorf("load identity roles: %w", err)
 	}
 	if err := s.db.WithContext(ctx).Model(&sqlite.PermissionRecord{}).
 		Distinct("permission_records.name").
@@ -255,7 +289,7 @@ func (s *Service) identityForUser(ctx context.Context, userID string) (Identity,
 		Where("user_role_records.user_id = ?", user.ID).
 		Order("permission_records.name").
 		Pluck("permission_records.name", &identity.Permissions).Error; err != nil {
-		return Identity{}, err
+		return Identity{}, fmt.Errorf("load identity permissions: %w", err)
 	}
 	return identity, nil
 }

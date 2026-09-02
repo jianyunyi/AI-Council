@@ -87,9 +87,9 @@ type ExecutionRecord struct {
 	CreatedAt    time.Time
 }
 type UserRecord struct {
-	ID           string `gorm:"primaryKey;size:64"`
-	Subject      string `gorm:"uniqueIndex;size:128"`
-	TokenHash    string `gorm:"size:128"`
+	ID           string  `gorm:"primaryKey;size:64"`
+	Subject      string  `gorm:"uniqueIndex;size:128"`
+	TokenHash    string  `gorm:"size:128"`
 	PasswordHash *string `gorm:"size:255"`
 	Disabled     bool
 	CreatedAt    time.Time
@@ -109,14 +109,14 @@ type PermissionRecord struct {
 }
 
 type RolePermissionRecord struct {
-	RoleID      string `gorm:"primaryKey;size:64"`
+	RoleID       string `gorm:"primaryKey;size:64"`
 	PermissionID string `gorm:"primaryKey;size:128"`
 }
 
 type AccessTokenRecord struct {
-	ID        string `gorm:"primaryKey;size:64"`
-	UserID    string `gorm:"not null;size:64;index"`
-	TokenHash string `gorm:"not null;uniqueIndex;size:64"`
+	ID        string    `gorm:"primaryKey;size:64"`
+	UserID    string    `gorm:"not null;size:64;index"`
+	TokenHash string    `gorm:"not null;uniqueIndex;size:64"`
 	ExpiresAt time.Time `gorm:"index"`
 	RevokedAt *time.Time
 	CreatedAt time.Time

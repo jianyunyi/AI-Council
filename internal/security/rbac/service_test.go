@@ -3,11 +3,14 @@ package rbac
 import (
 	"context"
 	"errors"
-	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
-	"github.com/stretchr/testify/require"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRBACAuthorizeByRole(t *testing.T) {
@@ -106,6 +109,159 @@ func TestBootstrapAdminIsIdempotent(t *testing.T) {
 	var users int64
 	require.NoError(t, db.Model(&sqlite.UserRecord{}).Where("subject = ?", "admin").Count(&users).Error)
 	require.EqualValues(t, 1, users)
+}
+
+func TestBootstrapAdminRepairsExistingUsers(t *testing.T) {
+	tests := []struct {
+		name             string
+		passwordHash     *string
+		disabled         bool
+		wantPassword     string
+		preservePassword bool
+	}{
+		{name: "ordinary", passwordHash: passwordHashForTest(t, "old"), wantPassword: "old", preservePassword: true},
+		{name: "missing password", wantPassword: "bootstrap"},
+		{name: "disabled", passwordHash: passwordHashForTest(t, "old"), disabled: true, wantPassword: "old", preservePassword: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := sqlite.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+			require.NoError(t, err)
+			sqlDB, _ := db.DB()
+			t.Cleanup(func() { _ = sqlDB.Close() })
+			require.NoError(t, db.Create(&sqlite.UserRecord{
+				ID: "admin-user", Subject: "admin-user", PasswordHash: tt.passwordHash, Disabled: tt.disabled,
+			}).Error)
+
+			s := New(db)
+			token, err := s.BootstrapAdmin(context.Background(), "admin-user", "bootstrap", time.Hour)
+			require.NoError(t, err)
+			require.Empty(t, token)
+
+			var user sqlite.UserRecord
+			require.NoError(t, db.Where("subject = ?", "admin-user").First(&user).Error)
+			require.False(t, user.Disabled)
+			require.NotNil(t, user.PasswordHash)
+			require.NoError(t, VerifyPassword(*user.PasswordHash, tt.wantPassword))
+			if tt.preservePassword {
+				require.ErrorIs(t, VerifyPassword(*user.PasswordHash, "bootstrap"), ErrInvalidPassword)
+			}
+
+			issued, _, err := s.IssueToken(context.Background(), user.ID, time.Hour)
+			require.NoError(t, err)
+			require.NoError(t, s.AuthorizePermission(context.Background(), issued, "admin:*"))
+		})
+	}
+}
+
+func TestBootstrapAdminRollsBackRepairsOnFailure(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, db.Create(&sqlite.UserRecord{ID: "admin-user", Subject: "admin-user", Disabled: true}).Error)
+	require.NoError(t, db.Create(&sqlite.PermissionRecord{ID: "admin:*", Name: "conflicting"}).Error)
+
+	_, err = New(db).BootstrapAdmin(context.Background(), "admin-user", "bootstrap", time.Hour)
+	require.Error(t, err)
+
+	var user sqlite.UserRecord
+	require.NoError(t, db.Where("subject = ?", "admin-user").First(&user).Error)
+	require.True(t, user.Disabled)
+	require.Nil(t, user.PasswordHash)
+}
+
+func TestBootstrapAdminIsConcurrentSafe(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	sqlDB.SetMaxOpenConns(2)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	s := New(db)
+	ctx := context.Background()
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var tokens atomic.Int32
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			token, err := s.BootstrapAdmin(ctx, "admin", "password", time.Hour)
+			if token != "" {
+				tokens.Add(1)
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	require.EqualValues(t, 1, tokens.Load())
+
+	var users, links int64
+	require.NoError(t, db.Model(&sqlite.UserRecord{}).Where("subject = ?", "admin").Count(&users).Error)
+	require.NoError(t, db.Model(&sqlite.UserRoleRecord{}).Count(&links).Error)
+	require.EqualValues(t, 1, users)
+	require.EqualValues(t, 1, links)
+}
+
+func TestDatabaseErrorsAreNotUnauthorized(t *testing.T) {
+	t.Run("issue token", func(t *testing.T) {
+		db, err := sqlite.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+		require.NoError(t, err)
+		sqlDB, _ := db.DB()
+		t.Cleanup(func() { _ = sqlDB.Close() })
+		require.NoError(t, db.Migrator().DropTable(&sqlite.UserRecord{}))
+
+		_, _, err = New(db).IssueToken(context.Background(), "alice", time.Hour)
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrUnauthorized)
+		require.ErrorContains(t, err, "load token user")
+	})
+
+	t.Run("authenticate legacy user", func(t *testing.T) {
+		db, err := sqlite.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+		require.NoError(t, err)
+		sqlDB, _ := db.DB()
+		t.Cleanup(func() { _ = sqlDB.Close() })
+		require.NoError(t, db.Migrator().DropTable(&sqlite.UserRecord{}))
+
+		_, err = New(db).Authenticate(context.Background(), "token")
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrUnauthorized)
+		require.ErrorContains(t, err, "load legacy user")
+	})
+
+	t.Run("authenticate token user", func(t *testing.T) {
+		db, err := sqlite.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+		require.NoError(t, err)
+		sqlDB, _ := db.DB()
+		t.Cleanup(func() { _ = sqlDB.Close() })
+		s := New(db)
+		require.NoError(t, s.CreateUserWithPassword(context.Background(), "alice", "password"))
+		token, _, err := s.IssueToken(context.Background(), "alice", time.Hour)
+		require.NoError(t, err)
+		require.NoError(t, db.Exec("PRAGMA foreign_keys = OFF").Error)
+		require.NoError(t, db.Migrator().DropTable(&sqlite.UserRecord{}))
+
+		_, err = s.Authenticate(context.Background(), token)
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrUnauthorized)
+		require.ErrorContains(t, err, "load identity user")
+	})
+}
+
+func passwordHashForTest(t *testing.T, password string) *string {
+	t.Helper()
+	hash, err := HashPassword(password)
+	require.NoError(t, err)
+	return &hash
 }
 
 func TestSetPassword(t *testing.T) {
