@@ -187,6 +187,30 @@ func TestRuntimeWaitReadyChecksBothServices(t *testing.T) {
 	}
 }
 
+func TestRuntimeWebRuntimeExposesOnlyLocalSessionConnection(t *testing.T) {
+	starter := &fakeStarter{}
+	runtime := NewRuntime(RuntimeOptions{
+		Config:      Config{DataDir: t.TempDir(), LogDir: t.TempDir(), CouncilBinary: "council", RunnerBinary: "runner"},
+		Starter:     starter,
+		HealthCheck: func(context.Context, string) error { return nil },
+	})
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Stop(context.Background()) })
+
+	connection, err := runtime.WebRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(connection.APIBase, "http://127.0.0.1:") || connection.SessionToken == "" {
+		t.Fatalf("desktop web connection = %#v, want local URL and session token", connection)
+	}
+	if strings.Contains(runtime.Status().LastError, connection.SessionToken) {
+		t.Fatal("session token leaked into runtime status")
+	}
+}
+
 func TestRuntimeStopForceKillsAfterTimeout(t *testing.T) {
 	starter := &fakeStarter{}
 	runtime := NewRuntime(RuntimeOptions{

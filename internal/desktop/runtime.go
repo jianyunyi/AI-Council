@@ -36,6 +36,14 @@ type RuntimeStatus struct {
 	LastError         string
 }
 
+// WebRuntime contains the ephemeral local connection data needed by the
+// embedded WebView. It is intentionally separate from RuntimeStatus so normal
+// diagnostics cannot accidentally serialize the session token.
+type WebRuntime struct {
+	APIBase      string `json:"api_base"`
+	SessionToken string `json:"session_token"`
+}
+
 // HealthChecker probes a child service readiness URL.
 type HealthChecker interface {
 	Check(context.Context, string) error
@@ -280,6 +288,18 @@ func (r *Runtime) Status() RuntimeStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.status
+}
+
+func (r *Runtime) WebRuntime() (WebRuntime, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.status.State != StateStarting && r.status.State != StateReady {
+		return WebRuntime{}, errors.New("desktop runtime is not running")
+	}
+	if r.status.CouncilURL == "" || r.sessionToken == "" {
+		return WebRuntime{}, errors.New("desktop runtime connection is unavailable")
+	}
+	return WebRuntime{APIBase: r.status.CouncilURL + "/api/v1", SessionToken: r.sessionToken}, nil
 }
 
 func (r *Runtime) Stop(ctx context.Context) error {

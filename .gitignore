@@ -9,3 +9,12 @@
 coverage.out
 web/.next/
 web/node_modules/
+web/out/
+.pnpm-store/
+.vite/
+.tmp-go-cache/
+aicouncil-desktop.exe
+dist/
+!cmd/aicouncil-desktop/frontend/
+!cmd/aicouncil-desktop/frontend/dist/
+!cmd/aicouncil-desktop/frontend/dist/index.html

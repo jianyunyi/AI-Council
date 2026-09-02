@@ -1,5 +1,11 @@
 # AI Council
 
+## Windows 桌面版
+
+Windows 安装包包含 Wails 桌面壳、Council 服务和 Workspace Runner。安装后从开始菜单启动，运行数据、DPAPI 保护的 Provider 密钥和限额日志保存在 `%LOCALAPPDATA%\AI-Council`，升级与卸载不会删除这些用户数据。
+
+本地构建：先执行 `pnpm --dir web install --frozen-lockfile` 和 `pnpm --dir web desktop:build`，再构建三个 Windows 可执行文件至 `dist`，最后用 Inno Setup 执行 `iscc build/windows/installer.iss`。GitHub 标签构建会自动生成 EXE、安装包及 SHA-256 文件。
+
 AI Council 是一个“多模型协同 + 人工批准执行”的本地优先开发工作台。它将 OpenAI、Anthropic、DeepSeek 等 Provider 归一化为同一契约，先并发产出独立方案，再匿名轮转互审，由 Judge 汇总并进行 Red-team 检查，最终生成需要人工确认的执行计划。
 
 ## 当前实现

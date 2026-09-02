@@ -1,0 +1,36 @@
+name: desktop-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25.x' }
+      - uses: pnpm/action-setup@v4
+        with: { version: '9.15.0' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: 'pnpm', cache-dependency-path: web/pnpm-lock.yaml }
+      - name: Verify Go services
+        run: go test ./...
+      - name: Build static desktop frontend
+        run: pnpm --dir web install --frozen-lockfile; pnpm --dir web desktop:build
+      - name: Build Windows executables
+        run: |
+          New-Item -ItemType Directory -Force dist
+          go build -o dist/AI-Council.exe ./cmd/aicouncil-desktop
+          go build -o dist/council-server.exe ./cmd/council-server
+          go build -o dist/workspace-runner.exe ./cmd/workspace-runner
+      - name: Build Inno Setup installer
+        run: iscc build/windows/installer.iss
+      - name: Create checksums
+        run: Get-FileHash dist/AI-Council.exe,dist/installer/*.exe -Algorithm SHA256 | Format-Table -AutoSize | Out-File dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AI-Council-Windows
+          path: dist/

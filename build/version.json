@@ -1,0 +1,9 @@
+{
+  "version": "0.1.0",
+  "product": "AI Council",
+  "windows": {
+    "arch": "amd64",
+    "binary": "AI-Council.exe",
+    "installer": "AI-Council-Setup-0.1.0.exe"
+  }
+}

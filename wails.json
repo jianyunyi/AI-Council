@@ -1,0 +1,9 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "AI Council",
+  "outputfilename": "AI-Council",
+  "frontend:dir": "web",
+  "frontend:install": "pnpm install --frozen-lockfile",
+  "frontend:build": "pnpm desktop:build",
+  "assetdir": "cmd/aicouncil-desktop/frontend/dist"
+}
