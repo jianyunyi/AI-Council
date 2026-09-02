@@ -94,6 +94,9 @@ func TestRuntimeStartsLoopbackServicesWithIsolatedConfiguration(t *testing.T) {
 	if runner.Name != "runner" || council.Name != "council" {
 		t.Fatalf("process order = %q, %q, want runner then council", runner.Name, council.Name)
 	}
+	if runner.Stdout == nil || runner.Stderr == nil || council.Stdout == nil || council.Stderr == nil {
+		t.Fatal("child process output is not routed to bounded logs")
+	}
 
 	runnerHTTP := flagValue(t, runner.Args, "--listen")
 	runnerGRPC := flagValue(t, runner.Args, "--grpc-listen")

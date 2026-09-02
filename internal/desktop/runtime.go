@@ -130,6 +130,14 @@ func (r *Runtime) Start(ctx context.Context) error {
 	if err != nil {
 		return r.failStart("create session token")
 	}
+	runnerLog, err := newRotatingLogWriter(filepath.Join(r.options.Config.LogDir, "runner.log"), 0)
+	if err != nil {
+		return r.failStart("create runner log")
+	}
+	councilLog, err := newRotatingLogWriter(filepath.Join(r.options.Config.LogDir, "council.log"), 0)
+	if err != nil {
+		return r.failStart("create council log")
+	}
 
 	runnerArgs := []string{
 		"--listen", runnerHTTP,
@@ -160,16 +168,20 @@ func (r *Runtime) Start(ctx context.Context) error {
 
 	startContext := context.WithoutCancel(ctx)
 	runner, err := r.startChild(startContext, "runner", ProcessSpec{
-		Name: r.options.Config.RunnerBinary,
-		Args: runnerArgs,
+		Name:   r.options.Config.RunnerBinary,
+		Args:   runnerArgs,
+		Stdout: runnerLog,
+		Stderr: runnerLog,
 	})
 	if err != nil {
 		return r.failStart("start runner")
 	}
 	council, err := r.startChild(startContext, "council", ProcessSpec{
-		Name: r.options.Config.CouncilBinary,
-		Args: councilArgs,
-		Env:  cloneEnvironment(r.options.Environment),
+		Name:   r.options.Config.CouncilBinary,
+		Args:   councilArgs,
+		Env:    cloneEnvironment(r.options.Environment),
+		Stdout: councilLog,
+		Stderr: councilLog,
 	})
 	if err != nil {
 		r.setChildren([]*managedProcess{runner})
