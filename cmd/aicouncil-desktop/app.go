@@ -13,7 +13,10 @@ import (
 	"github.com/aicouncil/aicouncil/internal/desktop"
 )
 
-const desktopStartupTimeout = 30 * time.Second
+const (
+	desktopStartupTimeout = 30 * time.Second
+	desktopVersion        = "0.1.0"
+)
 
 type DesktopStatus struct {
 	State      desktop.RuntimeState `json:"state"`
@@ -114,6 +117,19 @@ func (a *DesktopApp) WebRuntime() (desktop.WebRuntime, error) {
 		return desktop.WebRuntime{}, errors.New("desktop services are not running")
 	}
 	return runtime.WebRuntime()
+}
+
+// ExportDiagnostics writes a support archive that excludes provider keys,
+// session tokens, workspaces, and artifacts.
+func (a *DesktopApp) ExportDiagnostics(destination string) (string, error) {
+	a.mu.Lock()
+	config := a.config
+	status := a.statusLocked()
+	a.mu.Unlock()
+	return desktop.ExportDiagnostics(destination, desktopVersion, config, desktop.RuntimeStatus{
+		State:      status.State,
+		CouncilURL: status.CouncilURL,
+	})
 }
 
 func (a *DesktopApp) OpenWorkspace(path string) error {

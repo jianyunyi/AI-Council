@@ -26,8 +26,10 @@ jobs:
           go build -o dist/AI-Council.exe ./cmd/aicouncil-desktop
           go build -o dist/council-server.exe ./cmd/council-server
           go build -o dist/workspace-runner.exe ./cmd/workspace-runner
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress --yes
       - name: Build Inno Setup installer
-        run: iscc build/windows/installer.iss
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" build/windows/installer.iss'
       - name: Create checksums
         run: Get-FileHash dist/AI-Council.exe,dist/installer/*.exe -Algorithm SHA256 | Format-Table -AutoSize | Out-File dist/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
