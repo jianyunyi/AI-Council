@@ -121,16 +121,25 @@ func TestRuntimeStartsLoopbackServicesWithIsolatedConfiguration(t *testing.T) {
 	if got := flagValue(t, council.Args, "--runner"); got != runnerGRPC {
 		t.Errorf("council runner address = %q, want %q", got, runnerGRPC)
 	}
+	if got := flagValue(t, council.Args, "--runner-token"); got != token {
+		t.Errorf("council runner token = %q, want shared session token", got)
+	}
+	if !hasFlag(council.Args, "--runner-tls") {
+		t.Errorf("council TLS runner flag missing from %v", council.Args)
+	}
 	for _, args := range [][]string{runner.Args, council.Args} {
 		if flagValue(t, args, "--tls-cert") != "desktop.crt" || flagValue(t, args, "--tls-key") != "desktop.key" {
 			t.Errorf("TLS flags missing from %v", args)
 		}
 	}
-	if flagValue(t, council.Args, "--rbac-role") != "desktop-user" || flagValue(t, council.Args, "--rbac-bootstrap-subject") != "local-user" {
+	if flagValue(t, council.Args, "--rbac-role") != "desktop-user" || flagValue(t, council.Args, "--rbac-bootstrap-subject") != "local-user" || flagValue(t, council.Args, "--rbac-bootstrap-token") != token {
 		t.Errorf("RBAC flags missing from %v", council.Args)
 	}
-	if got := runner.Env["OPENAI_API_KEY"]; got != "provider-secret" {
-		t.Errorf("runner environment secret = %q", got)
+	if got := council.Env["OPENAI_API_KEY"]; got != "provider-secret" {
+		t.Errorf("council environment secret = %q", got)
+	}
+	if _, ok := runner.Env["OPENAI_API_KEY"]; ok {
+		t.Error("provider key must not be injected into runner")
 	}
 	if strings.Contains(strings.Join(runner.Args, " ")+strings.Join(council.Args, " "), "provider-secret") {
 		t.Fatal("provider secret leaked into process arguments")
@@ -246,4 +255,13 @@ func flagValue(t *testing.T, args []string, flag string) string {
 	}
 	t.Fatalf("flag %s missing from %v", flag, args)
 	return ""
+}
+
+func hasFlag(args []string, flag string) bool {
+	for _, value := range args {
+		if value == flag {
+			return true
+		}
+	}
+	return false
 }

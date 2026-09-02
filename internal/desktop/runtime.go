@@ -145,17 +145,23 @@ func (r *Runtime) Start(ctx context.Context) error {
 		"--db", filepath.Join(r.options.Config.DataDir, "council.db"),
 		"--token", token,
 		"--runner", runnerGRPC,
+		"--runner-token", token,
 		"--tls-cert", r.options.TLSCert,
 		"--tls-key", r.options.TLSKey,
 		"--rbac-role", r.options.RBACRole,
 		"--rbac-bootstrap-subject", r.options.RBACSubject,
+	}
+	if r.options.TLSCert != "" && r.options.TLSKey != "" {
+		councilArgs = append(councilArgs, "--runner-tls")
+	}
+	if r.options.RBACRole != "" && r.options.RBACSubject != "" {
+		councilArgs = append(councilArgs, "--rbac-bootstrap-token", token)
 	}
 
 	startContext := context.WithoutCancel(ctx)
 	runner, err := r.startChild(startContext, "runner", ProcessSpec{
 		Name: r.options.Config.RunnerBinary,
 		Args: runnerArgs,
-		Env:  cloneEnvironment(r.options.Environment),
 	})
 	if err != nil {
 		return r.failStart("start runner")
@@ -163,6 +169,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	council, err := r.startChild(startContext, "council", ProcessSpec{
 		Name: r.options.Config.CouncilBinary,
 		Args: councilArgs,
+		Env:  cloneEnvironment(r.options.Environment),
 	})
 	if err != nil {
 		r.setChildren([]*managedProcess{runner})

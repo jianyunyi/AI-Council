@@ -11,6 +11,10 @@ import (
 func BearerAuth(expected string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/healthz" {
+				next.ServeHTTP(w, r)
+				return
+			}
 			if expected == "" {
 				next.ServeHTTP(w, r)
 				return
@@ -32,6 +36,10 @@ func BearerAuth(expected string) func(http.HandlerFunc) http.HandlerFunc {
 func RBACAuth(service *rbac.Service, role string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/healthz" {
+				next.ServeHTTP(w, r)
+				return
+			}
 			if service == nil {
 				http.Error(w, `{"error":{"code":"unauthorized","message":"rbac service unavailable"}}`, http.StatusUnauthorized)
 				return

@@ -20,3 +20,11 @@ func TestBearerAuthRejectsMissingAndAcceptsValidToken(t *testing.T) {
 	h.ServeHTTP(w, r)
 	require.Equal(t, 204, w.Code)
 }
+
+func TestBearerAuthAllowsUnauthenticatedHealthCheck(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	h := BearerAuth("secret")(next)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	require.Equal(t, http.StatusNoContent, w.Code)
+}

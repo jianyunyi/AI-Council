@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"gorm.io/gorm"
 )
 
@@ -40,6 +41,7 @@ func main() {
 	runnerAddr := flag.String("runner", "", "Runner gRPC address")
 	runnerTLS := flag.Bool("runner-tls", false, "Use TLS for Runner gRPC")
 	runnerTLSServerName := flag.String("runner-tls-server-name", "", "TLS server name for Runner gRPC")
+	runnerToken := flag.String("runner-token", "", "Runner gRPC bearer token")
 	flag.Parse()
 
 	host, port, err := splitListenAddress(*listen)
@@ -60,7 +62,7 @@ func main() {
 		if *runnerTLS {
 			creds = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13, ServerName: *runnerTLSServerName})
 		}
-		runnerConn, err = grpc.Dial(*runnerAddr, grpc.WithTransportCredentials(creds))
+		runnerConn, err = grpc.Dial(*runnerAddr, runnerDialOptions(creds, *runnerToken)...)
 		if err != nil {
 			panic(err)
 		}
@@ -104,6 +106,21 @@ func main() {
 	defer server.Stop()
 	fmt.Printf("council-server listening on %s\n", *listen)
 	server.Start()
+}
+
+func runnerDialOptions(creds credentials.TransportCredentials, token string) []grpc.DialOption {
+	options := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
+	if token == "" {
+		return options
+	}
+	return append(options, grpc.WithUnaryInterceptor(runnerAuthInterceptor(token)))
+}
+
+func runnerAuthInterceptor(token string) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, callOptions ...grpc.CallOption) error {
+		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+		return invoker(ctx, method, req, reply, cc, callOptions...)
+	}
 }
 
 func configuredWorkflow() *councilengine.Workflow {
