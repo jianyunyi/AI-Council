@@ -391,6 +391,9 @@ func (s *Service) PatchUser(ctx context.Context, subject string, password *strin
 			return err
 		}
 		if password != nil {
+			if *password == "" {
+				return ErrInvalidPassword
+			}
 			hash, err := HashPassword(*password)
 			if err != nil {
 				return err
@@ -413,6 +416,26 @@ func (s *Service) PatchUser(ctx context.Context, subject string, password *strin
 		return User{}, err
 	}
 	return s.userBySubject(ctx, subject)
+}
+
+// RevokePresentedToken revokes a current access token without evaluating its
+// user's enabled state. The boolean reports whether a revocable token existed.
+func (s *Service) RevokePresentedToken(ctx context.Context, token string) (bool, error) {
+	var record sqlite.AccessTokenRecord
+	if err := s.db.WithContext(ctx).Where("token_hash = ?", hashToken(token)).First(&record).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if record.RevokedAt != nil || !record.ExpiresAt.After(time.Now()) {
+		return false, nil
+	}
+	now := time.Now()
+	if err := s.db.WithContext(ctx).Model(&record).Update("revoked_at", &now).Error; err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Service) CreateManagedRole(ctx context.Context, name string, permissions []string) (Role, error) {

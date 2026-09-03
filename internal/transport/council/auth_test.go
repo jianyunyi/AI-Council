@@ -138,6 +138,27 @@ func TestRBACLogoutRevokesCookieAndBearerSessionsIdempotently(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
+func TestRBACLogoutRevokesDisabledUserSessionBeforeReenable(t *testing.T) {
+	service := newRBACService(t)
+	ctx := context.Background()
+	require.NoError(t, service.CreateUserWithPassword(ctx, "alice", "password"))
+	token, _, err := service.Login(ctx, "alice", "password", time.Hour)
+	require.NoError(t, err)
+	_, err = service.UpdateUser(ctx, "alice", "", nil, true)
+	require.NoError(t, err)
+	api := NewRBACAPI(service, SessionOptions{CookieSecure: false, TTL: time.Hour})
+	logout := routeHandler(t, api.Routes(), http.MethodPost, "/api/v1/auth/logout")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: "aicouncil_session", Value: token})
+	logout(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	_, err = service.UpdateUser(ctx, "alice", "", nil, false)
+	require.NoError(t, err)
+	_, err = service.Authenticate(ctx, token)
+	require.ErrorIs(t, err, rbac.ErrUnauthorized)
+}
+
 func TestSessionOptionsZeroValueUsesSecureDefaults(t *testing.T) {
 	options := normalizeSessionOptions(SessionOptions{})
 	require.Equal(t, "aicouncil_session", options.CookieName)
@@ -382,6 +403,7 @@ func TestRBACAdminPatchPreservesOmittedFieldsAndRequiresNonEmptyPatch(t *testing
 	require.Equal(t, http.StatusOK, passwordOnly.Code)
 	require.Contains(t, passwordOnly.Body.String(), `"disabled":true`)
 	require.Contains(t, passwordOnly.Body.String(), `"roles":["operator"]`)
+	require.Equal(t, http.StatusBadRequest, call(`{"password":""}`).Code)
 	require.Equal(t, http.StatusBadRequest, call(`{}`).Code)
 	rolesOnly := call(`{"roles":[]}`)
 	require.Equal(t, http.StatusOK, rolesOnly.Code)

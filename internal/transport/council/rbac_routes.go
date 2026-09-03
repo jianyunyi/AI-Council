@@ -153,47 +153,37 @@ func publicPermissions(permissions []rbac.Permission) []permissionResponse {
 }
 
 func (a *RBACAPI) logout(w http.ResponseWriter, r *http.Request) {
-	token, err := a.logoutToken(r)
-	if err != nil {
+	if err := a.revokeLogoutToken(r); err != nil {
 		writeInternal(w)
 		return
-	}
-	if token != "" {
-		if err := a.service.RevokeToken(r.Context(), token); err != nil && !errors.Is(err, rbac.ErrUnauthorized) {
-			writeInternal(w)
-			return
-		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: a.options.CookieName, Value: "", Path: "/", HttpOnly: true, Secure: a.options.CookieSecure, SameSite: http.SameSiteStrictMode, MaxAge: -1, Expires: time.Unix(1, 0)})
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *RBACAPI) logoutToken(r *http.Request) (string, error) {
+func (a *RBACAPI) revokeLogoutToken(r *http.Request) error {
 	if a.service == nil {
-		return "", errors.New("rbac service unavailable")
+		return errors.New("rbac service unavailable")
 	}
 	raw := strings.TrimSpace(r.Header.Get("Authorization"))
 	if len(raw) >= 7 && strings.EqualFold(raw[:7], "bearer ") {
 		token := strings.TrimSpace(raw[7:])
 		if token != "" {
-			if _, err := a.service.Authenticate(r.Context(), token); err == nil {
-				return token, nil
-			} else if !errors.Is(err, rbac.ErrUnauthorized) {
-				return "", err
+			revoked, err := a.service.RevokePresentedToken(r.Context(), token)
+			if err != nil {
+				return err
+			}
+			if revoked {
+				return nil
 			}
 		}
 	}
 	cookie, err := r.Cookie(a.options.CookieName)
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
-		return "", nil
+		return nil
 	}
-	if _, err := a.service.Authenticate(r.Context(), cookie.Value); err == nil {
-		return cookie.Value, nil
-	} else if errors.Is(err, rbac.ErrUnauthorized) {
-		return "", nil
-	} else {
-		return "", err
-	}
+	_, err = a.service.RevokePresentedToken(r.Context(), cookie.Value)
+	return err
 }
 
 func (a *RBACAPI) listUsers(w http.ResponseWriter, r *http.Request) {
