@@ -79,7 +79,10 @@ func NewServerWithAPIAndRBAC(conf rest.RestConf, api *API, service *rbac.Service
 // NewServerWithAPIAndRBACWithOptions adds password sessions to the persistent
 // RBAC server while preserving the original constructor for existing callers.
 func NewServerWithAPIAndRBACWithOptions(conf rest.RestConf, api *API, service *rbac.Service, role string, options SessionOptions) *rest.Server {
-	conf.Middlewares.Log = true
+	// go-zero's LogHandler dumps request bodies and headers for 5xx responses.
+	// RBAC endpoints carry passwords and session credentials, so retain only our
+	// metadata-only request logger below.
+	conf.Middlewares.Log = false
 	conf.Middlewares.Prometheus = true
 	conf.Middlewares.Metrics = true
 	conf.Middlewares.Recover = true
@@ -105,7 +108,7 @@ func NewTLSServerWithAPIAndRBACWithOptions(conf rest.RestConf, api *API, service
 		return nil, err
 	}
 	conf.CertFile, conf.KeyFile = certFile, keyFile
-	conf.Middlewares.Log, conf.Middlewares.Prometheus, conf.Middlewares.Metrics, conf.Middlewares.Recover = true, true, true, true
+	conf.Middlewares.Log, conf.Middlewares.Prometheus, conf.Middlewares.Metrics, conf.Middlewares.Recover = false, true, true, true
 	server, err := rest.NewServer(conf, rest.WithTLSConfig(reloader.Config()))
 	if err != nil {
 		return nil, err

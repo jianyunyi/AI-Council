@@ -95,6 +95,49 @@ func TestRBACLoginSetsSecureSessionCookieAndMeUsesIt(t *testing.T) {
 	require.Equal(t, -1, logout.Result().Cookies()[0].MaxAge)
 }
 
+func TestRBACLogoutRevokesCookieAndBearerSessionsIdempotently(t *testing.T) {
+	service := newRBACService(t)
+	ctx := context.Background()
+	require.NoError(t, service.CreateUserWithPassword(ctx, "alice", "password"))
+	api := NewRBACAPI(service, SessionOptions{CookieSecure: false, TTL: time.Hour})
+	login := routeHandler(t, api.Routes(), http.MethodPost, "/api/v1/auth/login")
+	issue := func() string {
+		rec := httptest.NewRecorder()
+		login(rec, httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"subject":"alice","password":"password"}`)))
+		require.Equal(t, http.StatusOK, rec.Code)
+		return rec.Result().Cookies()[0].Value
+	}
+	cookieToken, bearerToken := issue(), issue()
+	logout := routeHandler(t, api.Routes(), http.MethodPost, "/api/v1/auth/logout")
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
+	request.Header.Set("Authorization", "Bearer "+bearerToken)
+	request.AddCookie(&http.Cookie{Name: "aicouncil_session", Value: cookieToken})
+	rec := httptest.NewRecorder()
+	logout(rec, request)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	_, err := service.Authenticate(ctx, bearerToken)
+	require.ErrorIs(t, err, rbac.ErrUnauthorized)
+	_, err = service.Authenticate(ctx, cookieToken)
+	require.NoError(t, err, "a valid Bearer token must be revoked before the cookie token")
+
+	rec = httptest.NewRecorder()
+	logout(rec, request)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	cookieLogout := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
+	cookieLogout.AddCookie(&http.Cookie{Name: "aicouncil_session", Value: cookieToken})
+	rec = httptest.NewRecorder()
+	logout(rec, cookieLogout)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	_, err = service.Authenticate(ctx, cookieToken)
+	require.ErrorIs(t, err, rbac.ErrUnauthorized)
+	replay := RBACAuth(service, "")(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1", nil)
+	req.Header.Set("Authorization", "Bearer "+bearerToken)
+	replay(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
 func TestSessionOptionsZeroValueUsesSecureDefaults(t *testing.T) {
 	options := normalizeSessionOptions(SessionOptions{})
 	require.Equal(t, "aicouncil_session", options.CookieName)
@@ -261,6 +304,17 @@ func TestRBACLoginRateLimiterAdmitsAtMostFiveConcurrentFailures(t *testing.T) {
 	require.Equal(t, attempts-5, limited)
 }
 
+func TestRBACLoginLimiterGloballyPrunesExpiredClientsWithoutDroppingPending(t *testing.T) {
+	api := NewRBACAPI(nil, SessionOptions{CookieSecure: false, TTL: time.Hour})
+	now := time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)
+	api.now = func() time.Time { return now }
+	api.failures["stale"] = []time.Time{now.Add(-2 * time.Minute)}
+	api.pending["pending"] = 1
+	require.True(t, api.admitLoginAttempt("fresh"))
+	require.NotContains(t, api.failures, "stale")
+	require.Equal(t, 1, api.pending["pending"])
+}
+
 func TestRBACAdminUserAndRoleHandlersDoNotExposeSecrets(t *testing.T) {
 	service := newRBACService(t)
 	ctx := context.Background()
@@ -301,4 +355,41 @@ func TestRBACAdminUserAndRoleHandlersDoNotExposeSecrets(t *testing.T) {
 	unknown := call(http.MethodPost, "/api/v1/admin/users", `{"subject":"eve","password":"secret","roles":["missing"]}`, routeHandler(t, api.Routes(), http.MethodPost, "/api/v1/admin/users"))
 	require.Equal(t, http.StatusBadRequest, unknown.Code)
 	require.Contains(t, unknown.Body.String(), "unknown_role")
+}
+
+func TestRBACAdminPatchPreservesOmittedFieldsAndRequiresNonEmptyPatch(t *testing.T) {
+	service := newRBACService(t)
+	ctx := context.Background()
+	require.NoError(t, service.CreateUser(ctx, "admin", "token"))
+	require.NoError(t, service.CreateRole(ctx, "admin"))
+	require.NoError(t, service.GrantPermission(ctx, "admin", "admin:*"))
+	require.NoError(t, service.AssignRole(ctx, "admin", "admin"))
+	require.NoError(t, service.CreateRole(ctx, "operator"))
+	_, err := service.CreateManagedUser(ctx, "bob", "old", []string{"operator"})
+	require.NoError(t, err)
+	_, err = service.UpdateUser(ctx, "bob", "", []string{"operator"}, true)
+	require.NoError(t, err)
+	api := NewRBACAPI(service, SessionOptions{CookieSecure: false, TTL: time.Hour})
+	patchUser := RBACAuth(service, "")(routeHandler(t, api.Routes(), http.MethodPatch, "/api/v1/admin/users/:subject"))
+	call := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := pathvar.WithVars(httptest.NewRequest(http.MethodPatch, "/api/v1/admin/users/bob", bytes.NewBufferString(body)), map[string]string{"subject": "bob"})
+		req.Header.Set("Authorization", "Bearer token")
+		patchUser(rec, req)
+		return rec
+	}
+	passwordOnly := call(`{"password":"new"}`)
+	require.Equal(t, http.StatusOK, passwordOnly.Code)
+	require.Contains(t, passwordOnly.Body.String(), `"disabled":true`)
+	require.Contains(t, passwordOnly.Body.String(), `"roles":["operator"]`)
+	require.Equal(t, http.StatusBadRequest, call(`{}`).Code)
+	rolesOnly := call(`{"roles":[]}`)
+	require.Equal(t, http.StatusOK, rolesOnly.Code)
+	require.Contains(t, rolesOnly.Body.String(), `"roles":[]`)
+	patchRole := RBACAuth(service, "")(routeHandler(t, api.Routes(), http.MethodPatch, "/api/v1/admin/roles/:name"))
+	rec := httptest.NewRecorder()
+	req := pathvar.WithVars(httptest.NewRequest(http.MethodPatch, "/api/v1/admin/roles/operator", bytes.NewBufferString(`{}`)), map[string]string{"name": "operator"})
+	req.Header.Set("Authorization", "Bearer token")
+	patchRole(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }

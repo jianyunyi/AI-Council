@@ -58,6 +58,7 @@ func TestRBACPermissionAndTokenLifecycle(t *testing.T) {
 
 	identity, err := s.Authenticate(ctx, plain)
 	require.NoError(t, err)
+	require.WithinDuration(t, record.ExpiresAt, *identity.ExpiresAt, time.Second)
 	require.Equal(t, "alice", identity.Subject)
 	require.Contains(t, identity.Roles, "operator")
 	require.Contains(t, identity.Permissions, "task:read")

@@ -25,6 +25,8 @@ type RBACAPI struct {
 	now      func() time.Time
 }
 
+const limiterClientLimit = 1024
+
 func NewRBACAPI(service *rbac.Service, options SessionOptions) *RBACAPI {
 	return &RBACAPI{service: service, options: normalizeSessionOptions(options), failures: make(map[string][]time.Time), pending: make(map[string]int), now: time.Now}
 }
@@ -49,9 +51,10 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 type identityResponse struct {
-	Subject     string   `json:"subject"`
-	Roles       []string `json:"roles"`
-	Permissions []string `json:"permissions"`
+	Subject     string     `json:"subject"`
+	Roles       []string   `json:"roles"`
+	Permissions []string   `json:"permissions"`
+	ExpiresAt   *time.Time `json:"expires_at"`
 }
 type userResponse struct {
 	Subject  string   `json:"subject"`
@@ -70,6 +73,11 @@ type managedUserRequest struct {
 	Password string   `json:"password"`
 	Roles    []string `json:"roles"`
 	Disabled bool     `json:"disabled"`
+}
+type managedUserPatchRequest struct {
+	Password *string   `json:"password"`
+	Roles    *[]string `json:"roles"`
+	Disabled *bool     `json:"disabled"`
 }
 type managedRoleRequest struct {
 	Name        string   `json:"name"`
@@ -113,7 +121,7 @@ func (a *RBACAPI) me(w http.ResponseWriter, r *http.Request) {
 }
 
 func publicIdentity(identity rbac.Identity) identityResponse {
-	return identityResponse{Subject: identity.Subject, Roles: identity.Roles, Permissions: identity.Permissions}
+	return identityResponse{Subject: identity.Subject, Roles: identity.Roles, Permissions: identity.Permissions, ExpiresAt: identity.ExpiresAt}
 }
 
 func publicUser(user rbac.User) userResponse {
@@ -144,9 +152,48 @@ func publicPermissions(permissions []rbac.Permission) []permissionResponse {
 	return result
 }
 
-func (a *RBACAPI) logout(w http.ResponseWriter, _ *http.Request) {
+func (a *RBACAPI) logout(w http.ResponseWriter, r *http.Request) {
+	token, err := a.logoutToken(r)
+	if err != nil {
+		writeInternal(w)
+		return
+	}
+	if token != "" {
+		if err := a.service.RevokeToken(r.Context(), token); err != nil && !errors.Is(err, rbac.ErrUnauthorized) {
+			writeInternal(w)
+			return
+		}
+	}
 	http.SetCookie(w, &http.Cookie{Name: a.options.CookieName, Value: "", Path: "/", HttpOnly: true, Secure: a.options.CookieSecure, SameSite: http.SameSiteStrictMode, MaxAge: -1, Expires: time.Unix(1, 0)})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *RBACAPI) logoutToken(r *http.Request) (string, error) {
+	if a.service == nil {
+		return "", errors.New("rbac service unavailable")
+	}
+	raw := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(raw) >= 7 && strings.EqualFold(raw[:7], "bearer ") {
+		token := strings.TrimSpace(raw[7:])
+		if token != "" {
+			if _, err := a.service.Authenticate(r.Context(), token); err == nil {
+				return token, nil
+			} else if !errors.Is(err, rbac.ErrUnauthorized) {
+				return "", err
+			}
+		}
+	}
+	cookie, err := r.Cookie(a.options.CookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return "", nil
+	}
+	if _, err := a.service.Authenticate(r.Context(), cookie.Value); err == nil {
+		return cookie.Value, nil
+	} else if errors.Is(err, rbac.ErrUnauthorized) {
+		return "", nil
+	} else {
+		return "", err
+	}
 }
 
 func (a *RBACAPI) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -190,12 +237,12 @@ func (a *RBACAPI) createUser(w http.ResponseWriter, r *http.Request) {
 
 func (a *RBACAPI) updateUser(w http.ResponseWriter, r *http.Request) {
 	subject := strings.TrimSpace(pathvar.Vars(r)["subject"])
-	var in managedUserRequest
-	if subject == "" || json.NewDecoder(r.Body).Decode(&in) != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_user", "subject is required")
+	var in managedUserPatchRequest
+	if subject == "" || json.NewDecoder(r.Body).Decode(&in) != nil || (in.Password == nil && in.Roles == nil && in.Disabled == nil) {
+		writeErr(w, http.StatusBadRequest, "invalid_user", "subject and at least one update are required")
 		return
 	}
-	user, err := a.service.UpdateUser(r.Context(), subject, in.Password, in.Roles, in.Disabled)
+	user, err := a.service.PatchUser(r.Context(), subject, in.Password, in.Roles, in.Disabled)
 	if err != nil {
 		writeManagedError(w, err, "user")
 		return
@@ -220,8 +267,8 @@ func (a *RBACAPI) createRole(w http.ResponseWriter, r *http.Request) {
 func (a *RBACAPI) updateRole(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(pathvar.Vars(r)["name"])
 	var in managedRoleRequest
-	if name == "" || json.NewDecoder(r.Body).Decode(&in) != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_role", "name is required")
+	if name == "" || json.NewDecoder(r.Body).Decode(&in) != nil || in.Permissions == nil {
+		writeErr(w, http.StatusBadRequest, "invalid_role", "name and permissions are required")
 		return
 	}
 	role, err := a.service.ReplaceRolePermissions(r.Context(), name, in.Permissions)
@@ -256,7 +303,10 @@ func clientIP(r *http.Request) string {
 func (a *RBACAPI) admitLoginAttempt(ip string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.pruneFailures(ip)
+	a.pruneAllFailures()
+	if _, known := a.failures[ip]; !known && a.pending[ip] == 0 && a.limiterClients() >= limiterClientLimit {
+		return false
+	}
 	if len(a.failures[ip])+a.pending[ip] >= 5 {
 		return false
 	}
@@ -266,7 +316,7 @@ func (a *RBACAPI) admitLoginAttempt(ip string) bool {
 func (a *RBACAPI) completeLoginAttempt(ip string, failed bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.pruneFailures(ip)
+	a.pruneAllFailures()
 	if a.pending[ip] > 1 {
 		a.pending[ip]--
 	} else {
@@ -292,4 +342,20 @@ func (a *RBACAPI) pruneFailures(ip string) {
 	} else {
 		a.failures[ip] = keep
 	}
+}
+
+func (a *RBACAPI) pruneAllFailures() {
+	for ip := range a.failures {
+		a.pruneFailures(ip)
+	}
+}
+
+func (a *RBACAPI) limiterClients() int {
+	clients := len(a.failures)
+	for ip := range a.pending {
+		if _, exists := a.failures[ip]; !exists {
+			clients++
+		}
+	}
+	return clients
 }

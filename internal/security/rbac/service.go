@@ -23,6 +23,7 @@ type Identity struct {
 	Subject     string
 	Roles       []string
 	Permissions []string
+	ExpiresAt   *time.Time
 }
 
 // User is the safe public representation of a managed user.
@@ -78,7 +79,7 @@ func (s *Service) Login(ctx context.Context, subject, password string, ttl time.
 	if user.Disabled || user.PasswordHash == nil || VerifyPassword(*user.PasswordHash, password) != nil {
 		return "", Identity{}, ErrUnauthorized
 	}
-	token, _, err := s.issueTokenForUser(ctx, user, ttl)
+	token, record, err := s.issueTokenForUser(ctx, user, ttl)
 	if err != nil {
 		return "", Identity{}, err
 	}
@@ -86,6 +87,7 @@ func (s *Service) Login(ctx context.Context, subject, password string, ttl time.
 	if err != nil {
 		return "", Identity{}, err
 	}
+	identity.ExpiresAt = &record.ExpiresAt
 	return token, identity, nil
 }
 
@@ -254,7 +256,12 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Identity, err
 			record.RevokedAt != nil || !record.ExpiresAt.After(time.Now()) {
 			return Identity{}, ErrUnauthorized
 		}
-		return s.identityForUser(ctx, record.UserID)
+		identity, err := s.identityForUser(ctx, record.UserID)
+		if err != nil {
+			return Identity{}, err
+		}
+		identity.ExpiresAt = &record.ExpiresAt
+		return identity, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return Identity{}, fmt.Errorf("load access token: %w", err)
@@ -369,6 +376,38 @@ func (s *Service) UpdateUser(ctx context.Context, subject, password string, role
 			return err
 		}
 		return replaceUserRoles(tx, user.ID, roles)
+	})
+	if err != nil {
+		return User{}, err
+	}
+	return s.userBySubject(ctx, subject)
+}
+
+// PatchUser updates only fields explicitly supplied by the management API.
+func (s *Service) PatchUser(ctx context.Context, subject string, password *string, roles *[]string, disabled *bool) (User, error) {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user sqlite.UserRecord
+		if err := tx.Where("subject = ?", subject).First(&user).Error; err != nil {
+			return err
+		}
+		if password != nil {
+			hash, err := HashPassword(*password)
+			if err != nil {
+				return err
+			}
+			if err := tx.Model(&user).Update("password_hash", hash).Error; err != nil {
+				return err
+			}
+		}
+		if disabled != nil {
+			if err := tx.Model(&user).Update("disabled", *disabled).Error; err != nil {
+				return err
+			}
+		}
+		if roles != nil {
+			return replaceUserRoles(tx, user.ID, *roles)
+		}
+		return nil
 	})
 	if err != nil {
 		return User{}, err
