@@ -73,22 +73,30 @@ func NewTLSServerWithAPIAndAuth(conf rest.RestConf, api *API, token, certFile, k
 // NewServerWithAPIAndRBAC creates a REST server backed by the persistent
 // user/role database instead of a single shared bearer token.
 func NewServerWithAPIAndRBAC(conf rest.RestConf, api *API, service *rbac.Service, role string) *rest.Server {
+	return NewServerWithAPIAndRBACWithOptions(conf, api, service, role, defaultSessionOptions())
+}
+
+// NewServerWithAPIAndRBACWithOptions adds password sessions to the persistent
+// RBAC server while preserving the original constructor for existing callers.
+func NewServerWithAPIAndRBACWithOptions(conf rest.RestConf, api *API, service *rbac.Service, role string, options SessionOptions) *rest.Server {
 	conf.Middlewares.Log = true
 	conf.Middlewares.Prometheus = true
 	conf.Middlewares.Metrics = true
 	conf.Middlewares.Recover = true
 	server := rest.MustNewServer(conf)
 	server.Use(RequestLoggerWithMetrics(slog.Default(), api.metrics))
-	server.Use(RBACAuth(service, role))
-	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/healthz", Handler: healthHandler})
-	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/metrics", Handler: api.metrics.Handler})
-	for _, route := range api.Routes() {
-		server.AddRoute(route)
-	}
+	server.Use(RBACAuthWithOptions(service, role, options))
+	registerRBACServerRoutes(server, api, NewRBACAPI(service, options))
 	return server
 }
 
 func NewTLSServerWithAPIAndRBAC(conf rest.RestConf, api *API, service *rbac.Service, role, certFile, keyFile string) (*rest.Server, error) {
+	return NewTLSServerWithAPIAndRBACWithOptions(conf, api, service, role, certFile, keyFile, defaultSessionOptions())
+}
+
+// NewTLSServerWithAPIAndRBACWithOptions is the TLS equivalent of the options
+// constructor and uses the same route registration as the HTTP server.
+func NewTLSServerWithAPIAndRBACWithOptions(conf rest.RestConf, api *API, service *rbac.Service, role, certFile, keyFile string, options SessionOptions) (*rest.Server, error) {
 	if certFile == "" || keyFile == "" {
 		return nil, fmt.Errorf("tls certificate and key are required")
 	}
@@ -103,13 +111,20 @@ func NewTLSServerWithAPIAndRBAC(conf rest.RestConf, api *API, service *rbac.Serv
 		return nil, err
 	}
 	server.Use(RequestLoggerWithMetrics(slog.Default(), api.metrics))
-	server.Use(RBACAuth(service, role))
+	server.Use(RBACAuthWithOptions(service, role, options))
+	registerRBACServerRoutes(server, api, NewRBACAPI(service, options))
+	return server, nil
+}
+
+func registerRBACServerRoutes(server *rest.Server, api *API, rbacAPI *RBACAPI) {
 	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/healthz", Handler: healthHandler})
 	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/metrics", Handler: api.metrics.Handler})
 	for _, route := range api.Routes() {
 		server.AddRoute(route)
 	}
-	return server, nil
+	for _, route := range rbacAPI.Routes() {
+		server.AddRoute(route)
+	}
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {

@@ -1,12 +1,49 @@
 package council
 
 import (
+	"context"
 	"crypto/subtle"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/aicouncil/aicouncil/internal/security/rbac"
 )
+
+// SessionOptions configures the password-login cookie. A zero value uses safe
+// production defaults; callers can explicitly disable Secure for local HTTP
+// development by supplying any non-zero option set with CookieSecure false.
+type SessionOptions struct {
+	CookieName   string
+	CookieSecure bool
+	TTL          time.Duration
+}
+
+func defaultSessionOptions() SessionOptions {
+	return SessionOptions{CookieName: "aicouncil_session", CookieSecure: true, TTL: 8 * time.Hour}
+}
+
+func normalizeSessionOptions(options SessionOptions) SessionOptions {
+	if options == (SessionOptions{}) {
+		return defaultSessionOptions()
+	}
+	defaults := defaultSessionOptions()
+	if strings.TrimSpace(options.CookieName) == "" {
+		options.CookieName = defaults.CookieName
+	}
+	if options.TTL <= 0 {
+		options.TTL = defaults.TTL
+	}
+	return options
+}
+
+type identityContextKey struct{}
+
+// IdentityFromRequest returns the identity authenticated by RBACAuth.
+func IdentityFromRequest(r *http.Request) (rbac.Identity, bool) {
+	identity, ok := r.Context().Value(identityContextKey{}).(rbac.Identity)
+	return identity, ok
+}
 
 func BearerAuth(expected string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
@@ -34,37 +71,124 @@ func BearerAuth(expected string) func(http.HandlerFunc) http.HandlerFunc {
 // RBACAuth validates a bearer token against the persistent user/role store.
 // It can be layered on the REST server in place of the static token middleware.
 func RBACAuth(service *rbac.Service, role string) func(http.HandlerFunc) http.HandlerFunc {
+	return RBACAuthWithOptions(service, role, defaultSessionOptions())
+}
+
+// RBACAuthWithOptions authenticates first with a bearer token (for desktop and
+// CLI clients), then with the password-login session cookie. The retained role
+// argument is intentionally ignored: route permissions supersede the old
+// single-role gate while keeping source compatibility with existing callers.
+func RBACAuthWithOptions(service *rbac.Service, _ string, options SessionOptions) func(http.HandlerFunc) http.HandlerFunc {
+	options = normalizeSessionOptions(options)
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/healthz" {
+			if isPublicRBACPath(r.Method, r.URL.Path) {
 				next.ServeHTTP(w, r)
 				return
 			}
 			if service == nil {
-				http.Error(w, `{"error":{"code":"unauthorized","message":"rbac service unavailable"}}`, http.StatusUnauthorized)
+				writeRBACError(w, http.StatusUnauthorized, "unauthorized", "rbac service unavailable")
 				return
 			}
-			raw := strings.TrimSpace(r.Header.Get("Authorization"))
-			if len(raw) < 7 || !strings.EqualFold(raw[:7], "bearer ") {
-				writeAuthError(w, http.StatusUnauthorized, "valid bearer token required")
-				return
-			}
-			err := service.Authorize(r.Context(), strings.TrimSpace(raw[7:]), role)
-			if err == rbac.ErrForbidden {
-				writeAuthError(w, http.StatusForbidden, "insufficient role")
-				return
-			}
+			identity, bearerPresented, err := authenticateRBACRequest(r, service, options)
 			if err != nil {
-				writeAuthError(w, http.StatusUnauthorized, "invalid bearer token")
+				if err == rbac.ErrForbidden {
+					writeRBACError(w, http.StatusForbidden, "forbidden", "permission denied")
+					return
+				}
+				message := "valid bearer token or session required"
+				if bearerPresented {
+					message = "invalid bearer token"
+				}
+				writeRBACError(w, http.StatusUnauthorized, "unauthorized", message)
 				return
 			}
-			next.ServeHTTP(w, r)
+			permission, mapped := rbacRoutePermission(r.Method, r.URL.Path)
+			if !mapped {
+				writeRBACError(w, http.StatusForbidden, "forbidden", "permission denied")
+				return
+			}
+			if permission != "" && !identityHasPermission(identity, permission) {
+				writeRBACError(w, http.StatusForbidden, "forbidden", "permission denied")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityContextKey{}, identity)))
 		}
 	}
 }
 
+func authenticateRBACRequest(r *http.Request, service *rbac.Service, options SessionOptions) (rbac.Identity, bool, error) {
+	raw := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(raw) >= 7 && strings.EqualFold(raw[:7], "bearer ") {
+		identity, err := service.Authenticate(r.Context(), strings.TrimSpace(raw[7:]))
+		if err == nil {
+			return identity, true, nil
+		}
+		if err == rbac.ErrForbidden {
+			return rbac.Identity{}, true, err
+		}
+	}
+	cookie, err := r.Cookie(options.CookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return rbac.Identity{}, raw != "", rbac.ErrUnauthorized
+	}
+	identity, err := service.Authenticate(r.Context(), cookie.Value)
+	return identity, raw != "", err
+}
+
+func identityHasPermission(identity rbac.Identity, permission string) bool {
+	for _, granted := range identity.Permissions {
+		if granted == permission || (strings.HasSuffix(granted, ":*") && strings.HasPrefix(permission, strings.TrimSuffix(granted, "*"))) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPublicRBACPath(method, path string) bool {
+	return path == "/healthz" || path == "/metrics" || (method == http.MethodPost && (path == "/api/v1/auth/login" || path == "/api/v1/auth/logout"))
+}
+
+func rbacRoutePermission(method, path string) (string, bool) {
+	isTaskPath := strings.HasPrefix(path, "/api/v1/tasks/")
+	isAdminUsersPath := path == "/api/v1/admin/users" || strings.HasPrefix(path, "/api/v1/admin/users/")
+	isAdminRolesPath := path == "/api/v1/admin/roles" || strings.HasPrefix(path, "/api/v1/admin/roles/")
+	switch {
+	case method == http.MethodGet && path == "/api/v1/auth/me":
+		return "", true
+	case method == http.MethodGet && path == "/api/v1/workspaces":
+		return "workspace:read", true
+	case method == http.MethodPost && path == "/api/v1/workspaces":
+		return "workspace:write", true
+	case method == http.MethodPost && path == "/api/v1/providers/test":
+		return "workspace:write", true
+	case isTaskPath && method == http.MethodGet:
+		return "task:read", true
+	case method == http.MethodPost && path == "/api/v1/tasks":
+		return "task:write", true
+	case method == http.MethodPost && isTaskPath && strings.HasSuffix(path, "/approve"):
+		return "task:approve", true
+	case method == http.MethodPost && isTaskPath && strings.HasSuffix(path, "/execute"):
+		return "task:execute", true
+	case method == http.MethodPost && isTaskPath && (strings.HasSuffix(path, "/reject") || strings.HasSuffix(path, "/cancel") || strings.HasSuffix(path, "/start")):
+		return "task:write", true
+	case isAdminUsersPath && (method == http.MethodGet || method == http.MethodPost || method == http.MethodPatch):
+		return "admin:users", true
+	case isAdminRolesPath && (method == http.MethodGet || method == http.MethodPost || method == http.MethodPatch):
+		return "admin:roles", true
+	case method == http.MethodGet && path == "/api/v1/admin/permissions":
+		return "admin:permissions", true
+	default:
+		return "", false
+	}
+}
+
 func writeAuthError(w http.ResponseWriter, status int, message string) {
+	writeRBACError(w, status, "unauthorized", message)
+}
+
+func writeRBACError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"` + message + `"}}`))
+	_, _ = w.Write([]byte(`{"error":{"code":"` + code + `","message":"` + message + `"}}`))
 }
