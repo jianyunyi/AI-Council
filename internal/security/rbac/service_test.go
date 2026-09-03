@@ -369,3 +369,35 @@ func TestManagedProjectionsAndAtomicRoleValidation(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, roles)
 }
+
+func TestLoginUsesExactUserIdentityWhenIDAndSubjectCollide(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	hash, err := HashPassword("password")
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&sqlite.UserRecord{ID: "a", Subject: "z"}).Error)
+	require.NoError(t, db.Create(&sqlite.UserRecord{ID: "z", Subject: "attacker", PasswordHash: &hash}).Error)
+	token, _, err := New(db).Login(context.Background(), "attacker", "password", time.Hour)
+	require.NoError(t, err)
+	identity, err := New(db).Authenticate(context.Background(), token)
+	require.NoError(t, err)
+	require.Equal(t, "attacker", identity.Subject)
+}
+
+func TestManagedRolePermissionReplacementFindsExistingPermissionByName(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	ctx := context.Background()
+	require.NoError(t, db.Create(&sqlite.PermissionRecord{ID: "p1", Name: "task:read"}).Error)
+	s := New(db)
+	role, err := s.CreateManagedRole(ctx, "reader", []string{"task:read"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"task:read"}, role.Permissions)
+	role, err = s.ReplaceRolePermissions(ctx, "reader", []string{"task:read"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"task:read"}, role.Permissions)
+}

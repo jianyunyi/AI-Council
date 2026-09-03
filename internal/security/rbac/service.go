@@ -78,7 +78,7 @@ func (s *Service) Login(ctx context.Context, subject, password string, ttl time.
 	if user.Disabled || user.PasswordHash == nil || VerifyPassword(*user.PasswordHash, password) != nil {
 		return "", Identity{}, ErrUnauthorized
 	}
-	token, _, err := s.IssueToken(ctx, user.ID, ttl)
+	token, _, err := s.issueTokenForUser(ctx, user, ttl)
 	if err != nil {
 		return "", Identity{}, err
 	}
@@ -516,7 +516,7 @@ func replaceRolePermissions(tx *gorm.DB, roleName string, permissionNames []stri
 	permissions := make([]sqlite.PermissionRecord, 0, len(permissionNames))
 	for _, name := range permissionNames {
 		var permission sqlite.PermissionRecord
-		if err := tx.Where("name = ?", name).FirstOrCreate(&permission, &sqlite.PermissionRecord{ID: name, Name: name}).Error; err != nil {
+		if err := tx.Where("name = ?", name).Attrs(sqlite.PermissionRecord{ID: name, Name: name}).FirstOrCreate(&permission).Error; err != nil {
 			return err
 		}
 		permissions = append(permissions, permission)

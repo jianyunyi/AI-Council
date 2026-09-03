@@ -24,6 +24,10 @@ func (s *Service) IssueToken(ctx context.Context, userID string, ttl time.Durati
 		}
 		return "", sqlite.AccessTokenRecord{}, fmt.Errorf("load token user: %w", err)
 	}
+	return s.issueTokenForUser(ctx, user, ttl)
+}
+
+func (s *Service) issueTokenForUser(ctx context.Context, user sqlite.UserRecord, ttl time.Duration) (plain string, record sqlite.AccessTokenRecord, err error) {
 	if user.Disabled {
 		return "", sqlite.AccessTokenRecord{}, ErrUnauthorized
 	}
