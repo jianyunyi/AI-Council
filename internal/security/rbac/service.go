@@ -350,7 +350,7 @@ func (s *Service) CreateManagedUser(ctx context.Context, subject, password strin
 	return s.userBySubject(ctx, subject)
 }
 
-func (s *Service) UpdateUser(ctx context.Context, subject, password string, roles []string) (User, error) {
+func (s *Service) UpdateUser(ctx context.Context, subject, password string, roles []string, disabled bool) (User, error) {
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var user sqlite.UserRecord
 		if err := tx.Where("subject = ?", subject).First(&user).Error; err != nil {
@@ -364,6 +364,9 @@ func (s *Service) UpdateUser(ctx context.Context, subject, password string, role
 			if err := tx.Model(&user).Update("password_hash", hash).Error; err != nil {
 				return err
 			}
+		}
+		if err := tx.Model(&user).Update("disabled", disabled).Error; err != nil {
+			return err
 		}
 		return replaceUserRoles(tx, user.ID, roles)
 	})
