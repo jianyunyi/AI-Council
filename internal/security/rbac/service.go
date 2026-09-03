@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
@@ -23,6 +24,22 @@ type Identity struct {
 	Roles       []string
 	Permissions []string
 }
+
+// User is the safe public representation of a managed user.
+type User struct {
+	Subject  string
+	Disabled bool
+	Roles    []string
+}
+
+// Role is the safe public representation of a role and its permissions.
+type Role struct {
+	Name        string
+	Permissions []string
+}
+
+// Permission is the safe public representation of a permission.
+type Permission struct{ Name string }
 
 type Service struct{ db *gorm.DB }
 
@@ -47,6 +64,29 @@ func (s *Service) CreateUserWithPassword(ctx context.Context, subject, password 
 		Subject:      subject,
 		PasswordHash: &hash,
 	}).Error
+}
+
+// Login authenticates a password user and issues a revocable access token.
+func (s *Service) Login(ctx context.Context, subject, password string, ttl time.Duration) (string, Identity, error) {
+	var user sqlite.UserRecord
+	if err := s.db.WithContext(ctx).Where("subject = ?", subject).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", Identity{}, ErrUnauthorized
+		}
+		return "", Identity{}, fmt.Errorf("load login user: %w", err)
+	}
+	if user.Disabled || user.PasswordHash == nil || VerifyPassword(*user.PasswordHash, password) != nil {
+		return "", Identity{}, ErrUnauthorized
+	}
+	token, _, err := s.IssueToken(ctx, user.ID, ttl)
+	if err != nil {
+		return "", Identity{}, err
+	}
+	identity, err := s.identityForUser(ctx, user.ID)
+	if err != nil {
+		return "", Identity{}, err
+	}
+	return token, identity, nil
 }
 
 func (s *Service) SetPassword(ctx context.Context, subject, password string) error {
@@ -241,11 +281,134 @@ func (s *Service) AuthorizePermission(ctx context.Context, token, permission str
 		return err
 	}
 	for _, granted := range identity.Permissions {
-		if granted == permission {
+		if granted == permission || (strings.HasSuffix(granted, ":*") && strings.HasPrefix(permission, strings.TrimSuffix(granted, "*"))) {
 			return nil
 		}
 	}
 	return ErrForbidden
+}
+
+func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
+	var records []sqlite.UserRecord
+	if err := s.db.WithContext(ctx).Order("subject").Find(&records).Error; err != nil {
+		return nil, err
+	}
+	users := make([]User, 0, len(records))
+	for _, record := range records {
+		roles, err := s.rolesForUser(ctx, record.ID)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, User{Subject: record.Subject, Disabled: record.Disabled, Roles: roles})
+	}
+	return users, nil
+}
+
+func (s *Service) ListRoles(ctx context.Context) ([]Role, error) {
+	var records []sqlite.RoleRecord
+	if err := s.db.WithContext(ctx).Order("name").Find(&records).Error; err != nil {
+		return nil, err
+	}
+	roles := make([]Role, 0, len(records))
+	for _, record := range records {
+		permissions, err := s.permissionsForRole(ctx, record.ID)
+		if err != nil {
+			return nil, err
+		}
+		roles = append(roles, Role{Name: record.Name, Permissions: permissions})
+	}
+	return roles, nil
+}
+
+func (s *Service) ListPermissions(ctx context.Context) ([]Permission, error) {
+	var records []sqlite.PermissionRecord
+	if err := s.db.WithContext(ctx).Order("name").Find(&records).Error; err != nil {
+		return nil, err
+	}
+	permissions := make([]Permission, 0, len(records))
+	for _, record := range records {
+		permissions = append(permissions, Permission{Name: record.Name})
+	}
+	return permissions, nil
+}
+
+func (s *Service) CreateManagedUser(ctx context.Context, subject, password string, roles []string) (User, error) {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		hash, err := HashPassword(password)
+		if err != nil {
+			return err
+		}
+		user := sqlite.UserRecord{ID: subject, Subject: subject, PasswordHash: &hash}
+		if err := tx.Create(&user).Error; err != nil {
+			return err
+		}
+		return replaceUserRoles(tx, user.ID, roles)
+	})
+	if err != nil {
+		return User{}, err
+	}
+	return s.userBySubject(ctx, subject)
+}
+
+func (s *Service) UpdateUser(ctx context.Context, subject, password string, roles []string) (User, error) {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user sqlite.UserRecord
+		if err := tx.Where("subject = ?", subject).First(&user).Error; err != nil {
+			return err
+		}
+		if password != "" {
+			hash, err := HashPassword(password)
+			if err != nil {
+				return err
+			}
+			if err := tx.Model(&user).Update("password_hash", hash).Error; err != nil {
+				return err
+			}
+		}
+		return replaceUserRoles(tx, user.ID, roles)
+	})
+	if err != nil {
+		return User{}, err
+	}
+	return s.userBySubject(ctx, subject)
+}
+
+func (s *Service) CreateManagedRole(ctx context.Context, name string, permissions []string) (Role, error) {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&sqlite.RoleRecord{ID: name, Name: name}).Error; err != nil {
+			return err
+		}
+		return replaceRolePermissions(tx, name, permissions)
+	})
+	if err != nil {
+		return Role{}, err
+	}
+	roles, err := s.ListRoles(ctx)
+	if err != nil {
+		return Role{}, err
+	}
+	for _, role := range roles {
+		if role.Name == name {
+			return role, nil
+		}
+	}
+	return Role{}, gorm.ErrRecordNotFound
+}
+
+func (s *Service) ReplaceRolePermissions(ctx context.Context, name string, permissions []string) (Role, error) {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error { return replaceRolePermissions(tx, name, permissions) }); err != nil {
+		return Role{}, err
+	}
+	roles, err := s.ListRoles(ctx)
+	if err != nil {
+		return Role{}, err
+	}
+	for _, role := range roles {
+		if role.Name == name {
+			return role, nil
+		}
+	}
+	return Role{}, gorm.ErrRecordNotFound
 }
 
 func (s *Service) Authorize(ctx context.Context, token, role string) error {
@@ -292,6 +455,78 @@ func (s *Service) identityForUser(ctx context.Context, userID string) (Identity,
 		return Identity{}, fmt.Errorf("load identity permissions: %w", err)
 	}
 	return identity, nil
+}
+
+func (s *Service) userBySubject(ctx context.Context, subject string) (User, error) {
+	var record sqlite.UserRecord
+	if err := s.db.WithContext(ctx).Where("subject = ?", subject).First(&record).Error; err != nil {
+		return User{}, err
+	}
+	roles, err := s.rolesForUser(ctx, record.ID)
+	if err != nil {
+		return User{}, err
+	}
+	return User{Subject: record.Subject, Disabled: record.Disabled, Roles: roles}, nil
+}
+
+func (s *Service) rolesForUser(ctx context.Context, userID string) ([]string, error) {
+	roles := []string{}
+	err := s.db.WithContext(ctx).Model(&sqlite.RoleRecord{}).Distinct("role_records.name").
+		Joins("JOIN user_role_records ON user_role_records.role_id = role_records.id").
+		Where("user_role_records.user_id = ?", userID).Order("role_records.name").Pluck("role_records.name", &roles).Error
+	return roles, err
+}
+
+func (s *Service) permissionsForRole(ctx context.Context, roleID string) ([]string, error) {
+	permissions := []string{}
+	err := s.db.WithContext(ctx).Model(&sqlite.PermissionRecord{}).Distinct("permission_records.name").
+		Joins("JOIN role_permission_records ON role_permission_records.permission_id = permission_records.id").
+		Where("role_permission_records.role_id = ?", roleID).Order("permission_records.name").Pluck("permission_records.name", &permissions).Error
+	return permissions, err
+}
+
+func replaceUserRoles(tx *gorm.DB, userID string, roleNames []string) error {
+	roles := make([]sqlite.RoleRecord, 0, len(roleNames))
+	for _, name := range roleNames {
+		var role sqlite.RoleRecord
+		if err := tx.Where("name = ?", name).First(&role).Error; err != nil {
+			return err
+		}
+		roles = append(roles, role)
+	}
+	if err := tx.Where("user_id = ?", userID).Delete(&sqlite.UserRoleRecord{}).Error; err != nil {
+		return err
+	}
+	for _, role := range roles {
+		if err := tx.Create(&sqlite.UserRoleRecord{UserID: userID, RoleID: role.ID}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func replaceRolePermissions(tx *gorm.DB, roleName string, permissionNames []string) error {
+	var role sqlite.RoleRecord
+	if err := tx.Where("name = ?", roleName).First(&role).Error; err != nil {
+		return err
+	}
+	permissions := make([]sqlite.PermissionRecord, 0, len(permissionNames))
+	for _, name := range permissionNames {
+		var permission sqlite.PermissionRecord
+		if err := tx.Where("name = ?", name).FirstOrCreate(&permission, &sqlite.PermissionRecord{ID: name, Name: name}).Error; err != nil {
+			return err
+		}
+		permissions = append(permissions, permission)
+	}
+	if err := tx.Where("role_id = ?", role.ID).Delete(&sqlite.RolePermissionRecord{}).Error; err != nil {
+		return err
+	}
+	for _, permission := range permissions {
+		if err := tx.Create(&sqlite.RolePermissionRecord{RoleID: role.ID, PermissionID: permission.ID}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func hashToken(token string) string {

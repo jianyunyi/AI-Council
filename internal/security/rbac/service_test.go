@@ -11,6 +11,7 @@ import (
 
 	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestRBACAuthorizeByRole(t *testing.T) {
@@ -306,4 +307,62 @@ func TestAuthenticateUnknownToken(t *testing.T) {
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	_, err = New(db).Authenticate(context.Background(), "unknown")
 	require.True(t, errors.Is(err, ErrUnauthorized))
+}
+
+func TestLoginWithPasswordReturnsTokenAndIdentity(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	s := New(db)
+	ctx := context.Background()
+	require.NoError(t, s.CreateUserWithPassword(ctx, "alice", "password"))
+
+	token, identity, err := s.Login(ctx, "alice", "password", time.Hour)
+	require.NoError(t, err)
+	require.NotEmpty(t, token)
+	require.Equal(t, "alice", identity.Subject)
+
+	_, _, err = s.Login(ctx, "alice", "wrong", time.Hour)
+	require.ErrorIs(t, err, ErrUnauthorized)
+}
+
+func TestAuthorizePermissionSupportsNamespaceWildcards(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	s := New(db)
+	ctx := context.Background()
+	require.NoError(t, s.CreateUserWithPassword(ctx, "alice", "password"))
+	require.NoError(t, s.CreateRole(ctx, "admin"))
+	require.NoError(t, s.GrantPermission(ctx, "admin", "admin:*"))
+	require.NoError(t, s.AssignRole(ctx, "alice", "admin"))
+	token, _, err := s.IssueToken(ctx, "alice", time.Hour)
+	require.NoError(t, err)
+	require.NoError(t, s.AuthorizePermission(ctx, token, "admin:users"))
+	require.ErrorIs(t, s.AuthorizePermission(ctx, token, "billing:users"), ErrForbidden)
+}
+
+func TestManagedProjectionsAndAtomicRoleValidation(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	s := New(db)
+	ctx := context.Background()
+	require.NoError(t, s.CreateRole(ctx, "reader"))
+	require.NoError(t, s.CreateRole(ctx, "writer"))
+	managed, err := s.CreateManagedUser(ctx, "alice", "password", []string{"reader"})
+	require.NoError(t, err)
+	require.Equal(t, User{Subject: "alice", Roles: []string{"reader"}}, managed)
+	require.Equal(t, User{Subject: "alice", Roles: []string{"reader"}}, managed)
+	_, err = s.UpdateUser(ctx, "alice", "", []string{"missing"})
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	users, err := s.ListUsers(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []string{"reader"}, users[0].Roles)
+	roles, err := s.ListRoles(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, roles)
 }
