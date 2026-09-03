@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -167,6 +168,29 @@ func TestRBACAuthEnforcesTaskAndAdminPermissionsAndKeepsHealthPublic(t *testing.
 	require.Equal(t, http.StatusNoContent, call(http.MethodGet, "/api/v1/admin/users", "admin-token").Code)
 }
 
+func TestRBACAuthDeniesUnknownTaskAndAdminDescendants(t *testing.T) {
+	service := newRBACService(t)
+	ctx := context.Background()
+	require.NoError(t, service.CreateUser(ctx, "reader", "reader-token"))
+	require.NoError(t, service.CreateRole(ctx, "reader"))
+	require.NoError(t, service.AssignRole(ctx, "reader", "reader"))
+	require.NoError(t, service.GrantPermission(ctx, "reader", "task:read"))
+	require.NoError(t, service.CreateUser(ctx, "admin", "admin-token"))
+	require.NoError(t, service.CreateRole(ctx, "admin"))
+	require.NoError(t, service.AssignRole(ctx, "admin", "admin"))
+	require.NoError(t, service.GrantPermission(ctx, "admin", "admin:users"))
+	h := RBACAuth(service, "")(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	call := func(path, token string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		h(rec, req)
+		return rec
+	}
+	require.Equal(t, http.StatusForbidden, call("/api/v1/tasks/id/sensitive", "reader-token").Code)
+	require.Equal(t, http.StatusForbidden, call("/api/v1/admin/users/alice/secret", "admin-token").Code)
+}
+
 func TestRBACLoginRateLimitAndSuccessfulLoginClearsFailures(t *testing.T) {
 	service := newRBACService(t)
 	require.NoError(t, service.CreateUserWithPassword(context.Background(), "alice", "password"))
@@ -189,6 +213,43 @@ func TestRBACLoginRateLimitAndSuccessfulLoginClearsFailures(t *testing.T) {
 	limited := call("wrong")
 	require.Equal(t, http.StatusTooManyRequests, limited.Code)
 	require.Contains(t, limited.Body.String(), "login_rate_limited")
+}
+
+func TestRBACLoginRateLimiterAdmitsAtMostFiveConcurrentFailures(t *testing.T) {
+	service := newRBACService(t)
+	require.NoError(t, service.CreateUserWithPassword(context.Background(), "alice", "password"))
+	api := NewRBACAPI(service, SessionOptions{CookieSecure: false, TTL: time.Hour})
+	login := routeHandler(t, api.Routes(), http.MethodPost, "/api/v1/auth/login")
+	const attempts = 16
+	start := make(chan struct{})
+	results := make(chan int, attempts)
+	var group sync.WaitGroup
+	for range attempts {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"subject":"alice","password":"wrong"}`))
+			req.RemoteAddr = net.JoinHostPort("192.0.2.44", "1234")
+			login(rec, req)
+			results <- rec.Code
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(results)
+	unauthorized, limited := 0, 0
+	for status := range results {
+		if status == http.StatusUnauthorized {
+			unauthorized++
+		}
+		if status == http.StatusTooManyRequests {
+			limited++
+		}
+	}
+	require.Equal(t, 5, unauthorized)
+	require.Equal(t, attempts-5, limited)
 }
 
 func TestRBACAdminUserAndRoleHandlersDoNotExposeSecrets(t *testing.T) {

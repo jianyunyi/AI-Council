@@ -150,9 +150,6 @@ func isPublicRBACPath(method, path string) bool {
 }
 
 func rbacRoutePermission(method, path string) (string, bool) {
-	isTaskPath := strings.HasPrefix(path, "/api/v1/tasks/")
-	isAdminUsersPath := path == "/api/v1/admin/users" || strings.HasPrefix(path, "/api/v1/admin/users/")
-	isAdminRolesPath := path == "/api/v1/admin/roles" || strings.HasPrefix(path, "/api/v1/admin/roles/")
 	switch {
 	case method == http.MethodGet && path == "/api/v1/auth/me":
 		return "", true
@@ -162,25 +159,67 @@ func rbacRoutePermission(method, path string) (string, bool) {
 		return "workspace:write", true
 	case method == http.MethodPost && path == "/api/v1/providers/test":
 		return "workspace:write", true
-	case isTaskPath && method == http.MethodGet:
-		return "task:read", true
 	case method == http.MethodPost && path == "/api/v1/tasks":
 		return "task:write", true
-	case method == http.MethodPost && isTaskPath && strings.HasSuffix(path, "/approve"):
-		return "task:approve", true
-	case method == http.MethodPost && isTaskPath && strings.HasSuffix(path, "/execute"):
-		return "task:execute", true
-	case method == http.MethodPost && isTaskPath && (strings.HasSuffix(path, "/reject") || strings.HasSuffix(path, "/cancel") || strings.HasSuffix(path, "/start")):
-		return "task:write", true
-	case isAdminUsersPath && (method == http.MethodGet || method == http.MethodPost || method == http.MethodPatch):
-		return "admin:users", true
-	case isAdminRolesPath && (method == http.MethodGet || method == http.MethodPost || method == http.MethodPatch):
-		return "admin:roles", true
 	case method == http.MethodGet && path == "/api/v1/admin/permissions":
 		return "admin:permissions", true
-	default:
+	}
+	if permission, ok := taskRoutePermission(method, path); ok {
+		return permission, true
+	}
+	if (path == "/api/v1/admin/users" && (method == http.MethodGet || method == http.MethodPost)) || (exactOrSingleSegment(path, "/api/v1/admin/users") && method == http.MethodPatch) {
+		return "admin:users", true
+	}
+	if (path == "/api/v1/admin/roles" && (method == http.MethodGet || method == http.MethodPost)) || (exactOrSingleSegment(path, "/api/v1/admin/roles") && method == http.MethodPatch) {
+		return "admin:roles", true
+	}
+	return "", false
+}
+
+func taskRoutePermission(method, path string) (string, bool) {
+	const prefix = "/api/v1/tasks/"
+	if !strings.HasPrefix(path, prefix) {
 		return "", false
 	}
+	parts := strings.Split(strings.TrimPrefix(path, prefix), "/")
+	for _, part := range parts {
+		if part == "" {
+			return "", false
+		}
+	}
+	if len(parts) == 1 && method == http.MethodGet {
+		return "task:read", true
+	}
+	if len(parts) == 2 {
+		if method == http.MethodGet && parts[1] == "events" {
+			return "task:read", true
+		}
+		if method == http.MethodPost {
+			switch parts[1] {
+			case "start", "reject", "cancel":
+				return "task:write", true
+			case "approve":
+				return "task:approve", true
+			case "execute":
+				return "task:execute", true
+			}
+		}
+	}
+	if len(parts) == 3 && method == http.MethodGet && parts[1] == "artifacts" {
+		return "task:read", true
+	}
+	return "", false
+}
+
+func exactOrSingleSegment(path, base string) bool {
+	if path == base {
+		return true
+	}
+	if !strings.HasPrefix(path, base+"/") {
+		return false
+	}
+	segment := strings.TrimPrefix(path, base+"/")
+	return segment != "" && !strings.Contains(segment, "/")
 }
 
 func writeAuthError(w http.ResponseWriter, status int, message string) {

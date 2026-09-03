@@ -21,11 +21,12 @@ type RBACAPI struct {
 	options  SessionOptions
 	mu       sync.Mutex
 	failures map[string][]time.Time
+	pending  map[string]int
 	now      func() time.Time
 }
 
 func NewRBACAPI(service *rbac.Service, options SessionOptions) *RBACAPI {
-	return &RBACAPI{service: service, options: normalizeSessionOptions(options), failures: make(map[string][]time.Time), now: time.Now}
+	return &RBACAPI{service: service, options: normalizeSessionOptions(options), failures: make(map[string][]time.Time), pending: make(map[string]int), now: time.Now}
 }
 
 func (a *RBACAPI) Routes() []rest.Route {
@@ -82,21 +83,22 @@ func (a *RBACAPI) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	if a.rateLimited(ip) {
+	if !a.admitLoginAttempt(ip) {
 		writeErr(w, http.StatusTooManyRequests, "login_rate_limited", "too many failed login attempts")
 		return
 	}
 	if a.service == nil {
+		a.completeLoginAttempt(ip, true)
 		writeErr(w, http.StatusUnauthorized, "unauthorized", "invalid credentials")
 		return
 	}
 	token, identity, err := a.service.Login(r.Context(), strings.TrimSpace(in.Subject), in.Password, a.options.TTL)
 	if err != nil {
-		a.recordFailure(ip)
+		a.completeLoginAttempt(ip, true)
 		writeErr(w, http.StatusUnauthorized, "unauthorized", "invalid credentials")
 		return
 	}
-	a.clearFailures(ip)
+	a.completeLoginAttempt(ip, false)
 	http.SetCookie(w, &http.Cookie{Name: a.options.CookieName, Value: token, Path: "/", HttpOnly: true, Secure: a.options.CookieSecure, SameSite: http.SameSiteStrictMode, MaxAge: int(a.options.TTL.Seconds()), Expires: a.now().Add(a.options.TTL)})
 	writeData(w, http.StatusOK, publicIdentity(identity))
 }
@@ -251,19 +253,31 @@ func clientIP(r *http.Request) string {
 	}
 	return "unknown"
 }
-func (a *RBACAPI) rateLimited(ip string) bool {
+func (a *RBACAPI) admitLoginAttempt(ip string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.pruneFailures(ip)
-	return len(a.failures[ip]) >= 5
+	if len(a.failures[ip])+a.pending[ip] >= 5 {
+		return false
+	}
+	a.pending[ip]++
+	return true
 }
-func (a *RBACAPI) recordFailure(ip string) {
+func (a *RBACAPI) completeLoginAttempt(ip string, failed bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.pruneFailures(ip)
-	a.failures[ip] = append(a.failures[ip], a.now())
+	if a.pending[ip] > 1 {
+		a.pending[ip]--
+	} else {
+		delete(a.pending, ip)
+	}
+	if failed {
+		a.failures[ip] = append(a.failures[ip], a.now())
+	} else {
+		delete(a.failures, ip)
+	}
 }
-func (a *RBACAPI) clearFailures(ip string) { a.mu.Lock(); defer a.mu.Unlock(); delete(a.failures, ip) }
 func (a *RBACAPI) pruneFailures(ip string) {
 	cutoff := a.now().Add(-time.Minute)
 	attempts := a.failures[ip]
