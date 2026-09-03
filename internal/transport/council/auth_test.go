@@ -189,6 +189,15 @@ func TestRBACAuthDeniesUnknownTaskAndAdminDescendants(t *testing.T) {
 	}
 	require.Equal(t, http.StatusForbidden, call("/api/v1/tasks/id/sensitive", "reader-token").Code)
 	require.Equal(t, http.StatusForbidden, call("/api/v1/admin/users/alice/secret", "admin-token").Code)
+	patch := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPatch, path, nil)
+		req.Header.Set("Authorization", "Bearer admin-token")
+		h(rec, req)
+		return rec
+	}
+	require.Equal(t, http.StatusForbidden, patch("/api/v1/admin/users").Code)
+	require.Equal(t, http.StatusForbidden, patch("/api/v1/admin/roles").Code)
 }
 
 func TestRBACLoginRateLimitAndSuccessfulLoginClearsFailures(t *testing.T) {

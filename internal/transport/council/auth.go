@@ -167,10 +167,10 @@ func rbacRoutePermission(method, path string) (string, bool) {
 	if permission, ok := taskRoutePermission(method, path); ok {
 		return permission, true
 	}
-	if (path == "/api/v1/admin/users" && (method == http.MethodGet || method == http.MethodPost)) || (exactOrSingleSegment(path, "/api/v1/admin/users") && method == http.MethodPatch) {
+	if (path == "/api/v1/admin/users" && (method == http.MethodGet || method == http.MethodPost)) || (singleSegment(path, "/api/v1/admin/users") && method == http.MethodPatch) {
 		return "admin:users", true
 	}
-	if (path == "/api/v1/admin/roles" && (method == http.MethodGet || method == http.MethodPost)) || (exactOrSingleSegment(path, "/api/v1/admin/roles") && method == http.MethodPatch) {
+	if (path == "/api/v1/admin/roles" && (method == http.MethodGet || method == http.MethodPost)) || (singleSegment(path, "/api/v1/admin/roles") && method == http.MethodPatch) {
 		return "admin:roles", true
 	}
 	return "", false
@@ -211,10 +211,7 @@ func taskRoutePermission(method, path string) (string, bool) {
 	return "", false
 }
 
-func exactOrSingleSegment(path, base string) bool {
-	if path == base {
-		return true
-	}
+func singleSegment(path, base string) bool {
 	if !strings.HasPrefix(path, base+"/") {
 		return false
 	}
