@@ -44,12 +44,17 @@ func (r *routeRunner) ExecuteApprovedPlan(_ context.Context, req *runnerv1.Execu
 	return &runnerv1.ExecuteApprovedPlanResponse{RequestId: req.RequestId, Status: "SUCCEEDED"}, nil
 }
 
+func registerWorkspace(a *API, id string) {
+	a.workspaces[id] = workspace{ID: id, Root: "/workspace"}
+}
+
 func TestPersistentAPIRehydratesTasksAndEvents(t *testing.T) {
 	db, err := storage.Open(filepath.Join(t.TempDir(), "db.sqlite"))
 	require.NoError(t, err)
 	sqlDB, _ := db.DB()
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	a := NewPersistentAPI(db)
+	registerWorkspace(a, "ws")
 	routes := a.Routes()
 	var create func(http.ResponseWriter, *http.Request)
 	for _, r := range routes {
@@ -95,12 +100,49 @@ func TestPersistentAPIRehydratesWorkspaceFacts(t *testing.T) {
 	}
 }
 
+func TestCreateTaskRejectsUnknownWorkspace(t *testing.T) {
+	a := NewAPI()
+	var create func(http.ResponseWriter, *http.Request)
+	for _, route := range a.Routes() {
+		if route.Method == http.MethodPost && route.Path == "/api/v1/tasks" {
+			create = route.Handler
+		}
+	}
+	rec := httptest.NewRecorder()
+	create(rec, httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewBufferString(`{"workspace_id":"missing","requirement":"ship","acceptance":["ok"]}`)))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "unknown_workspace")
+}
+
+func TestCreateWorkspaceReusesRegisteredRoot(t *testing.T) {
+	a := NewAPI()
+	var create func(http.ResponseWriter, *http.Request)
+	for _, route := range a.Routes() {
+		if route.Method == http.MethodPost && route.Path == "/api/v1/workspaces" {
+			create = route.Handler
+		}
+	}
+	request := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		create(rec, httptest.NewRequest(http.MethodPost, "/api/v1/workspaces", bytes.NewBufferString(`{"root":"/workspace"}`)))
+		return rec
+	}
+	first, second := request(), request()
+	require.Equal(t, http.StatusCreated, first.Code)
+	require.Equal(t, http.StatusOK, second.Code)
+	var firstEnvelope, secondEnvelope responseEnvelope
+	require.NoError(t, json.Unmarshal(first.Body.Bytes(), &firstEnvelope))
+	require.NoError(t, json.Unmarshal(second.Body.Bytes(), &secondEnvelope))
+	require.Equal(t, firstEnvelope.Data.(map[string]any)["id"], secondEnvelope.Data.(map[string]any)["id"])
+}
+
 func TestPersistentAPIRestoresSequenceAcrossRestart(t *testing.T) {
 	db, err := storage.Open(filepath.Join(t.TempDir(), "db.sqlite"))
 	require.NoError(t, err)
 	sqlDB, _ := db.DB()
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	create := func(a *API) string {
+		registerWorkspace(a, "ws")
 		var handler func(http.ResponseWriter, *http.Request)
 		for _, route := range a.Routes() {
 			if route.Method == http.MethodPost && route.Path == "/api/v1/tasks" {
@@ -121,6 +163,7 @@ func TestPersistentAPIRestoresSequenceAcrossRestart(t *testing.T) {
 
 func TestTaskLifecycleRequiresApproval(t *testing.T) {
 	a := NewAPI()
+	registerWorkspace(a, "ws-1")
 	routes := a.Routes()
 	find := func(method, path string) func(http.ResponseWriter, *http.Request) {
 		for _, x := range routes {
@@ -173,6 +216,7 @@ func TestPersistentAPIExecutesCouncilPlanThroughRunner(t *testing.T) {
 	council := &routeCouncil{}
 	runner := &routeRunner{}
 	a := NewPersistentAPI(db).WithCouncil(council).WithRunnerClient(runner)
+	registerWorkspace(a, "ws")
 	find := func(method, path string) func(http.ResponseWriter, *http.Request) {
 		for _, x := range a.Routes() {
 			if x.Method == method && x.Path == path {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -163,10 +164,18 @@ func (a *API) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid_workspace", "root is required")
 		return
 	}
+	root := filepath.Clean(strings.TrimSpace(in.Root))
 	a.mu.Lock()
+	for _, existing := range a.workspaces {
+		if existing.Root == root {
+			a.mu.Unlock()
+			writeData(w, http.StatusOK, existing)
+			return
+		}
+	}
 	a.nextID++
 	id := "workspace-" + strconv.FormatInt(a.nextID, 10)
-	ws := workspace{ID: id, Root: in.Root, IsGit: false}
+	ws := workspace{ID: id, Root: root, IsGit: false}
 	if describer, ok := a.runnerClient.(workspaceDescriber); ok {
 		if info, err := describer.DescribeWorkspace(r.Context(), &runnerv1.DescribeWorkspaceRequest{WorkspaceId: id}); err == nil {
 			ws.Root, ws.IsGit, ws.Dirty = info.Root, info.IsGit, info.Dirty
@@ -195,6 +204,11 @@ func (a *API) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
+	if _, ok := a.workspaces[in.WorkspaceID]; !ok {
+		a.mu.Unlock()
+		writeErr(w, http.StatusBadRequest, "unknown_workspace", "workspace must be registered before creating a task")
+		return
+	}
 	a.nextID++
 	id := "task-" + strconv.FormatInt(a.nextID, 10)
 	t := &task{ID: id, State: "DRAFT", WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, Acceptance: in.Acceptance, PlanVersion: 1}
