@@ -10,6 +10,19 @@
 
 ---
 
+## Execution status
+
+- [x] Task 1: service implementation, specification review, quality review (through `dba63c55`).
+- [x] Task 2: REST, session security fixes and real-stack log regression (`502bb6fd`); specification and quality reviews approved.
+- [ ] Task 3: deployment/bootstrap integration (in progress).
+- [ ] Task 4: web session/API foundation (in progress).
+- [ ] Task 5: account and administration screens.
+- [ ] Task 6: real-service browser harness (in progress); browser acceptance and final verification pending UI integration.
+
+Execution notes: use the installed `node` executable if the cached runtime path shown below is unavailable. The tracked Caddy configuration is `deploy/Caddyfile`. The service uses safe transport projections for JSON; the implemented managed-user methods return projections rather than only errors.
+
+The approved design remains authoritative where the illustrative task snippets omit behavior: logout must revoke persisted sessions, identity responses include the actual `expires_at`, PATCH preserves omitted fields, and the server supplies a standard permission catalog. Both `admin:users` and `admin:roles` can expose the administration navigation, with each section independently guarded. Windows browser verification can use installed Edge (`PLAYWRIGHT_CHANNEL=msedge`, new headless mode), which passed a launch probe.
+
 ## File structure
 
 - Modify: `internal/security/rbac/service.go` — password login, wildcard-aware authorization, and safe RBAC projections/mutations.

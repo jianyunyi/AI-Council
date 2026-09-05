@@ -17,7 +17,7 @@ export function getDesktopRuntime(): DesktopRuntime | undefined {
 }
 
 export function apiBase(): string {
-  return getDesktopRuntime()?.apiBase ?? process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:18080/api/v1'
+  return getDesktopRuntime()?.apiBase ?? (process.env.NEXT_PUBLIC_API_BASE || '/api/v1')
 }
 
 export function authorizationHeader(): Record<string, string> {

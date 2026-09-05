@@ -207,31 +207,8 @@ func (s *Service) BootstrapAdmin(ctx context.Context, subject, password string, 
 			}
 		}
 
-		roleSeed := sqlite.RoleRecord{ID: "admin", Name: "admin"}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&roleSeed).Error; err != nil {
-			return fmt.Errorf("create admin role: %w", err)
-		}
-		var role sqlite.RoleRecord
-		if err := tx.Where("name = ?", "admin").First(&role).Error; err != nil {
-			return fmt.Errorf("load admin role: %w", err)
-		}
-		permissionSeed := sqlite.PermissionRecord{ID: "admin:*", Name: "admin:*"}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&permissionSeed).Error; err != nil {
-			return fmt.Errorf("create admin permission: %w", err)
-		}
-		var permission sqlite.PermissionRecord
-		if err := tx.Where("name = ?", "admin:*").First(&permission).Error; err != nil {
-			return fmt.Errorf("load admin permission: %w", err)
-		}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(
-			&sqlite.UserRoleRecord{UserID: user.ID, RoleID: role.ID},
-		).Error; err != nil {
-			return fmt.Errorf("assign admin role: %w", err)
-		}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(
-			&sqlite.RolePermissionRecord{RoleID: role.ID, PermissionID: permission.ID},
-		).Error; err != nil {
-			return fmt.Errorf("grant admin permission: %w", err)
+		if err := grantBootstrapPermissions(tx, user.ID, "admin"); err != nil {
+			return err
 		}
 
 		if !created {

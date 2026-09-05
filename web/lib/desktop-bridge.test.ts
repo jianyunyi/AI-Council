@@ -2,7 +2,7 @@ import {afterEach,describe,expect,it,vi} from 'vitest'
 import {desktopBridge} from './desktop-bridge'
 
 describe('Wails desktop bridge',()=>{
-  afterEach(()=>vi.unstubAllGlobals())
+  afterEach(()=>{vi.unstubAllGlobals()})
 
   it('uses only the explicitly bound DesktopApp methods',async()=>{
 	const saveProviderKey=vi.fn().mockResolvedValue(undefined)

@@ -1,4 +1,17 @@
 :443 {
-  reverse_proxy council:8080
   tls {$TLS_CERT} {$TLS_KEY}
+
+  handle /api/* {
+    reverse_proxy {$COUNCIL_UPSTREAM:council:8080}
+  }
+
+  # Health and metrics deliberately reach Council rather than the web server.
+  @observability path /healthz /metrics
+  handle @observability {
+    reverse_proxy {$COUNCIL_UPSTREAM:council:8080}
+  }
+
+  handle {
+    reverse_proxy {$WEB_UPSTREAM:web:3000}
+  }
 }

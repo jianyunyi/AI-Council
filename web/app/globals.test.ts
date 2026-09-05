@@ -10,7 +10,7 @@ describe('global visual system', () => {
       expect(stylesheet).toContain(selector)
     }
     expect(stylesheet).toMatch(/--card-radius:\s*16px/)
-    expect(stylesheet).toMatch(/\.card\s*\{[^}]*border-radius:\s*var\(--card-radius\)/s)
+    expect(stylesheet).toMatch(/\.card\s*\{[\s\S]*?border-radius:\s*var\(--card-radius\)/)
     expect(stylesheet).toContain(':focus-visible')
   })
 
@@ -39,11 +39,25 @@ describe('global visual system', () => {
   })
 
   it('caps the mobile orbit without contradictory height constraints', () => {
-    expect(stylesheet).toMatch(/@media\s*\(max-width:\s*800px\)\s*\{[\s\S]*?\.council-orbit\s*\{[^}]*height:\s*min\(350px,\s*55svh\)[^}]*min-height:\s*0/s)
-    expect(stylesheet).not.toMatch(/@media\s*\(max-width:\s*800px\)\s*\{[\s\S]*?\.council-orbit\s*\{[^}]*min-height:\s*350px[^}]*max-height:\s*55svh/s)
+    expect(stylesheet).toMatch(/@media\s*\(max-width:\s*800px\)\s*\{[\s\S]*?\.council-orbit\s*\{[^}]*height:\s*min\(350px,\s*55svh\)[^}]*min-height:\s*0/)
+    expect(stylesheet).not.toMatch(/@media\s*\(max-width:\s*800px\)\s*\{[\s\S]*?\.council-orbit\s*\{[^}]*min-height:\s*350px[^}]*max-height:\s*55svh/)
   })
 
   it('gives the approval checkbox label a 44px touch target', () => {
-    expect(stylesheet).toMatch(/label:has\(input\[type="checkbox"\]\)\s*\{[^}]*min-height:\s*44px[^}]*align-items:\s*center/s)
+    expect(stylesheet).toMatch(/label:has\(input\[type="checkbox"\]\)\s*\{[^}]*min-height:\s*44px[^}]*align-items:\s*center/)
+  })
+
+  it('styles the complete RBAC path and operational states', () => {
+    for (const selector of ['.auth-layout', '.auth-card', '.identity-band', '.management-columns', '.management-table', '.editor-panel', '.status-chip']) {
+      expect(stylesheet).toContain(selector)
+    }
+    expect(stylesheet).toContain('::selection')
+    expect(stylesheet).toContain('scrollbar-color')
+    expect(stylesheet).toContain('.sr-only')
+    expect(stylesheet).toMatch(/@media\s*\(max-width:\s*800px\)[\s\S]*?\.management-columns\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+  })
+
+  it('keeps display tracking within the Impeccable craft floor', () => {
+    expect(stylesheet).not.toMatch(/letter-spacing:\s*-\.(?:0[5-9]|[1-9]\d)em/)
   })
 })
