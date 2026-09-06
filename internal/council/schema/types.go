@@ -1,10 +1,15 @@
 package schema
 
 type TaskBrief struct {
-	Requirement    string     `json:"requirement"`
-	Constraints    []string   `json:"constraints"`
-	Acceptance     []string   `json:"acceptance"`
-	WorkspaceFacts []Evidence `json:"workspace_facts"`
+	Requirement    string          `json:"requirement"`
+	Constraints    []string        `json:"constraints"`
+	Acceptance     []string        `json:"acceptance"`
+	WorkspaceFacts []Evidence      `json:"workspace_facts"`
+	WorkspaceFiles []WorkspaceFile `json:"workspace_files"`
+}
+type WorkspaceFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
 }
 type Evidence struct {
 	Path  string `json:"path"`
@@ -38,6 +43,7 @@ type CouncilDecision struct {
 	Reasons         []string            `json:"reasons"`
 	Rejected        map[string][]string `json:"rejected"`
 	PlanSummary     []string            `json:"plan_summary"`
+	Plan            ExecutionPlan       `json:"plan"`
 }
 type RedTeamReport struct {
 	Blocking       []string `json:"blocking"`
@@ -57,11 +63,12 @@ type Patch struct {
 	BeforeHash  string `json:"before_hash"`
 }
 type ExecutionPlan struct {
-	Version    int       `json:"version"`
-	Patches    []Patch   `json:"patches"`
-	Commands   []Command `json:"commands"`
-	Acceptance []string  `json:"acceptance"`
-	Recovery   []string  `json:"recovery"`
+	Version              int       `json:"version"`
+	Patches              []Patch   `json:"patches"`
+	Commands             []Command `json:"commands"`
+	VerificationCommands []Command `json:"verification_commands"`
+	Acceptance           []string  `json:"acceptance"`
+	Recovery             []string  `json:"recovery"`
 }
 type StepResult struct {
 	Kind           string `json:"kind"`

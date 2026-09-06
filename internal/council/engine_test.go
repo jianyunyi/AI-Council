@@ -96,3 +96,45 @@ func TestReviewIsBlindAndNeverSelfReviews(t *testing.T) {
 		p.mu.Unlock()
 	}
 }
+
+func TestBuildExecutionPlanRejectsEmptyDecisionPlan(t *testing.T) {
+	_, err := BuildExecutionPlan(schema.CouncilDecision{Plan: schema.ExecutionPlan{Version: 1}}, schema.RedTeamReport{}, []string{"task acceptance"})
+	require.Error(t, err)
+}
+
+func TestBuildExecutionPlanUsesValidatedDecisionPlanAndTaskAcceptance(t *testing.T) {
+	decision := schema.CouncilDecision{Plan: schema.ExecutionPlan{
+		Version:              1,
+		Patches:              []schema.Patch{{Path: "internal/example.go", UnifiedDiff: "@@ -1 +1 @@\n-old\n+new\n"}},
+		Commands:             []schema.Command{{Executable: "go", Args: []string{"test", "./..."}, TimeoutSeconds: 30}},
+		VerificationCommands: []schema.Command{{Executable: "go", Args: []string{"vet", "./..."}, TimeoutSeconds: 30}},
+		Acceptance:           []string{"judge acceptance"},
+	}}
+
+	got, err := BuildExecutionPlan(decision, schema.RedTeamReport{}, []string{"task acceptance"})
+	require.NoError(t, err)
+	require.Equal(t, decision.Plan.Patches, got.Patches)
+	require.Equal(t, decision.Plan.Commands, got.Commands)
+	require.Equal(t, decision.Plan.VerificationCommands, got.VerificationCommands)
+	require.Equal(t, []string{"task acceptance"}, got.Acceptance)
+}
+
+func TestBuildExecutionPlanRejectsRedTeamBlockers(t *testing.T) {
+	decision := schema.CouncilDecision{Plan: schema.ExecutionPlan{Version: 1, Commands: []schema.Command{{Executable: "go", TimeoutSeconds: 30}}}}
+	_, err := BuildExecutionPlan(decision, schema.RedTeamReport{Blocking: []string{"unsafe"}}, nil)
+	require.Error(t, err)
+}
+
+func TestProposeIncludesWorkspaceFilesInPrompt(t *testing.T) {
+	p := &recordingProvider{name: "one"}
+	e := NewEngine(provider.NewRegistry(p), nil, Limits{})
+	_, err := e.Propose(context.Background(), schema.TaskBrief{
+		Requirement:    "add a test",
+		WorkspaceFiles: []schema.WorkspaceFile{{Path: "internal/example.go", Content: "package example"}},
+	}, []Seat{{ID: "s1", Provider: "one", Model: "m1"}})
+	require.NoError(t, err)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	require.Contains(t, p.requests[0].Messages[0].Content, "internal/example.go")
+	require.Contains(t, p.requests[0].Messages[0].Content, "package example")
+}

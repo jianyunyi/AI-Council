@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -199,7 +201,24 @@ func BuildExecutionPlan(decision schema.CouncilDecision, report schema.RedTeamRe
 	if len(report.Blocking) > 0 {
 		return schema.ExecutionPlan{}, errors.New("red-team report contains blocking findings")
 	}
-	plan := schema.ExecutionPlan{Version: 1, Acceptance: append([]string(nil), acceptance...), Recovery: []string{"restore workspace snapshot if verification fails"}}
+	plan := decision.Plan
+	if len(plan.Patches) == 0 && len(plan.Commands) == 0 {
+		return schema.ExecutionPlan{}, errors.New("execution plan must include patches or commands")
+	}
+	if plan.Version <= 0 {
+		return schema.ExecutionPlan{}, errors.New("execution plan version must be positive")
+	}
+	for _, patch := range plan.Patches {
+		if strings.TrimSpace(patch.Path) == "" || filepath.IsAbs(patch.Path) {
+			return schema.ExecutionPlan{}, errors.New("execution plan patch path must be a nonempty relative path")
+		}
+	}
+	for _, command := range append(append([]schema.Command(nil), plan.Commands...), plan.VerificationCommands...) {
+		if strings.TrimSpace(command.Executable) == "" || command.TimeoutSeconds <= 0 {
+			return schema.ExecutionPlan{}, errors.New("execution plan commands require an executable and positive timeout")
+		}
+	}
+	plan.Acceptance = append([]string(nil), acceptance...)
 	return plan, nil
 }
 
