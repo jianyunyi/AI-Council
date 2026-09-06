@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -89,6 +90,35 @@ func TestCollectorUsesDefaultLimits(t *testing.T) {
 	require.Len(t, snapshot.Files, defaultMaxFiles)
 	require.Equal(t, "file-000.txt", snapshot.Files[0].Path)
 	require.Equal(t, "file-199.txt", snapshot.Files[len(snapshot.Files)-1].Path)
+}
+
+func TestCollectorUsesDefaultPerFileByteLimit(t *testing.T) {
+	root := t.TempDir()
+	atLimit := strings.Repeat("a", defaultMaxFileBytes)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "at-limit.txt"), []byte(atLimit), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "over-limit.txt"), []byte(atLimit+"x"), 0o600))
+
+	snapshot, err := NewCollector(Limits{}).Collect(context.Background(), root)
+	require.NoError(t, err)
+	require.Equal(t, []File{{Path: "at-limit.txt", Content: atLimit}}, snapshot.Files)
+}
+
+func TestCollectorUsesDefaultTotalByteLimit(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Repeat("a", defaultMaxFileBytes)
+	fileCount := int(defaultMaxTotalBytes / defaultMaxFileBytes)
+	for index := 0; index < fileCount; index++ {
+		name := filepath.Join(root, "file-"+fmt.Sprintf("%03d", index)+".txt")
+		require.NoError(t, os.WriteFile(name, []byte(content), 0o600))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "overflow.txt"), []byte("x"), 0o600))
+
+	snapshot, err := NewCollector(Limits{}).Collect(context.Background(), root)
+	require.NoError(t, err)
+	require.Len(t, snapshot.Files, fileCount)
+	require.Equal(t, "file-000.txt", snapshot.Files[0].Path)
+	require.Equal(t, "file-031.txt", snapshot.Files[len(snapshot.Files)-1].Path)
+	require.NotContains(t, snapshot.Files, File{Path: "overflow.txt", Content: "x"})
 }
 
 func TestCollectorReturnsFilesInSortedOrder(t *testing.T) {
