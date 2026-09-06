@@ -3,6 +3,7 @@ package council
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -137,4 +138,69 @@ func TestProposeIncludesWorkspaceFilesInPrompt(t *testing.T) {
 	defer p.mu.Unlock()
 	require.Contains(t, p.requests[0].Messages[0].Content, "internal/example.go")
 	require.Contains(t, p.requests[0].Messages[0].Content, "package example")
+}
+
+func TestProposeRejectsWorkspaceFilesOutsideContextEnvelopeBeforeProvider(t *testing.T) {
+	maxFileBytes := 64 << 10
+	cases := []struct {
+		name  string
+		files []schema.WorkspaceFile
+	}{
+		{
+			name:  "more than 200 files",
+			files: make([]schema.WorkspaceFile, 201),
+		},
+		{
+			name:  "file content larger than 64 KiB",
+			files: []schema.WorkspaceFile{{Path: "large.go", Content: strings.Repeat("x", maxFileBytes+1)}},
+		},
+		{
+			name: "combined UTF-8 content larger than 2 MiB",
+			files: func() []schema.WorkspaceFile {
+				files := make([]schema.WorkspaceFile, 33)
+				for i := range files {
+					files[i] = schema.WorkspaceFile{Path: "file.go", Content: strings.Repeat("x", maxFileBytes)}
+				}
+				return files
+			}(),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &recordingProvider{name: "one"}
+			e := NewEngine(provider.NewRegistry(p), nil, Limits{})
+
+			_, err := e.Propose(context.Background(), schema.TaskBrief{WorkspaceFiles: tc.files}, []Seat{{ID: "s1", Provider: "one", Model: "m1"}})
+
+			require.Error(t, err)
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			require.Empty(t, p.requests)
+		})
+	}
+}
+
+func TestBuildExecutionPlanRejectsInvalidPlanFields(t *testing.T) {
+	validCommand := schema.Command{Executable: "go", TimeoutSeconds: 30}
+	cases := []struct {
+		name string
+		plan schema.ExecutionPlan
+	}{
+		{name: "nonpositive version", plan: schema.ExecutionPlan{Version: 0, Commands: []schema.Command{validCommand}}},
+		{name: "absolute patch path", plan: schema.ExecutionPlan{Version: 1, Patches: []schema.Patch{{Path: `C:\\outside.go`}}}},
+		{name: "traversal patch path", plan: schema.ExecutionPlan{Version: 1, Patches: []schema.Patch{{Path: "../outside.go"}}}},
+		{name: "empty patch path", plan: schema.ExecutionPlan{Version: 1, Patches: []schema.Patch{{Path: " "}}}},
+		{name: "blank command executable", plan: schema.ExecutionPlan{Version: 1, Commands: []schema.Command{{Executable: " ", TimeoutSeconds: 30}}}},
+		{name: "nonpositive command timeout", plan: schema.ExecutionPlan{Version: 1, Commands: []schema.Command{{Executable: "go", TimeoutSeconds: 0}}}},
+		{name: "blank verification executable", plan: schema.ExecutionPlan{Version: 1, Commands: []schema.Command{validCommand}, VerificationCommands: []schema.Command{{Executable: " ", TimeoutSeconds: 30}}}},
+		{name: "nonpositive verification timeout", plan: schema.ExecutionPlan{Version: 1, Commands: []schema.Command{validCommand}, VerificationCommands: []schema.Command{{Executable: "go", TimeoutSeconds: -1}}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := BuildExecutionPlan(schema.CouncilDecision{Plan: tc.plan}, schema.RedTeamReport{}, nil)
+			require.Error(t, err)
+		})
+	}
 }
