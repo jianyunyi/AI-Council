@@ -55,3 +55,22 @@ func TestDescribeWorkspaceDetectsGitAndStacks(t *testing.T) {
 	require.True(t, resp.IsGit)
 	require.Contains(t, resp.DetectedStacks, "go")
 }
+
+func TestReadWorkspaceContextUsesConfiguredRootAndSafeFiles(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET=value\n"), 0o600))
+
+	svc, err := NewService(root)
+	require.NoError(t, err)
+	described, err := svc.DescribeWorkspace(context.Background(), &runnerv1.DescribeWorkspaceRequest{})
+	require.NoError(t, err)
+
+	resp, err := svc.ReadWorkspaceContext(context.Background(), &runnerv1.ReadWorkspaceContextRequest{WorkspaceId: "untrusted-workspace-id"})
+	require.NoError(t, err)
+	require.Equal(t, described.Root, resp.Root)
+	require.Equal(t, described.IsGit, resp.IsGit)
+	require.Equal(t, described.Dirty, resp.Dirty)
+	require.Equal(t, []*runnerv1.WorkspaceFile{{Path: "main.go", Content: "package main\n"}}, resp.Files)
+}

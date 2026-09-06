@@ -11,6 +11,7 @@ import (
 	"github.com/aicouncil/aicouncil/internal/approval"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	"github.com/aicouncil/aicouncil/internal/runner/command"
+	runnercontext "github.com/aicouncil/aicouncil/internal/runner/context"
 	"github.com/aicouncil/aicouncil/internal/runner/files"
 	"github.com/aicouncil/aicouncil/internal/runner/idempotency"
 	"github.com/aicouncil/aicouncil/internal/runner/pathguard"
@@ -27,6 +28,7 @@ type Service struct {
 	executor    *command.Executor
 	transaction *files.Transaction
 	idem        *idempotency.Store
+	collector   *runnercontext.Collector
 }
 
 func NewService(root string) (*Service, error) {
@@ -41,17 +43,11 @@ func NewServiceWithDB(root string, db *gorm.DB) (*Service, error) {
 	if db != nil {
 		idem = idempotency.NewWithDB(db)
 	}
-	return &Service{root: guard.Root(), guard: guard, executor: command.NewExecutor(guard), transaction: files.NewTransaction(guard), idem: idem}, nil
+	return &Service{root: guard.Root(), guard: guard, executor: command.NewExecutor(guard), transaction: files.NewTransaction(guard), idem: idem, collector: runnercontext.NewCollector(runnercontext.Limits{})}, nil
 }
 func (s *Service) DescribeWorkspace(ctx context.Context, _ *runnerv1.DescribeWorkspaceRequest) (*runnerv1.DescribeWorkspaceResponse, error) {
-	resp := &runnerv1.DescribeWorkspaceResponse{Root: s.root}
-	if _, err := os.Stat(s.root + string(os.PathSeparator) + ".git"); err == nil {
-		resp.IsGit = true
-		cmd := exec.CommandContext(ctx, "git", "-C", s.root, "status", "--porcelain")
-		if out, e := cmd.Output(); e == nil {
-			resp.Dirty = len(strings.TrimSpace(string(out))) > 0
-		}
-	}
+	root, isGit, dirty := s.workspaceState(ctx)
+	resp := &runnerv1.DescribeWorkspaceResponse{Root: root, IsGit: isGit, Dirty: dirty}
 	if _, err := os.Stat(s.root + string(os.PathSeparator) + "go.mod"); err == nil {
 		resp.DetectedStacks = append(resp.DetectedStacks, "go")
 	}
@@ -59,6 +55,31 @@ func (s *Service) DescribeWorkspace(ctx context.Context, _ *runnerv1.DescribeWor
 		resp.DetectedStacks = append(resp.DetectedStacks, "node")
 	}
 	return resp, nil
+}
+
+func (s *Service) ReadWorkspaceContext(ctx context.Context, _ *runnerv1.ReadWorkspaceContextRequest) (*runnerv1.ReadWorkspaceContextResponse, error) {
+	snapshot, err := s.collector.Collect(ctx, s.root)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "collect workspace context: %v", err)
+	}
+	root, isGit, dirty := s.workspaceState(ctx)
+	resp := &runnerv1.ReadWorkspaceContextResponse{Root: root, IsGit: isGit, Dirty: dirty}
+	for _, file := range snapshot.Files {
+		resp.Files = append(resp.Files, &runnerv1.WorkspaceFile{Path: file.Path, Content: file.Content})
+	}
+	return resp, nil
+}
+
+func (s *Service) workspaceState(ctx context.Context) (root string, isGit bool, dirty bool) {
+	root = s.root
+	if _, err := os.Stat(s.root + string(os.PathSeparator) + ".git"); err == nil {
+		isGit = true
+		cmd := exec.CommandContext(ctx, "git", "-C", s.root, "status", "--porcelain")
+		if out, e := cmd.Output(); e == nil {
+			dirty = len(strings.TrimSpace(string(out))) > 0
+		}
+	}
+	return root, isGit, dirty
 }
 func (s *Service) GetExecution(_ context.Context, req *runnerv1.GetExecutionRequest) (*runnerv1.ExecuteApprovedPlanResponse, error) {
 	if v, ok := s.idem.Get(req.RequestId); ok {
