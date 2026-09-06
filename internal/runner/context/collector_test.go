@@ -38,6 +38,28 @@ func TestCollectorExcludesSymlinkedFiles(t *testing.T) {
 	require.Empty(t, snapshot.Files)
 }
 
+func TestReadAtMostRefusesSymlinkAtOpen(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "secret.txt")
+	link := filepath.Join(root, "candidate.txt")
+	require.NoError(t, os.WriteFile(target, []byte("secret\n"), 0o600))
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	_, err := readAtMost(link, 100)
+	require.Error(t, err)
+}
+
+func TestCollectorExcludesAllDotEnvFiles(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".envrc"), []byte("SECRET=value\n"), 0o600))
+
+	snapshot, err := NewCollector(Limits{}).Collect(context.Background(), root)
+	require.NoError(t, err)
+	require.Empty(t, snapshot.Files)
+}
+
 func TestCollectorExcludesRegularGitFile(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: ../shared/.git/worktrees/worktree\n"), 0o600))

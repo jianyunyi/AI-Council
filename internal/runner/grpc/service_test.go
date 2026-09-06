@@ -7,11 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/aicouncil/aicouncil/internal/approval"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestExecuteApprovedPlanAppliesPatchAndIsIdempotent(t *testing.T) {
@@ -73,4 +76,24 @@ func TestReadWorkspaceContextUsesConfiguredRootAndSafeFiles(t *testing.T) {
 	require.Equal(t, described.IsGit, resp.IsGit)
 	require.Equal(t, described.Dirty, resp.Dirty)
 	require.Equal(t, []*runnerv1.WorkspaceFile{{Path: "main.go", Content: "package main\n"}}, resp.Files)
+}
+
+func TestReadWorkspaceContextMapsCanceledContextToCanceled(t *testing.T) {
+	svc, err := NewService(t.TempDir())
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = svc.ReadWorkspaceContext(ctx, &runnerv1.ReadWorkspaceContextRequest{})
+	require.Equal(t, codes.Canceled, status.Code(err))
+}
+
+func TestReadWorkspaceContextMapsExpiredContextToDeadlineExceeded(t *testing.T) {
+	svc, err := NewService(t.TempDir())
+	require.NoError(t, err)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err = svc.ReadWorkspaceContext(ctx, &runnerv1.ReadWorkspaceContextRequest{})
+	require.Equal(t, codes.DeadlineExceeded, status.Code(err))
 }

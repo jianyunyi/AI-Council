@@ -3,6 +3,7 @@ package context
 
 import (
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -105,6 +106,9 @@ func (c *Collector) Collect(ctx context.Context, root string) (Snapshot, error) 
 		}
 		content, err := readAtMost(path, maxBytes)
 		if err != nil {
+			if errors.Is(err, errUnsafePath) {
+				return nil
+			}
 			return err
 		}
 		if content == nil || strings.IndexByte(string(content), 0) >= 0 || !utf8.Valid(content) {
@@ -126,7 +130,7 @@ func (c *Collector) Collect(ctx context.Context, root string) (Snapshot, error) 
 }
 
 func readAtMost(path string, maxBytes int64) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := openNoFollow(path)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +148,7 @@ func readAtMost(path string, maxBytes int64) ([]byte, error) {
 
 func refusedName(name string) bool {
 	lower := strings.ToLower(name)
-	if lower == ".env" || strings.HasPrefix(lower, ".env.") ||
+	if strings.HasPrefix(lower, ".env") ||
 		lower == ".netrc" || lower == "_netrc" || lower == ".npmrc" ||
 		lower == "id_rsa" || lower == "id_dsa" || lower == "id_ecdsa" || lower == "id_ed25519" {
 		return true

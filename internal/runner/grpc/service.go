@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -60,6 +61,12 @@ func (s *Service) DescribeWorkspace(ctx context.Context, _ *runnerv1.DescribeWor
 func (s *Service) ReadWorkspaceContext(ctx context.Context, _ *runnerv1.ReadWorkspaceContextRequest) (*runnerv1.ReadWorkspaceContextResponse, error) {
 	snapshot, err := s.collector.Collect(ctx, s.root)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, status.Error(codes.Canceled, err.Error())
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.Error(codes.DeadlineExceeded, err.Error())
+		}
 		return nil, status.Errorf(codes.Internal, "collect workspace context: %v", err)
 	}
 	root, isGit, dirty := s.workspaceState(ctx)
