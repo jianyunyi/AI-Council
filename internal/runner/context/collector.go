@@ -80,10 +80,13 @@ func (c *Collector) Collect(ctx context.Context, root string) (Snapshot, error) 
 			return nil
 		}
 		name := entry.Name()
-		if entry.IsDir() {
-			if name == ".git" {
+		if name == ".git" {
+			if entry.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if entry.IsDir() {
 			return nil
 		}
 		if !entry.Type().IsRegular() || refusedName(name) {
