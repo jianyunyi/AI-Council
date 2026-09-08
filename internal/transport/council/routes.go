@@ -41,6 +41,9 @@ type runClient interface {
 type workspaceDescriber interface {
 	DescribeWorkspace(context.Context, *runnerv1.DescribeWorkspaceRequest, ...grpc.CallOption) (*runnerv1.DescribeWorkspaceResponse, error)
 }
+type workspaceContextReader interface {
+	ReadWorkspaceContext(context.Context, *runnerv1.ReadWorkspaceContextRequest, ...grpc.CallOption) (*runnerv1.ReadWorkspaceContextResponse, error)
+}
 type workspace struct {
 	ID    string `json:"id"`
 	Root  string `json:"root"`
@@ -248,7 +251,26 @@ func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requirement := t.Requirement
+	workspaceID := t.WorkspaceID
 	a.mu.Unlock()
+	var workspaceFiles []schema.WorkspaceFile
+	if _, ok := a.council.(appTask.WorkspaceCouncilPort); ok {
+		reader, ok := a.runnerClient.(workspaceContextReader)
+		if !ok {
+			writeErr(w, http.StatusServiceUnavailable, "runner_unavailable", "runner workspace context is required")
+			return
+		}
+		contextResponse, err := reader.ReadWorkspaceContext(r.Context(), &runnerv1.ReadWorkspaceContextRequest{WorkspaceId: workspaceID})
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, "runner_unavailable", err.Error())
+			return
+		}
+		for _, file := range contextResponse.Files {
+			if file != nil {
+				workspaceFiles = append(workspaceFiles, schema.WorkspaceFile{Path: file.Path, Content: file.Content})
+			}
+		}
+	}
 	var plan schema.ExecutionPlan
 	if a.council != nil {
 		a.metrics.CouncilRuns.Add(1)
@@ -257,17 +279,47 @@ func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadGateway, "council_unavailable", err.Error())
 			return
 		}
+		a.mu.Lock()
+		if t.State != "DRAFT" {
+			a.mu.Unlock()
+			writeErr(w, 409, "invalid_state", "task already started")
+			return
+		}
+		if err := a.transitionTask(t, "ANALYZING"); err != nil {
+			a.mu.Unlock()
+			writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
+			return
+		}
+		a.mu.Unlock()
 		var err error
-		plan, err = a.council.Deliberate(r.Context(), requirement)
+		if progressCouncil, ok := a.council.(appTask.ProgressingWorkspaceCouncilPort); ok {
+			plan, err = progressCouncil.DeliberateWithWorkspaceProgress(r.Context(), requirement, workspaceFiles, func(state string) error {
+				if state == "ANALYZING" {
+					return nil
+				}
+				a.mu.Lock()
+				defer a.mu.Unlock()
+				return a.transitionTask(t, state)
+			})
+		} else if workspaceCouncil, ok := a.council.(appTask.WorkspaceCouncilPort); ok {
+			plan, err = workspaceCouncil.DeliberateWithWorkspace(r.Context(), requirement, workspaceFiles)
+		} else {
+			plan, err = a.council.Deliberate(r.Context(), requirement)
+		}
 		if err != nil {
 			a.metrics.CouncilFailures.Add(1)
+			a.mu.Lock()
+			if t.State != "FAILED" {
+				_ = a.transitionTask(t, "FAILED")
+			}
+			a.mu.Unlock()
 			writeErr(w, http.StatusBadGateway, "council_failed", err.Error())
 			return
 		}
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if t.State != "DRAFT" {
+	if t.State != "DRAFT" && t.State != "ANALYZING" {
 		writeErr(w, 409, "invalid_state", "task already started")
 		return
 	}
@@ -288,10 +340,9 @@ func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.ApprovalHash = hash
-	for _, s := range []string{"ANALYZING", "PROPOSING", "REVIEWING", "JUDGING", "REDTEAM", "AWAITING_APPROVAL"} {
-		t.State = s
-		a.append(t, "state.changed", map[string]string{"state": s})
-		a.persistTask(t)
+	if err := a.transitionTask(t, "AWAITING_APPROVAL"); err != nil {
+		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
+		return
 	}
 	writeData(w, 200, t)
 }
@@ -317,13 +368,25 @@ func (a *API) approveTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.ApprovalHash = in.ApprovalHash
-	t.Approved = true
 	if a.approvalRepo != nil {
-		_ = a.approvalRepo.Invalidate(r.Context(), t.ID)
-		_ = a.approvalRepo.Save(r.Context(), sqlite.ApprovalRecord{ID: strconv.FormatInt(time.Now().UnixNano(), 10), RunID: t.ID, PlanVersion: in.PlanVersion, SnapshotHash: in.ApprovalHash, Decision: "approved", Actor: "user", CreatedAt: time.Now().UTC()})
+		if err := a.approvalRepo.Invalidate(r.Context(), t.ID); err != nil {
+			writeErr(w, http.StatusInternalServerError, "approval_persistence_failed", err.Error())
+			return
+		}
+		if err := a.approvalRepo.Save(r.Context(), sqlite.ApprovalRecord{ID: strconv.FormatInt(time.Now().UnixNano(), 10), RunID: t.ID, PlanVersion: in.PlanVersion, SnapshotHash: in.ApprovalHash, Decision: "approved", Actor: "user", CreatedAt: time.Now().UTC()}); err != nil {
+			writeErr(w, http.StatusInternalServerError, "approval_persistence_failed", err.Error())
+			return
+		}
 	}
-	a.persistTask(t)
-	a.append(t, "approval.created", in)
+	t.Approved = true
+	if err := a.persistTask(t); err != nil {
+		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
+		return
+	}
+	if err := a.append(t, "approval.created", in); err != nil {
+		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
+		return
+	}
 	writeData(w, 200, t)
 }
 func (a *API) rejectTask(w http.ResponseWriter, r *http.Request) {
@@ -360,38 +423,95 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
-	if !t.Approved {
+	resuming := t.State == "EXECUTING"
+	if t.State != "AWAITING_APPROVAL" && !resuming {
+		if !t.Approved {
+			writeErr(w, 403, "approval_required", "manual approval required")
+			return
+		}
+		writeErr(w, http.StatusConflict, "invalid_state", "task is not awaiting approval")
+		return
+	}
+	if !t.Approved && !resuming {
 		writeErr(w, 403, "approval_required", "manual approval required")
 		return
 	}
-	if a.runnerClient != nil {
-		a.metrics.Executions.Add(1)
-		req := &runnerv1.ExecuteApprovedPlanRequest{RequestId: "rest-" + strconv.FormatInt(time.Now().UnixNano(), 10), RunId: t.ID, WorkspaceId: t.WorkspaceID, PlanVersion: int32(t.PlanVersion), ApprovalHash: t.ApprovalHash, Acceptance: append([]string(nil), t.Plan.Acceptance...)}
-		for _, p := range t.Plan.Patches {
-			req.Patches = append(req.Patches, &runnerv1.ApprovedPatch{Path: p.Path, UnifiedDiff: p.UnifiedDiff, BeforeHash: p.BeforeHash})
-		}
-		for _, c := range t.Plan.Commands {
-			req.Commands = append(req.Commands, &runnerv1.ApprovedCommand{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, TimeoutSeconds: int32(c.TimeoutSeconds), Purpose: c.Purpose})
-		}
-		resp, err := a.runnerClient.ExecuteApprovedPlan(r.Context(), req)
-		if err != nil {
-			a.metrics.ExecutionFailures.Add(1)
-			writeErr(w, 502, "runner_unavailable", err.Error())
-			return
-		}
-		if resp.Status != "SUCCEEDED" {
-			a.metrics.ExecutionFailures.Add(1)
-			writeErr(w, 409, "execution_failed", resp.ErrorCode)
-			return
-		}
-		t.Verification = resp
+	if a.runnerClient == nil {
+		writeErr(w, http.StatusServiceUnavailable, "runner_unavailable", "runner client is not configured")
+		return
 	}
-	t.State = "EXECUTING"
-	a.append(t, "state.changed", map[string]string{"state": t.State})
-	a.persistTask(t)
+	if a.approvalRepo != nil && !resuming {
+		consumed, err := a.approvalRepo.ConsumeAndMarkExecuting(r.Context(), t.ID, t.PlanVersion, t.ApprovalHash)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "approval_persistence_failed", err.Error())
+			return
+		}
+		if !consumed {
+			writeErr(w, http.StatusConflict, "approval_consumed", "matching approval is no longer active")
+			return
+		}
+	}
+	if !resuming {
+		t.State = "EXECUTING"
+		if err := a.append(t, "state.changed", map[string]string{"state": t.State}); err != nil {
+			writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
+			return
+		}
+	}
+	a.metrics.Executions.Add(1)
+	req := &runnerv1.ExecuteApprovedPlanRequest{RequestId: t.ID + ":" + strconv.Itoa(t.PlanVersion), RunId: t.ID, WorkspaceId: t.WorkspaceID, PlanVersion: int32(t.PlanVersion), ApprovalHash: t.ApprovalHash, Acceptance: append([]string(nil), t.Plan.Acceptance...)}
+	for _, p := range t.Plan.Patches {
+		req.Patches = append(req.Patches, &runnerv1.ApprovedPatch{Path: p.Path, UnifiedDiff: p.UnifiedDiff, BeforeHash: p.BeforeHash})
+	}
+	for _, c := range t.Plan.Commands {
+		req.Commands = append(req.Commands, &runnerv1.ApprovedCommand{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, TimeoutSeconds: int32(c.TimeoutSeconds), Purpose: c.Purpose})
+	}
+	for _, c := range t.Plan.VerificationCommands {
+		req.VerificationCommands = append(req.VerificationCommands, &runnerv1.ApprovedCommand{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, TimeoutSeconds: int32(c.TimeoutSeconds), Purpose: c.Purpose})
+	}
+	resp, err := a.runnerClient.ExecuteApprovedPlan(r.Context(), req)
+	if err != nil {
+		a.metrics.ExecutionFailures.Add(1)
+		writeErr(w, http.StatusBadGateway, "runner_unavailable", err.Error())
+		return
+	}
+	if resp == nil || resp.Status != "SUCCEEDED" {
+		a.metrics.ExecutionFailures.Add(1)
+		t.State = "FAILED"
+		if persistErr := a.persistTask(t); persistErr != nil {
+			writeErr(w, http.StatusInternalServerError, "task_persistence_failed", persistErr.Error())
+			return
+		}
+		if appendErr := a.append(t, "state.changed", map[string]string{"state": t.State}); appendErr != nil {
+			writeErr(w, http.StatusInternalServerError, "event_persistence_failed", appendErr.Error())
+			return
+		}
+		errorCode := "runner returned no result"
+		if resp != nil {
+			errorCode = resp.ErrorCode
+		}
+		writeErr(w, 409, "execution_failed", errorCode)
+		return
+	}
+	t.Verification = resp
+	t.State = "VERIFYING"
+	if err := a.persistTask(t); err != nil {
+		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
+		return
+	}
+	if err := a.append(t, "state.changed", map[string]string{"state": t.State}); err != nil {
+		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
+		return
+	}
 	t.State = "SUCCEEDED"
-	a.append(t, "state.changed", map[string]string{"state": t.State})
-	a.persistTask(t)
+	if err := a.persistTask(t); err != nil {
+		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
+		return
+	}
+	if err := a.append(t, "state.changed", map[string]string{"state": t.State}); err != nil {
+		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
+		return
+	}
 	writeData(w, 200, t)
 }
 func (a *API) cancelTask(w http.ResponseWriter, r *http.Request) {
@@ -408,24 +528,35 @@ func (a *API) cancelTask(w http.ResponseWriter, r *http.Request) {
 	a.append(t, "state.changed", map[string]string{"state": t.State})
 	writeData(w, 200, t)
 }
-func (a *API) append(t *task, typ string, data any) {
+func (a *API) append(t *task, typ string, data any) error {
 	e := Event{ID: int64(len(t.Events) + 1), Type: typ, Data: data, CreatedAt: time.Now().UTC()}
 	if a.eventRepo != nil {
-		if saved, err := a.eventRepo.Append(context.Background(), t.ID, typ, data); err == nil {
-			e.ID = saved.Sequence
-			e.CreatedAt = saved.CreatedAt
+		saved, err := a.eventRepo.Append(context.Background(), t.ID, typ, data)
+		if err != nil {
+			return err
 		}
+		e.ID = saved.Sequence
+		e.CreatedAt = saved.CreatedAt
 	}
 	t.Events = append(t.Events, e)
+	return nil
 }
-func (a *API) persistTask(t *task) {
+func (a *API) persistTask(t *task) error {
 	if a.db == nil {
-		return
+		return nil
 	}
 	raw, _ := json.Marshal(t.Acceptance)
 	plan, _ := json.Marshal(t.Plan)
 	verification, _ := json.Marshal(t.Verification)
-	_ = a.db.Model(&sqlite.TaskRecord{}).Where("id = ?", t.ID).Updates(map[string]any{"state": t.State, "plan_version": t.PlanVersion, "approval_hash": t.ApprovalHash, "approval_granted": t.Approved, "acceptance_json": raw, "plan_json": plan, "verification_json": verification})
+	return a.db.Model(&sqlite.TaskRecord{}).Where("id = ?", t.ID).Updates(map[string]any{"state": t.State, "plan_version": t.PlanVersion, "approval_hash": t.ApprovalHash, "approval_granted": t.Approved, "acceptance_json": raw, "plan_json": plan, "verification_json": verification}).Error
+}
+
+func (a *API) transitionTask(t *task, state string) error {
+	t.State = state
+	if err := a.persistTask(t); err != nil {
+		return err
+	}
+	return a.append(t, "state.changed", map[string]string{"state": state})
 }
 func writeData(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

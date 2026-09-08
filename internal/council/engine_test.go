@@ -164,6 +164,18 @@ func TestProposeRejectsWorkspaceFilesOutsideContextEnvelopeBeforeProvider(t *tes
 				return files
 			}(),
 		},
+		{
+			name:  "absolute workspace path",
+			files: []schema.WorkspaceFile{{Path: `C:\\outside.go`, Content: "package outside"}},
+		},
+		{
+			name:  "workspace path traversal",
+			files: []schema.WorkspaceFile{{Path: `..\\outside.go`, Content: "package outside"}},
+		},
+		{
+			name:  "invalid UTF-8 workspace content",
+			files: []schema.WorkspaceFile{{Path: "internal/example.go", Content: string([]byte{0xff})}},
+		},
 	}
 
 	for _, tc := range cases {
@@ -195,6 +207,10 @@ func TestBuildExecutionPlanRejectsInvalidPlanFields(t *testing.T) {
 		{name: "nonpositive command timeout", plan: schema.ExecutionPlan{Version: 1, Commands: []schema.Command{{Executable: "go", TimeoutSeconds: 0}}}},
 		{name: "blank verification executable", plan: schema.ExecutionPlan{Version: 1, Commands: []schema.Command{validCommand}, VerificationCommands: []schema.Command{{Executable: " ", TimeoutSeconds: 30}}}},
 		{name: "nonpositive verification timeout", plan: schema.ExecutionPlan{Version: 1, Commands: []schema.Command{validCommand}, VerificationCommands: []schema.Command{{Executable: "go", TimeoutSeconds: -1}}}},
+		{name: "absolute command work directory", plan: schema.ExecutionPlan{Version: 1, Commands: []schema.Command{{Executable: "go", TimeoutSeconds: 30, WorkDir: `C:\\outside`}}}},
+		{name: "traversal command work directory", plan: schema.ExecutionPlan{Version: 1, Commands: []schema.Command{{Executable: "go", TimeoutSeconds: 30, WorkDir: `..\\outside`}}}},
+		{name: "absolute verification work directory", plan: schema.ExecutionPlan{Version: 1, Commands: []schema.Command{validCommand}, VerificationCommands: []schema.Command{{Executable: "go", TimeoutSeconds: 30, WorkDir: `C:\\outside`}}}},
+		{name: "traversal verification work directory", plan: schema.ExecutionPlan{Version: 1, Commands: []schema.Command{validCommand}, VerificationCommands: []schema.Command{{Executable: "go", TimeoutSeconds: 30, WorkDir: `..\\outside`}}}},
 	}
 
 	for _, tc := range cases {

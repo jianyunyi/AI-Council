@@ -23,7 +23,7 @@ func TestExecutorRunsArgvWithoutShell(t *testing.T) {
 	// this test focused on argv execution rather than making it timing-sensitive.
 	result, err := e.Run(context.Background(), Spec{Executable: executable, Args: args, WorkDir: ".", Timeout: 5 * time.Second, OutputLimit: 1024})
 	require.NoError(t, err)
-	require.Equal(t, 0, result.ExitCode)
+	require.Equalf(t, 0, result.ExitCode, "stdout=%q stderr=%q", result.Stdout, result.Stderr)
 	require.False(t, result.TimedOut)
 	require.NotEmpty(t, result.Stdout)
 	_, err = g.ResolveDirectory(filepath.Join("..", "outside"))

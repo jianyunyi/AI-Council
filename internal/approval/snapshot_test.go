@@ -15,3 +15,10 @@ func TestVerifyRejectsMaterialPlanChanges(t *testing.T) {
 	plan.Commands[0].Args = []string{"env"}
 	require.ErrorIs(t, Verify(hash, "run-1", "workspace-1", plan), ErrHashMismatch)
 }
+
+func TestHashNormalizesExecutableProjection(t *testing.T) {
+	plan := schema.ExecutionPlan{Version: 1, Recovery: []string{"restore backup"}}
+	hash, err := Hash("run-1", "workspace-1", plan)
+	require.NoError(t, err)
+	require.NoError(t, Verify(hash, "run-1", "workspace-1", schema.ExecutionPlan{Version: 1, VerificationCommands: []schema.Command{}}))
+}

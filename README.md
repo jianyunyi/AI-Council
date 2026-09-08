@@ -38,6 +38,12 @@ pnpm --dir web dev
 
 API Key 只应通过服务端配置或内存 Secret Vault 提供；不会写入 SQLite、制品 JSON、日志或浏览器 URL/localStorage。Runner 默认只读，执行请求必须携带与 run/workspace/plan 完全匹配的 approval hash。
 
+## Execution safety boundaries
+
+- 发送给已配置模型 Provider 的仅是 Runner 过滤后的、有边界的工作区快照；敏感、二进制、符号链接和超限文件均会排除。
+- 执行前必须由人工基于计划 hash 明确批准；批准只可消费一次，重复执行会被拒绝。
+- 执行失败后不会自动重新规划或重试，须由用户审查并发起新的流程。
+
 ## Web 登录与权限管理
 
 使用 `--rbac` 开启 SQLite 用户、密码登录和按权限授权。`--rbac-role=operator` 仍可启用 RBAC，并为旧 Token bootstrap 指定角色；该参数不再要求所有请求具有同一角色。未启用 RBAC 时，现有 `--token` 静态 Bearer 模式和桌面启动方式保持原样；同时指定时以 RBAC 为准。

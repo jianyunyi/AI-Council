@@ -17,6 +17,11 @@ import (
 
 var ErrBeforeHashMismatch = errors.New("before hash mismatch")
 
+type RollbackError struct{ Cause error }
+
+func (e *RollbackError) Error() string { return "rollback failed: " + e.Cause.Error() }
+func (e *RollbackError) Unwrap() error { return e.Cause }
+
 type Snapshot struct {
 	Path    string
 	Existed bool
@@ -67,7 +72,9 @@ func (t *Transaction) Apply(ctx context.Context, patches []schema.Patch) ([]Snap
 	}
 	for i, p := range prepared {
 		if err := replaceFile(p.path, p.data, p.mode); err != nil {
-			_ = t.restore()
+			if restoreErr := t.restore(); restoreErr != nil {
+				return nil, &RollbackError{Cause: restoreErr}
+			}
 			return nil, err
 		}
 		_ = i

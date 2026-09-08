@@ -31,6 +31,14 @@ type CouncilPort interface {
 	Deliberate(context.Context, string) (schema.ExecutionPlan, error)
 	ReviewExecution(context.Context, string, schema.VerificationReport) error
 }
+type WorkspaceCouncilPort interface {
+	CouncilPort
+	DeliberateWithWorkspace(context.Context, string, []schema.WorkspaceFile) (schema.ExecutionPlan, error)
+}
+type ProgressingWorkspaceCouncilPort interface {
+	WorkspaceCouncilPort
+	DeliberateWithWorkspaceProgress(context.Context, string, []schema.WorkspaceFile, func(string) error) (schema.ExecutionPlan, error)
+}
 type RunnerPort interface {
 	Describe(context.Context, string) (WorkspaceDescription, error)
 	Execute(context.Context, ApprovedExecution) (schema.VerificationReport, error)
