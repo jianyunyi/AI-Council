@@ -133,6 +133,170 @@ func (x *DescribeWorkspaceResponse) GetDetectedStacks() []string {
 	return nil
 }
 
+type ReadWorkspaceContextRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkspaceId   string                 `protobuf:"bytes,1,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadWorkspaceContextRequest) Reset() {
+	*x = ReadWorkspaceContextRequest{}
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadWorkspaceContextRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadWorkspaceContextRequest) ProtoMessage() {}
+
+func (x *ReadWorkspaceContextRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadWorkspaceContextRequest.ProtoReflect.Descriptor instead.
+func (*ReadWorkspaceContextRequest) Descriptor() ([]byte, []int) {
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ReadWorkspaceContextRequest) GetWorkspaceId() string {
+	if x != nil {
+		return x.WorkspaceId
+	}
+	return ""
+}
+
+type WorkspaceFile struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	Content       string                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkspaceFile) Reset() {
+	*x = WorkspaceFile{}
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkspaceFile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkspaceFile) ProtoMessage() {}
+
+func (x *WorkspaceFile) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkspaceFile.ProtoReflect.Descriptor instead.
+func (*WorkspaceFile) Descriptor() ([]byte, []int) {
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *WorkspaceFile) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *WorkspaceFile) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+type ReadWorkspaceContextResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Root          string                 `protobuf:"bytes,1,opt,name=root,proto3" json:"root,omitempty"`
+	IsGit         bool                   `protobuf:"varint,2,opt,name=is_git,json=isGit,proto3" json:"is_git,omitempty"`
+	Dirty         bool                   `protobuf:"varint,3,opt,name=dirty,proto3" json:"dirty,omitempty"`
+	Files         []*WorkspaceFile       `protobuf:"bytes,4,rep,name=files,proto3" json:"files,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadWorkspaceContextResponse) Reset() {
+	*x = ReadWorkspaceContextResponse{}
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadWorkspaceContextResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadWorkspaceContextResponse) ProtoMessage() {}
+
+func (x *ReadWorkspaceContextResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadWorkspaceContextResponse.ProtoReflect.Descriptor instead.
+func (*ReadWorkspaceContextResponse) Descriptor() ([]byte, []int) {
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ReadWorkspaceContextResponse) GetRoot() string {
+	if x != nil {
+		return x.Root
+	}
+	return ""
+}
+
+func (x *ReadWorkspaceContextResponse) GetIsGit() bool {
+	if x != nil {
+		return x.IsGit
+	}
+	return false
+}
+
+func (x *ReadWorkspaceContextResponse) GetDirty() bool {
+	if x != nil {
+		return x.Dirty
+	}
+	return false
+}
+
+func (x *ReadWorkspaceContextResponse) GetFiles() []*WorkspaceFile {
+	if x != nil {
+		return x.Files
+	}
+	return nil
+}
+
 type ApprovedPatch struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
@@ -144,7 +308,7 @@ type ApprovedPatch struct {
 
 func (x *ApprovedPatch) Reset() {
 	*x = ApprovedPatch{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[2]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -156,7 +320,7 @@ func (x *ApprovedPatch) String() string {
 func (*ApprovedPatch) ProtoMessage() {}
 
 func (x *ApprovedPatch) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[2]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -169,7 +333,7 @@ func (x *ApprovedPatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApprovedPatch.ProtoReflect.Descriptor instead.
 func (*ApprovedPatch) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{2}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ApprovedPatch) GetPath() string {
@@ -206,7 +370,7 @@ type ApprovedCommand struct {
 
 func (x *ApprovedCommand) Reset() {
 	*x = ApprovedCommand{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[3]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -218,7 +382,7 @@ func (x *ApprovedCommand) String() string {
 func (*ApprovedCommand) ProtoMessage() {}
 
 func (x *ApprovedCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[3]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -231,7 +395,7 @@ func (x *ApprovedCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApprovedCommand.ProtoReflect.Descriptor instead.
 func (*ApprovedCommand) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{3}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ApprovedCommand) GetExecutable() string {
@@ -270,22 +434,23 @@ func (x *ApprovedCommand) GetPurpose() string {
 }
 
 type ExecuteApprovedPlanRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	RunId         string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	WorkspaceId   string                 `protobuf:"bytes,3,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
-	PlanVersion   int32                  `protobuf:"varint,4,opt,name=plan_version,json=planVersion,proto3" json:"plan_version,omitempty"`
-	Patches       []*ApprovedPatch       `protobuf:"bytes,5,rep,name=patches,proto3" json:"patches,omitempty"`
-	Commands      []*ApprovedCommand     `protobuf:"bytes,6,rep,name=commands,proto3" json:"commands,omitempty"`
-	Acceptance    []string               `protobuf:"bytes,7,rep,name=acceptance,proto3" json:"acceptance,omitempty"`
-	ApprovalHash  string                 `protobuf:"bytes,8,opt,name=approval_hash,json=approvalHash,proto3" json:"approval_hash,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	RequestId            string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	RunId                string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	WorkspaceId          string                 `protobuf:"bytes,3,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
+	PlanVersion          int32                  `protobuf:"varint,4,opt,name=plan_version,json=planVersion,proto3" json:"plan_version,omitempty"`
+	Patches              []*ApprovedPatch       `protobuf:"bytes,5,rep,name=patches,proto3" json:"patches,omitempty"`
+	Commands             []*ApprovedCommand     `protobuf:"bytes,6,rep,name=commands,proto3" json:"commands,omitempty"`
+	Acceptance           []string               `protobuf:"bytes,7,rep,name=acceptance,proto3" json:"acceptance,omitempty"`
+	ApprovalHash         string                 `protobuf:"bytes,8,opt,name=approval_hash,json=approvalHash,proto3" json:"approval_hash,omitempty"`
+	VerificationCommands []*ApprovedCommand     `protobuf:"bytes,9,rep,name=verification_commands,json=verificationCommands,proto3" json:"verification_commands,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *ExecuteApprovedPlanRequest) Reset() {
 	*x = ExecuteApprovedPlanRequest{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[4]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -297,7 +462,7 @@ func (x *ExecuteApprovedPlanRequest) String() string {
 func (*ExecuteApprovedPlanRequest) ProtoMessage() {}
 
 func (x *ExecuteApprovedPlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[4]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -310,7 +475,7 @@ func (x *ExecuteApprovedPlanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteApprovedPlanRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteApprovedPlanRequest) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{4}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ExecuteApprovedPlanRequest) GetRequestId() string {
@@ -369,6 +534,13 @@ func (x *ExecuteApprovedPlanRequest) GetApprovalHash() string {
 	return ""
 }
 
+func (x *ExecuteApprovedPlanRequest) GetVerificationCommands() []*ApprovedCommand {
+	if x != nil {
+		return x.VerificationCommands
+	}
+	return nil
+}
+
 type StepResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
@@ -384,7 +556,7 @@ type StepResult struct {
 
 func (x *StepResult) Reset() {
 	*x = StepResult{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[5]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -396,7 +568,7 @@ func (x *StepResult) String() string {
 func (*StepResult) ProtoMessage() {}
 
 func (x *StepResult) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[5]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -409,7 +581,7 @@ func (x *StepResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepResult.ProtoReflect.Descriptor instead.
 func (*StepResult) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{5}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *StepResult) GetKind() string {
@@ -474,7 +646,7 @@ type ExecuteApprovedPlanResponse struct {
 
 func (x *ExecuteApprovedPlanResponse) Reset() {
 	*x = ExecuteApprovedPlanResponse{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[6]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -486,7 +658,7 @@ func (x *ExecuteApprovedPlanResponse) String() string {
 func (*ExecuteApprovedPlanResponse) ProtoMessage() {}
 
 func (x *ExecuteApprovedPlanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[6]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -499,7 +671,7 @@ func (x *ExecuteApprovedPlanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteApprovedPlanResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteApprovedPlanResponse) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{6}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ExecuteApprovedPlanResponse) GetRequestId() string {
@@ -546,7 +718,7 @@ type GetExecutionRequest struct {
 
 func (x *GetExecutionRequest) Reset() {
 	*x = GetExecutionRequest{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[7]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -558,7 +730,7 @@ func (x *GetExecutionRequest) String() string {
 func (*GetExecutionRequest) ProtoMessage() {}
 
 func (x *GetExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[7]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -571,7 +743,7 @@ func (x *GetExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetExecutionRequest.ProtoReflect.Descriptor instead.
 func (*GetExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{7}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetExecutionRequest) GetRequestId() string {
@@ -592,7 +764,17 @@ const file_proto_runner_v1_runner_proto_rawDesc = "" +
 	"\x04root\x18\x01 \x01(\tR\x04root\x12\x15\n" +
 	"\x06is_git\x18\x02 \x01(\bR\x05isGit\x12\x14\n" +
 	"\x05dirty\x18\x03 \x01(\bR\x05dirty\x12'\n" +
-	"\x0fdetected_stacks\x18\x04 \x03(\tR\x0edetectedStacks\"g\n" +
+	"\x0fdetected_stacks\x18\x04 \x03(\tR\x0edetectedStacks\"@\n" +
+	"\x1bReadWorkspaceContextRequest\x12!\n" +
+	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\"=\n" +
+	"\rWorkspaceFile\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\tR\acontent\"\x99\x01\n" +
+	"\x1cReadWorkspaceContextResponse\x12\x12\n" +
+	"\x04root\x18\x01 \x01(\tR\x04root\x12\x15\n" +
+	"\x06is_git\x18\x02 \x01(\bR\x05isGit\x12\x14\n" +
+	"\x05dirty\x18\x03 \x01(\bR\x05dirty\x128\n" +
+	"\x05files\x18\x04 \x03(\v2\".aicouncil.runner.v1.WorkspaceFileR\x05files\"g\n" +
 	"\rApprovedPatch\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12!\n" +
 	"\funified_diff\x18\x02 \x01(\tR\vunifiedDiff\x12\x1f\n" +
@@ -605,7 +787,7 @@ const file_proto_runner_v1_runner_proto_rawDesc = "" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x12\x19\n" +
 	"\bwork_dir\x18\x03 \x01(\tR\aworkDir\x12'\n" +
 	"\x0ftimeout_seconds\x18\x04 \x01(\x05R\x0etimeoutSeconds\x12\x18\n" +
-	"\apurpose\x18\x05 \x01(\tR\apurpose\"\xdd\x02\n" +
+	"\apurpose\x18\x05 \x01(\tR\apurpose\"\xb8\x03\n" +
 	"\x1aExecuteApprovedPlanRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x15\n" +
@@ -617,7 +799,8 @@ const file_proto_runner_v1_runner_proto_rawDesc = "" +
 	"\n" +
 	"acceptance\x18\a \x03(\tR\n" +
 	"acceptance\x12#\n" +
-	"\rapproval_hash\x18\b \x01(\tR\fapprovalHash\"\xba\x01\n" +
+	"\rapproval_hash\x18\b \x01(\tR\fapprovalHash\x12Y\n" +
+	"\x15verification_commands\x18\t \x03(\v2$.aicouncil.runner.v1.ApprovedCommandR\x14verificationCommands\"\xba\x01\n" +
 	"\n" +
 	"StepResult\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x12\n" +
@@ -639,9 +822,10 @@ const file_proto_runner_v1_runner_proto_rawDesc = "" +
 	"error_code\x18\x05 \x01(\tR\terrorCode\"4\n" +
 	"\x13GetExecutionRequest\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\tR\trequestId2\xeb\x02\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId2\xe8\x03\n" +
 	"\x0fWorkspaceRunner\x12r\n" +
-	"\x11DescribeWorkspace\x12-.aicouncil.runner.v1.DescribeWorkspaceRequest\x1a..aicouncil.runner.v1.DescribeWorkspaceResponse\x12x\n" +
+	"\x11DescribeWorkspace\x12-.aicouncil.runner.v1.DescribeWorkspaceRequest\x1a..aicouncil.runner.v1.DescribeWorkspaceResponse\x12{\n" +
+	"\x14ReadWorkspaceContext\x120.aicouncil.runner.v1.ReadWorkspaceContextRequest\x1a1.aicouncil.runner.v1.ReadWorkspaceContextResponse\x12x\n" +
 	"\x13ExecuteApprovedPlan\x12/.aicouncil.runner.v1.ExecuteApprovedPlanRequest\x1a0.aicouncil.runner.v1.ExecuteApprovedPlanResponse\x12j\n" +
 	"\fGetExecution\x12(.aicouncil.runner.v1.GetExecutionRequest\x1a0.aicouncil.runner.v1.ExecuteApprovedPlanResponseBGZEgithub.com/aicouncil/aicouncil/internal/runner/rpc/generated;runnerv1b\x06proto3"
 
@@ -657,32 +841,39 @@ func file_proto_runner_v1_runner_proto_rawDescGZIP() []byte {
 	return file_proto_runner_v1_runner_proto_rawDescData
 }
 
-var file_proto_runner_v1_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_proto_runner_v1_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_proto_runner_v1_runner_proto_goTypes = []any{
-	(*DescribeWorkspaceRequest)(nil),    // 0: aicouncil.runner.v1.DescribeWorkspaceRequest
-	(*DescribeWorkspaceResponse)(nil),   // 1: aicouncil.runner.v1.DescribeWorkspaceResponse
-	(*ApprovedPatch)(nil),               // 2: aicouncil.runner.v1.ApprovedPatch
-	(*ApprovedCommand)(nil),             // 3: aicouncil.runner.v1.ApprovedCommand
-	(*ExecuteApprovedPlanRequest)(nil),  // 4: aicouncil.runner.v1.ExecuteApprovedPlanRequest
-	(*StepResult)(nil),                  // 5: aicouncil.runner.v1.StepResult
-	(*ExecuteApprovedPlanResponse)(nil), // 6: aicouncil.runner.v1.ExecuteApprovedPlanResponse
-	(*GetExecutionRequest)(nil),         // 7: aicouncil.runner.v1.GetExecutionRequest
+	(*DescribeWorkspaceRequest)(nil),     // 0: aicouncil.runner.v1.DescribeWorkspaceRequest
+	(*DescribeWorkspaceResponse)(nil),    // 1: aicouncil.runner.v1.DescribeWorkspaceResponse
+	(*ReadWorkspaceContextRequest)(nil),  // 2: aicouncil.runner.v1.ReadWorkspaceContextRequest
+	(*WorkspaceFile)(nil),                // 3: aicouncil.runner.v1.WorkspaceFile
+	(*ReadWorkspaceContextResponse)(nil), // 4: aicouncil.runner.v1.ReadWorkspaceContextResponse
+	(*ApprovedPatch)(nil),                // 5: aicouncil.runner.v1.ApprovedPatch
+	(*ApprovedCommand)(nil),              // 6: aicouncil.runner.v1.ApprovedCommand
+	(*ExecuteApprovedPlanRequest)(nil),   // 7: aicouncil.runner.v1.ExecuteApprovedPlanRequest
+	(*StepResult)(nil),                   // 8: aicouncil.runner.v1.StepResult
+	(*ExecuteApprovedPlanResponse)(nil),  // 9: aicouncil.runner.v1.ExecuteApprovedPlanResponse
+	(*GetExecutionRequest)(nil),          // 10: aicouncil.runner.v1.GetExecutionRequest
 }
 var file_proto_runner_v1_runner_proto_depIdxs = []int32{
-	2, // 0: aicouncil.runner.v1.ExecuteApprovedPlanRequest.patches:type_name -> aicouncil.runner.v1.ApprovedPatch
-	3, // 1: aicouncil.runner.v1.ExecuteApprovedPlanRequest.commands:type_name -> aicouncil.runner.v1.ApprovedCommand
-	5, // 2: aicouncil.runner.v1.ExecuteApprovedPlanResponse.steps:type_name -> aicouncil.runner.v1.StepResult
-	0, // 3: aicouncil.runner.v1.WorkspaceRunner.DescribeWorkspace:input_type -> aicouncil.runner.v1.DescribeWorkspaceRequest
-	4, // 4: aicouncil.runner.v1.WorkspaceRunner.ExecuteApprovedPlan:input_type -> aicouncil.runner.v1.ExecuteApprovedPlanRequest
-	7, // 5: aicouncil.runner.v1.WorkspaceRunner.GetExecution:input_type -> aicouncil.runner.v1.GetExecutionRequest
-	1, // 6: aicouncil.runner.v1.WorkspaceRunner.DescribeWorkspace:output_type -> aicouncil.runner.v1.DescribeWorkspaceResponse
-	6, // 7: aicouncil.runner.v1.WorkspaceRunner.ExecuteApprovedPlan:output_type -> aicouncil.runner.v1.ExecuteApprovedPlanResponse
-	6, // 8: aicouncil.runner.v1.WorkspaceRunner.GetExecution:output_type -> aicouncil.runner.v1.ExecuteApprovedPlanResponse
-	6, // [6:9] is the sub-list for method output_type
-	3, // [3:6] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	3,  // 0: aicouncil.runner.v1.ReadWorkspaceContextResponse.files:type_name -> aicouncil.runner.v1.WorkspaceFile
+	5,  // 1: aicouncil.runner.v1.ExecuteApprovedPlanRequest.patches:type_name -> aicouncil.runner.v1.ApprovedPatch
+	6,  // 2: aicouncil.runner.v1.ExecuteApprovedPlanRequest.commands:type_name -> aicouncil.runner.v1.ApprovedCommand
+	6,  // 3: aicouncil.runner.v1.ExecuteApprovedPlanRequest.verification_commands:type_name -> aicouncil.runner.v1.ApprovedCommand
+	8,  // 4: aicouncil.runner.v1.ExecuteApprovedPlanResponse.steps:type_name -> aicouncil.runner.v1.StepResult
+	0,  // 5: aicouncil.runner.v1.WorkspaceRunner.DescribeWorkspace:input_type -> aicouncil.runner.v1.DescribeWorkspaceRequest
+	2,  // 6: aicouncil.runner.v1.WorkspaceRunner.ReadWorkspaceContext:input_type -> aicouncil.runner.v1.ReadWorkspaceContextRequest
+	7,  // 7: aicouncil.runner.v1.WorkspaceRunner.ExecuteApprovedPlan:input_type -> aicouncil.runner.v1.ExecuteApprovedPlanRequest
+	10, // 8: aicouncil.runner.v1.WorkspaceRunner.GetExecution:input_type -> aicouncil.runner.v1.GetExecutionRequest
+	1,  // 9: aicouncil.runner.v1.WorkspaceRunner.DescribeWorkspace:output_type -> aicouncil.runner.v1.DescribeWorkspaceResponse
+	4,  // 10: aicouncil.runner.v1.WorkspaceRunner.ReadWorkspaceContext:output_type -> aicouncil.runner.v1.ReadWorkspaceContextResponse
+	9,  // 11: aicouncil.runner.v1.WorkspaceRunner.ExecuteApprovedPlan:output_type -> aicouncil.runner.v1.ExecuteApprovedPlanResponse
+	9,  // 12: aicouncil.runner.v1.WorkspaceRunner.GetExecution:output_type -> aicouncil.runner.v1.ExecuteApprovedPlanResponse
+	9,  // [9:13] is the sub-list for method output_type
+	5,  // [5:9] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_proto_runner_v1_runner_proto_init() }
@@ -696,7 +887,7 @@ func file_proto_runner_v1_runner_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_runner_v1_runner_proto_rawDesc), len(file_proto_runner_v1_runner_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

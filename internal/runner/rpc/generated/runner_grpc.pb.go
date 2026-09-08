@@ -19,9 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WorkspaceRunner_DescribeWorkspace_FullMethodName   = "/aicouncil.runner.v1.WorkspaceRunner/DescribeWorkspace"
-	WorkspaceRunner_ExecuteApprovedPlan_FullMethodName = "/aicouncil.runner.v1.WorkspaceRunner/ExecuteApprovedPlan"
-	WorkspaceRunner_GetExecution_FullMethodName        = "/aicouncil.runner.v1.WorkspaceRunner/GetExecution"
+	WorkspaceRunner_DescribeWorkspace_FullMethodName    = "/aicouncil.runner.v1.WorkspaceRunner/DescribeWorkspace"
+	WorkspaceRunner_ReadWorkspaceContext_FullMethodName = "/aicouncil.runner.v1.WorkspaceRunner/ReadWorkspaceContext"
+	WorkspaceRunner_ExecuteApprovedPlan_FullMethodName  = "/aicouncil.runner.v1.WorkspaceRunner/ExecuteApprovedPlan"
+	WorkspaceRunner_GetExecution_FullMethodName         = "/aicouncil.runner.v1.WorkspaceRunner/GetExecution"
 )
 
 // WorkspaceRunnerClient is the client API for WorkspaceRunner service.
@@ -29,6 +30,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WorkspaceRunnerClient interface {
 	DescribeWorkspace(ctx context.Context, in *DescribeWorkspaceRequest, opts ...grpc.CallOption) (*DescribeWorkspaceResponse, error)
+	ReadWorkspaceContext(ctx context.Context, in *ReadWorkspaceContextRequest, opts ...grpc.CallOption) (*ReadWorkspaceContextResponse, error)
 	ExecuteApprovedPlan(ctx context.Context, in *ExecuteApprovedPlanRequest, opts ...grpc.CallOption) (*ExecuteApprovedPlanResponse, error)
 	GetExecution(ctx context.Context, in *GetExecutionRequest, opts ...grpc.CallOption) (*ExecuteApprovedPlanResponse, error)
 }
@@ -45,6 +47,16 @@ func (c *workspaceRunnerClient) DescribeWorkspace(ctx context.Context, in *Descr
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DescribeWorkspaceResponse)
 	err := c.cc.Invoke(ctx, WorkspaceRunner_DescribeWorkspace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workspaceRunnerClient) ReadWorkspaceContext(ctx context.Context, in *ReadWorkspaceContextRequest, opts ...grpc.CallOption) (*ReadWorkspaceContextResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReadWorkspaceContextResponse)
+	err := c.cc.Invoke(ctx, WorkspaceRunner_ReadWorkspaceContext_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -76,6 +88,7 @@ func (c *workspaceRunnerClient) GetExecution(ctx context.Context, in *GetExecuti
 // for forward compatibility.
 type WorkspaceRunnerServer interface {
 	DescribeWorkspace(context.Context, *DescribeWorkspaceRequest) (*DescribeWorkspaceResponse, error)
+	ReadWorkspaceContext(context.Context, *ReadWorkspaceContextRequest) (*ReadWorkspaceContextResponse, error)
 	ExecuteApprovedPlan(context.Context, *ExecuteApprovedPlanRequest) (*ExecuteApprovedPlanResponse, error)
 	GetExecution(context.Context, *GetExecutionRequest) (*ExecuteApprovedPlanResponse, error)
 	mustEmbedUnimplementedWorkspaceRunnerServer()
@@ -90,6 +103,9 @@ type UnimplementedWorkspaceRunnerServer struct{}
 
 func (UnimplementedWorkspaceRunnerServer) DescribeWorkspace(context.Context, *DescribeWorkspaceRequest) (*DescribeWorkspaceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DescribeWorkspace not implemented")
+}
+func (UnimplementedWorkspaceRunnerServer) ReadWorkspaceContext(context.Context, *ReadWorkspaceContextRequest) (*ReadWorkspaceContextResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReadWorkspaceContext not implemented")
 }
 func (UnimplementedWorkspaceRunnerServer) ExecuteApprovedPlan(context.Context, *ExecuteApprovedPlanRequest) (*ExecuteApprovedPlanResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ExecuteApprovedPlan not implemented")
@@ -132,6 +148,24 @@ func _WorkspaceRunner_DescribeWorkspace_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(WorkspaceRunnerServer).DescribeWorkspace(ctx, req.(*DescribeWorkspaceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkspaceRunner_ReadWorkspaceContext_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadWorkspaceContextRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceRunnerServer).ReadWorkspaceContext(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceRunner_ReadWorkspaceContext_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceRunnerServer).ReadWorkspaceContext(ctx, req.(*ReadWorkspaceContextRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -182,6 +216,10 @@ var WorkspaceRunner_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DescribeWorkspace",
 			Handler:    _WorkspaceRunner_DescribeWorkspace_Handler,
+		},
+		{
+			MethodName: "ReadWorkspaceContext",
+			Handler:    _WorkspaceRunner_ReadWorkspaceContext_Handler,
 		},
 		{
 			MethodName: "ExecuteApprovedPlan",

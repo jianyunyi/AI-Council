@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"github.com/aicouncil/aicouncil/internal/approval"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	"github.com/aicouncil/aicouncil/internal/runner/command"
+	runnercontext "github.com/aicouncil/aicouncil/internal/runner/context"
 	"github.com/aicouncil/aicouncil/internal/runner/files"
 	"github.com/aicouncil/aicouncil/internal/runner/idempotency"
 	"github.com/aicouncil/aicouncil/internal/runner/pathguard"
@@ -22,11 +24,17 @@ import (
 
 type Service struct {
 	runnerv1.UnimplementedWorkspaceRunnerServer
-	root        string
-	guard       *pathguard.Guard
-	executor    *command.Executor
-	transaction *files.Transaction
-	idem        *idempotency.Store
+	root           string
+	guard          *pathguard.Guard
+	executor       *command.Executor
+	idem           *idempotency.Store
+	collector      *runnercontext.Collector
+	newTransaction func() transaction
+}
+
+type transaction interface {
+	Apply(context.Context, []schema.Patch) ([]files.Snapshot, error)
+	Restore() error
 }
 
 func NewService(root string) (*Service, error) {
@@ -41,17 +49,11 @@ func NewServiceWithDB(root string, db *gorm.DB) (*Service, error) {
 	if db != nil {
 		idem = idempotency.NewWithDB(db)
 	}
-	return &Service{root: guard.Root(), guard: guard, executor: command.NewExecutor(guard), transaction: files.NewTransaction(guard), idem: idem}, nil
+	return &Service{root: guard.Root(), guard: guard, executor: command.NewExecutor(guard), idem: idem, collector: runnercontext.NewCollector(runnercontext.Limits{}), newTransaction: func() transaction { return files.NewTransaction(guard) }}, nil
 }
 func (s *Service) DescribeWorkspace(ctx context.Context, _ *runnerv1.DescribeWorkspaceRequest) (*runnerv1.DescribeWorkspaceResponse, error) {
-	resp := &runnerv1.DescribeWorkspaceResponse{Root: s.root}
-	if _, err := os.Stat(s.root + string(os.PathSeparator) + ".git"); err == nil {
-		resp.IsGit = true
-		cmd := exec.CommandContext(ctx, "git", "-C", s.root, "status", "--porcelain")
-		if out, e := cmd.Output(); e == nil {
-			resp.Dirty = len(strings.TrimSpace(string(out))) > 0
-		}
-	}
+	root, isGit, dirty := s.workspaceState(ctx)
+	resp := &runnerv1.DescribeWorkspaceResponse{Root: root, IsGit: isGit, Dirty: dirty}
 	if _, err := os.Stat(s.root + string(os.PathSeparator) + "go.mod"); err == nil {
 		resp.DetectedStacks = append(resp.DetectedStacks, "go")
 	}
@@ -59,6 +61,37 @@ func (s *Service) DescribeWorkspace(ctx context.Context, _ *runnerv1.DescribeWor
 		resp.DetectedStacks = append(resp.DetectedStacks, "node")
 	}
 	return resp, nil
+}
+
+func (s *Service) ReadWorkspaceContext(ctx context.Context, _ *runnerv1.ReadWorkspaceContextRequest) (*runnerv1.ReadWorkspaceContextResponse, error) {
+	snapshot, err := s.collector.Collect(ctx, s.root)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, status.Error(codes.Canceled, err.Error())
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.Error(codes.DeadlineExceeded, err.Error())
+		}
+		return nil, status.Errorf(codes.Internal, "collect workspace context: %v", err)
+	}
+	root, isGit, dirty := s.workspaceState(ctx)
+	resp := &runnerv1.ReadWorkspaceContextResponse{Root: root, IsGit: isGit, Dirty: dirty}
+	for _, file := range snapshot.Files {
+		resp.Files = append(resp.Files, &runnerv1.WorkspaceFile{Path: file.Path, Content: file.Content})
+	}
+	return resp, nil
+}
+
+func (s *Service) workspaceState(ctx context.Context) (root string, isGit bool, dirty bool) {
+	root = s.root
+	if _, err := os.Stat(s.root + string(os.PathSeparator) + ".git"); err == nil {
+		isGit = true
+		cmd := exec.CommandContext(ctx, "git", "-C", s.root, "status", "--porcelain")
+		if out, e := cmd.Output(); e == nil {
+			dirty = len(strings.TrimSpace(string(out))) > 0
+		}
+	}
+	return root, isGit, dirty
 }
 func (s *Service) GetExecution(_ context.Context, req *runnerv1.GetExecutionRequest) (*runnerv1.ExecuteApprovedPlanResponse, error) {
 	if v, ok := s.idem.Get(req.RequestId); ok {
@@ -88,6 +121,9 @@ func (s *Service) ExecuteApprovedPlan(ctx context.Context, req *runnerv1.Execute
 	for _, c := range req.Commands {
 		plan.Commands = append(plan.Commands, schema.Command{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, TimeoutSeconds: int(c.TimeoutSeconds), Purpose: c.Purpose})
 	}
+	for _, c := range req.VerificationCommands {
+		plan.VerificationCommands = append(plan.VerificationCommands, schema.Command{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, TimeoutSeconds: int(c.TimeoutSeconds), Purpose: c.Purpose})
+	}
 	if plan.Patches == nil {
 		plan.Patches = []schema.Patch{}
 	}
@@ -98,27 +134,42 @@ func (s *Service) ExecuteApprovedPlan(ctx context.Context, req *runnerv1.Execute
 		return nil, status.Error(codes.PermissionDenied, "approval mismatch")
 	}
 	response := &runnerv1.ExecuteApprovedPlanResponse{RequestId: req.RequestId, Status: "SUCCEEDED"}
+	transaction := s.newTransaction()
 	patchesApplied := len(plan.Patches) > 0
 	if patchesApplied {
-		if _, err := s.transaction.Apply(ctx, plan.Patches); err != nil {
+		if _, err := transaction.Apply(ctx, plan.Patches); err != nil {
 			response.Status = "FAILED"
 			response.ErrorCode = "patch_failed"
+			var rollbackErr *files.RollbackError
+			if errors.As(err, &rollbackErr) {
+				response.ErrorCode = "rollback_failed:patch_failed"
+			}
 			s.idem.Complete(req.RequestId, response)
 			return response, nil
 		}
 	}
-	for _, c := range plan.Commands {
-		result, runErr := s.executor.Run(ctx, command.Spec{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, Timeout: time.Duration(c.TimeoutSeconds) * time.Second, OutputLimit: 1 << 20})
-		step := &runnerv1.StepResult{Kind: "command", Name: c.Executable, ExitCode: int32(result.ExitCode), Stdout: result.Stdout, Stderr: result.Stderr, DurationMs: result.Duration.Milliseconds(), Status: "SUCCEEDED"}
-		if runErr != nil || result.TimedOut || result.ExitCode != 0 {
-			step.Status = "FAILED"
-			response.Status = "FAILED"
-			response.ErrorCode = fmt.Sprintf("command_failed:%s", c.Executable)
-			if patchesApplied {
-				_ = s.transaction.Restore()
+	runCommands := func(commands []schema.Command, kind string) bool {
+		for _, c := range commands {
+			result, runErr := s.executor.Run(ctx, command.Spec{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, Timeout: time.Duration(c.TimeoutSeconds) * time.Second, OutputLimit: 1 << 20})
+			step := &runnerv1.StepResult{Kind: kind, Name: c.Executable, ExitCode: int32(result.ExitCode), Stdout: result.Stdout, Stderr: result.Stderr, DurationMs: result.Duration.Milliseconds(), Status: "SUCCEEDED"}
+			if runErr != nil || result.TimedOut || result.ExitCode != 0 {
+				step.Status = "FAILED"
+				response.Status = "FAILED"
+				response.ErrorCode = fmt.Sprintf("%s_failed:%s", kind, c.Executable)
+				response.Steps = append(response.Steps, step)
+				if patchesApplied {
+					if err := transaction.Restore(); err != nil {
+						response.ErrorCode = fmt.Sprintf("rollback_failed:%s", response.ErrorCode)
+					}
+				}
+				return false
 			}
+			response.Steps = append(response.Steps, step)
 		}
-		response.Steps = append(response.Steps, step)
+		return true
+	}
+	if runCommands(plan.Commands, "command") {
+		runCommands(plan.VerificationCommands, "verification")
 	}
 	s.idem.Complete(req.RequestId, response)
 	return response, nil

@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	pathpkg "path"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aicouncil/aicouncil/internal/core/artifact"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
@@ -14,6 +18,12 @@ import (
 )
 
 var ErrInvalidArtifact = errors.New("invalid council artifact")
+
+const (
+	maxWorkspaceFiles      = 200
+	maxWorkspaceFileBytes  = 64 << 10
+	maxWorkspaceTotalBytes = 2 << 20
+)
 
 type Seat struct{ ID, Provider, Model, Role, ProposalAlias string }
 type Generated[T any] struct {
@@ -41,6 +51,9 @@ func (e *Engine) Propose(ctx context.Context, brief schema.TaskBrief, seats []Se
 	}
 	if len(seats) == 0 {
 		return nil, errors.New("at least one proposer seat is required")
+	}
+	if err := validateWorkspaceFiles(brief.WorkspaceFiles); err != nil {
+		return nil, err
 	}
 	ctx, cancel := withTimeout(ctx, e.limits.Timeout)
 	defer cancel()
@@ -199,8 +212,71 @@ func BuildExecutionPlan(decision schema.CouncilDecision, report schema.RedTeamRe
 	if len(report.Blocking) > 0 {
 		return schema.ExecutionPlan{}, errors.New("red-team report contains blocking findings")
 	}
-	plan := schema.ExecutionPlan{Version: 1, Acceptance: append([]string(nil), acceptance...), Recovery: []string{"restore workspace snapshot if verification fails"}}
+	plan := decision.Plan
+	if len(plan.Patches) == 0 && len(plan.Commands) == 0 {
+		return schema.ExecutionPlan{}, errors.New("execution plan must include patches or commands")
+	}
+	if plan.Version <= 0 {
+		return schema.ExecutionPlan{}, errors.New("execution plan version must be positive")
+	}
+	for _, patch := range plan.Patches {
+		if !isSafeRelativePath(patch.Path) {
+			return schema.ExecutionPlan{}, errors.New("execution plan patch path must be a nonempty relative path")
+		}
+	}
+	for _, command := range append(append([]schema.Command(nil), plan.Commands...), plan.VerificationCommands...) {
+		if strings.TrimSpace(command.Executable) == "" || command.TimeoutSeconds <= 0 {
+			return schema.ExecutionPlan{}, errors.New("execution plan commands require an executable and positive timeout")
+		}
+		if !isSafeWorkDir(command.WorkDir) {
+			return schema.ExecutionPlan{}, errors.New("execution plan command work directory must be empty, dot, or a relative path")
+		}
+	}
+	plan.Acceptance = append([]string(nil), acceptance...)
 	return plan, nil
+}
+
+func validateWorkspaceFiles(files []schema.WorkspaceFile) error {
+	if len(files) > maxWorkspaceFiles {
+		return errors.New("workspace context exceeds maximum file count")
+	}
+	var total int64
+	for _, file := range files {
+		if !isSafeRelativePath(file.Path) {
+			return errors.New("workspace context file path must be a nonempty relative path")
+		}
+		if !utf8.ValidString(file.Content) {
+			return errors.New("workspace context file content must be valid UTF-8")
+		}
+		contentBytes := int64(len(file.Content))
+		if contentBytes > maxWorkspaceFileBytes {
+			return errors.New("workspace context contains a file that exceeds the maximum size")
+		}
+		total += contentBytes
+		if total > maxWorkspaceTotalBytes {
+			return errors.New("workspace context exceeds the maximum total size")
+		}
+	}
+	return nil
+}
+
+func isSafeRelativePath(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && !filepath.IsAbs(value) && !pathpkg.IsAbs(value) && filepath.VolumeName(value) == "" && !hasTraversalComponent(value)
+}
+
+func isSafeWorkDir(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "" || value == "." || isSafeRelativePath(value)
+}
+
+func hasTraversalComponent(path string) bool {
+	for _, component := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if component == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {

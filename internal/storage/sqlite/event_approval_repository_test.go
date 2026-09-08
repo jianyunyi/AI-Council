@@ -40,3 +40,39 @@ func TestApprovalRepositoryInvalidatesPriorApproval(t *testing.T) {
 	_, err = r.Current(ctx, "run-1", 1)
 	require.Error(t, err)
 }
+
+func TestApprovalRepositoryConsumesMatchingApprovalOnlyOnce(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	r := NewApprovalRepository(db)
+	ctx := context.Background()
+	require.NoError(t, r.Save(ctx, ApprovalRecord{ID: "a1", RunID: "run-1", PlanVersion: 1, SnapshotHash: "hash", Decision: "approved", Actor: "user"}))
+
+	consumed, err := r.Consume(ctx, "run-1", 1, "hash")
+	require.NoError(t, err)
+	require.True(t, consumed)
+	consumed, err = r.Consume(ctx, "run-1", 1, "hash")
+	require.NoError(t, err)
+	require.False(t, consumed)
+}
+
+func TestApprovalRepositoryConsumeAndMarkExecutingRollsBackWhenTaskIsNoLongerAwaitingApproval(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	r := NewApprovalRepository(db)
+	ctx := context.Background()
+	require.NoError(t, db.Create(&TaskRecord{ID: "run-1", State: "DRAFT", PlanVersion: 1, ApprovalHash: "hash", ApprovalGranted: true}).Error)
+	require.NoError(t, r.Save(ctx, ApprovalRecord{ID: "a1", RunID: "run-1", PlanVersion: 1, SnapshotHash: "hash", Decision: "approved", Actor: "user"}))
+
+	started, err := r.ConsumeAndMarkExecuting(ctx, "run-1", 1, "hash")
+
+	require.NoError(t, err)
+	require.False(t, started)
+	consumed, err := r.Consume(ctx, "run-1", 1, "hash")
+	require.NoError(t, err)
+	require.True(t, consumed)
+}

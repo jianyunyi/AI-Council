@@ -28,9 +28,12 @@ func Hash(runID, workspaceID string, plan schema.ExecutionPlan) (string, error) 
 	if plan.Commands == nil {
 		plan.Commands = []schema.Command{}
 	}
-	if plan.Recovery == nil {
-		plan.Recovery = []string{}
+	if plan.VerificationCommands == nil {
+		plan.VerificationCommands = []schema.Command{}
 	}
+	// Recovery is operator-facing guidance. The Runner RPC does not execute or
+	// transport it, so only the executable projection may be verified there.
+	plan.Recovery = nil
 	raw, err := json.Marshal(payload{RunID: runID, WorkspaceID: workspaceID, Plan: plan})
 	if err != nil {
 		return "", err

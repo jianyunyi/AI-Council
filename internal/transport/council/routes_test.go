@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	appTask "github.com/aicouncil/aicouncil/internal/app/task"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
@@ -18,12 +19,28 @@ import (
 	"google.golang.org/grpc"
 )
 
-type routeCouncil struct{ analyzed, deliberated bool }
+type routeCouncil struct {
+	analyzed, deliberated bool
+	workspaceFiles        []schema.WorkspaceFile
+	plan                  schema.ExecutionPlan
+	analyzeErr            error
+	deliberateErr         error
+}
 
-func (c *routeCouncil) Analyze(context.Context, string) error { c.analyzed = true; return nil }
+func (c *routeCouncil) Analyze(context.Context, string) error { c.analyzed = true; return c.analyzeErr }
 func (c *routeCouncil) Deliberate(context.Context, string) (schema.ExecutionPlan, error) {
 	c.deliberated = true
+	if c.deliberateErr != nil {
+		return schema.ExecutionPlan{}, c.deliberateErr
+	}
+	if c.plan.Version != 0 {
+		return c.plan, nil
+	}
 	return schema.ExecutionPlan{Version: 1, Commands: []schema.Command{{Executable: "echo", Args: []string{"ok"}}}}, nil
+}
+func (c *routeCouncil) DeliberateWithWorkspace(ctx context.Context, requirement string, files []schema.WorkspaceFile) (schema.ExecutionPlan, error) {
+	c.workspaceFiles = append([]schema.WorkspaceFile(nil), files...)
+	return c.Deliberate(ctx, requirement)
 }
 func (c *routeCouncil) ReviewExecution(context.Context, string, schema.VerificationReport) error {
 	return nil
@@ -32,15 +49,33 @@ func (c *routeCouncil) ReviewExecution(context.Context, string, schema.Verificat
 var _ appTask.CouncilPort = (*routeCouncil)(nil)
 
 type routeRunner struct {
-	req *runnerv1.ExecuteApprovedPlanRequest
+	req      *runnerv1.ExecuteApprovedPlanRequest
+	calls    int
+	response *runnerv1.ExecuteApprovedPlanResponse
+	err      error
+	context  *runnerv1.ReadWorkspaceContextResponse
 }
 
 func (r *routeRunner) DescribeWorkspace(context.Context, *runnerv1.DescribeWorkspaceRequest, ...grpc.CallOption) (*runnerv1.DescribeWorkspaceResponse, error) {
 	return &runnerv1.DescribeWorkspaceResponse{Root: "normalized", IsGit: true, Dirty: true}, nil
 }
 
+func (r *routeRunner) ReadWorkspaceContext(context.Context, *runnerv1.ReadWorkspaceContextRequest, ...grpc.CallOption) (*runnerv1.ReadWorkspaceContextResponse, error) {
+	if r.context != nil {
+		return r.context, nil
+	}
+	return &runnerv1.ReadWorkspaceContextResponse{}, nil
+}
+
 func (r *routeRunner) ExecuteApprovedPlan(_ context.Context, req *runnerv1.ExecuteApprovedPlanRequest, _ ...grpc.CallOption) (*runnerv1.ExecuteApprovedPlanResponse, error) {
+	r.calls++
 	r.req = req
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.response != nil {
+		return r.response, nil
+	}
 	return &runnerv1.ExecuteApprovedPlanResponse{RequestId: req.RequestId, Status: "SUCCEEDED"}, nil
 }
 
@@ -162,7 +197,7 @@ func TestPersistentAPIRestoresSequenceAcrossRestart(t *testing.T) {
 }
 
 func TestTaskLifecycleRequiresApproval(t *testing.T) {
-	a := NewAPI()
+	a := NewAPI().WithRunnerClient(&routeRunner{})
 	registerWorkspace(a, "ws-1")
 	routes := a.Routes()
 	find := func(method, path string) func(http.ResponseWriter, *http.Request) {
@@ -251,4 +286,186 @@ func TestPersistentAPIExecutesCouncilPlanThroughRunner(t *testing.T) {
 	require.Equal(t, []string{"echo", "ok"}, append([]string{runner.req.Commands[0].Executable}, runner.req.Commands[0].Args...))
 	reloaded := NewPersistentAPI(db)
 	require.NotNil(t, reloaded.tasks[id].Verification)
+}
+
+func TestPersistentAPIConsumesApprovalBeforeExecutingOnce(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	runner := &routeRunner{}
+	a := NewPersistentAPI(db).WithRunnerClient(runner)
+	registerWorkspace(a, "ws")
+	a.tasks["task-1"] = &task{ID: "task-1", State: "AWAITING_APPROVAL", WorkspaceID: "ws", PlanVersion: 1, ApprovalHash: "hash", Approved: true}
+	require.NoError(t, db.Create(&storage.TaskRecord{ID: "task-1", WorkspaceID: "ws", State: "AWAITING_APPROVAL", PlanVersion: 1, ApprovalHash: "hash", ApprovalGranted: true}).Error)
+	require.NoError(t, a.approvalRepo.Save(context.Background(), storage.ApprovalRecord{ID: "approval-1", RunID: "task-1", PlanVersion: 1, SnapshotHash: "hash", Decision: "approved", Actor: "user"}))
+
+	var execute func(http.ResponseWriter, *http.Request)
+	for _, route := range a.Routes() {
+		if route.Method == http.MethodPost && route.Path == "/api/v1/tasks/:id/execute" {
+			execute = route.Handler
+		}
+	}
+	request := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := pathvar.WithVars(httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/execute", nil), map[string]string{"id": "task-1"})
+		execute(rec, req)
+		return rec
+	}
+
+	require.Equal(t, http.StatusOK, request().Code)
+	require.Equal(t, http.StatusConflict, request().Code)
+	require.Equal(t, 1, runner.calls)
+	require.Equal(t, "task-1:1", runner.req.RequestId)
+}
+
+func TestPersistentAPIStartPassesRunnerWorkspaceContextToCouncil(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	council := &routeCouncil{}
+	runner := &routeRunner{context: &runnerv1.ReadWorkspaceContextResponse{Files: []*runnerv1.WorkspaceFile{{Path: "main.go", Content: "package main"}}}}
+	a := NewPersistentAPI(db).WithCouncil(council).WithRunnerClient(runner)
+	registerWorkspace(a, "ws")
+	a.tasks["task-1"] = &task{ID: "task-1", State: "DRAFT", WorkspaceID: "ws", Requirement: "ship", Acceptance: []string{"ok"}, PlanVersion: 1}
+	require.NoError(t, db.Create(&storage.TaskRecord{ID: "task-1", WorkspaceID: "ws", Requirement: "ship", State: "DRAFT", PlanVersion: 1}).Error)
+
+	start := routeHandler(t, a.Routes(), http.MethodPost, "/api/v1/tasks/:id/start")
+	rec := httptest.NewRecorder()
+	start(rec, pathvar.WithVars(httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/start", nil), map[string]string{"id": "task-1"}))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, []schema.WorkspaceFile{{Path: "main.go", Content: "package main"}}, council.workspaceFiles)
+	require.Equal(t, "AWAITING_APPROVAL", a.tasks["task-1"].State)
+	events, err := a.eventRepo.After(context.Background(), "task-1", 0, 10)
+	require.NoError(t, err)
+	require.Equal(t, []string{"state.changed", "state.changed"}, []string{events[0].Type, events[1].Type})
+}
+
+func TestPersistentAPIExecuteForwardsVerificationCommands(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	runner := &routeRunner{}
+	a := NewPersistentAPI(db).WithRunnerClient(runner)
+	registerWorkspace(a, "ws")
+	plan := schema.ExecutionPlan{Version: 1, VerificationCommands: []schema.Command{{Executable: "go", Args: []string{"test", "./..."}, TimeoutSeconds: 30}}}
+	a.tasks["task-1"] = &task{ID: "task-1", State: "AWAITING_APPROVAL", WorkspaceID: "ws", PlanVersion: 1, ApprovalHash: "hash", Approved: true, Plan: plan}
+	require.NoError(t, db.Create(&storage.TaskRecord{ID: "task-1", WorkspaceID: "ws", State: "AWAITING_APPROVAL", PlanVersion: 1, ApprovalHash: "hash", ApprovalGranted: true}).Error)
+	require.NoError(t, a.approvalRepo.Save(context.Background(), storage.ApprovalRecord{ID: "approval-1", RunID: "task-1", PlanVersion: 1, SnapshotHash: "hash", Decision: "approved", Actor: "user"}))
+
+	execute := routeHandler(t, a.Routes(), http.MethodPost, "/api/v1/tasks/:id/execute")
+	rec := httptest.NewRecorder()
+	execute(rec, pathvar.WithVars(httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/execute", nil), map[string]string{"id": "task-1"}))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, runner.req.VerificationCommands, 1)
+	require.Equal(t, "go", runner.req.VerificationCommands[0].Executable)
+	require.Equal(t, []string{"test", "./..."}, runner.req.VerificationCommands[0].Args)
+}
+
+func TestPersistentAPIExecutionFailurePersistsFailed(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	runner := &routeRunner{response: &runnerv1.ExecuteApprovedPlanResponse{Status: "FAILED", ErrorCode: "command_failed"}}
+	a := NewPersistentAPI(db).WithRunnerClient(runner)
+	registerWorkspace(a, "ws")
+	a.tasks["task-1"] = &task{ID: "task-1", State: "AWAITING_APPROVAL", WorkspaceID: "ws", PlanVersion: 1, ApprovalHash: "hash", Approved: true}
+	require.NoError(t, db.Create(&storage.TaskRecord{ID: "task-1", WorkspaceID: "ws", State: "AWAITING_APPROVAL", PlanVersion: 1, ApprovalHash: "hash", ApprovalGranted: true}).Error)
+	require.NoError(t, a.approvalRepo.Save(context.Background(), storage.ApprovalRecord{ID: "approval-1", RunID: "task-1", PlanVersion: 1, SnapshotHash: "hash", Decision: "approved", Actor: "user"}))
+
+	var execute func(http.ResponseWriter, *http.Request)
+	for _, route := range a.Routes() {
+		if route.Method == http.MethodPost && route.Path == "/api/v1/tasks/:id/execute" {
+			execute = route.Handler
+		}
+	}
+	rec := httptest.NewRecorder()
+	req := pathvar.WithVars(httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/execute", nil), map[string]string{"id": "task-1"})
+	execute(rec, req)
+
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.Equal(t, "FAILED", a.tasks["task-1"].State)
+	var stored storage.TaskRecord
+	require.NoError(t, db.First(&stored, "id = ?", "task-1").Error)
+	require.Equal(t, "FAILED", stored.State)
+}
+
+func TestPersistentAPIExecuteRequiresRunnerBeforeConsumingApproval(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	a := NewPersistentAPI(db)
+	registerWorkspace(a, "ws")
+	a.tasks["task-1"] = &task{ID: "task-1", State: "AWAITING_APPROVAL", WorkspaceID: "ws", PlanVersion: 1, ApprovalHash: "hash", Approved: true}
+	require.NoError(t, db.Create(&storage.TaskRecord{ID: "task-1", WorkspaceID: "ws", State: "AWAITING_APPROVAL", PlanVersion: 1, ApprovalHash: "hash", ApprovalGranted: true}).Error)
+	require.NoError(t, a.approvalRepo.Save(context.Background(), storage.ApprovalRecord{ID: "approval-1", RunID: "task-1", PlanVersion: 1, SnapshotHash: "hash", Decision: "approved", Actor: "user"}))
+
+	execute := routeHandler(t, a.Routes(), http.MethodPost, "/api/v1/tasks/:id/execute")
+	rec := httptest.NewRecorder()
+	execute(rec, pathvar.WithVars(httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/execute", nil), map[string]string{"id": "task-1"}))
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Equal(t, "AWAITING_APPROVAL", a.tasks["task-1"].State)
+	var storedTask storage.TaskRecord
+	require.NoError(t, db.First(&storedTask, "id = ?", "task-1").Error)
+	require.Equal(t, "AWAITING_APPROVAL", storedTask.State)
+	var storedApproval storage.ApprovalRecord
+	require.NoError(t, db.First(&storedApproval, "id = ?", "approval-1").Error)
+	require.Nil(t, storedApproval.ConsumedAt)
+}
+
+func TestPersistentAPIRetriesExecutingTaskAfterRunnerTransportError(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	runner := &routeRunner{err: errors.New("runner connection reset")}
+	a := NewPersistentAPI(db).WithRunnerClient(runner)
+	registerWorkspace(a, "ws")
+	a.tasks["task-1"] = &task{ID: "task-1", State: "AWAITING_APPROVAL", WorkspaceID: "ws", PlanVersion: 1, ApprovalHash: "hash", Approved: true}
+	require.NoError(t, db.Create(&storage.TaskRecord{ID: "task-1", WorkspaceID: "ws", State: "AWAITING_APPROVAL", PlanVersion: 1, ApprovalHash: "hash", ApprovalGranted: true}).Error)
+	require.NoError(t, a.approvalRepo.Save(context.Background(), storage.ApprovalRecord{ID: "approval-1", RunID: "task-1", PlanVersion: 1, SnapshotHash: "hash", Decision: "approved", Actor: "user"}))
+
+	execute := routeHandler(t, a.Routes(), http.MethodPost, "/api/v1/tasks/:id/execute")
+	call := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		execute(rec, pathvar.WithVars(httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/execute", nil), map[string]string{"id": "task-1"}))
+		return rec
+	}
+
+	require.Equal(t, http.StatusBadGateway, call().Code)
+	require.Equal(t, "EXECUTING", a.tasks["task-1"].State)
+	var storedTask storage.TaskRecord
+	require.NoError(t, db.First(&storedTask, "id = ?", "task-1").Error)
+	require.Equal(t, "EXECUTING", storedTask.State)
+	runner.err = nil
+	require.Equal(t, http.StatusOK, call().Code)
+	require.Equal(t, 2, runner.calls)
+	require.Equal(t, "SUCCEEDED", a.tasks["task-1"].State)
+}
+
+func TestPersistentAPIResumesPersistedExecutingTaskWithStableRequestID(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	runner := &routeRunner{}
+	a := NewPersistentAPI(db).WithRunnerClient(runner)
+	registerWorkspace(a, "ws")
+	a.tasks["task-1"] = &task{ID: "task-1", State: "EXECUTING", WorkspaceID: "ws", PlanVersion: 1, ApprovalHash: "hash", Approved: true}
+	require.NoError(t, db.Create(&storage.TaskRecord{ID: "task-1", WorkspaceID: "ws", State: "EXECUTING", PlanVersion: 1, ApprovalHash: "hash", ApprovalGranted: true}).Error)
+
+	execute := routeHandler(t, a.Routes(), http.MethodPost, "/api/v1/tasks/:id/execute")
+	rec := httptest.NewRecorder()
+	execute(rec, pathvar.WithVars(httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/execute", nil), map[string]string{"id": "task-1"}))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "task-1:1", runner.req.RequestId)
+	require.Equal(t, "SUCCEEDED", a.tasks["task-1"].State)
 }
