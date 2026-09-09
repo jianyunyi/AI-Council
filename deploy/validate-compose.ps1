@@ -1,6 +1,28 @@
 [CmdletBinding()]
 param()
 
+function Resolve-ComposeCommand {
+    $docker = Get-Command docker -ErrorAction SilentlyContinue
+    if ($docker) {
+        & $docker.Source compose version 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            return [pscustomobject]@{ FilePath = $docker.Source; Prefix = @('compose') }
+        }
+    }
+
+    $standalone = Get-Command docker-compose -ErrorAction SilentlyContinue
+    if ($standalone) {
+        return [pscustomobject]@{ FilePath = $standalone.Source; Prefix = @() }
+    }
+
+    $dockerDesktopCompose = Join-Path $env:ProgramFiles 'Docker\Docker\resources\bin\docker-compose.exe'
+    if (Test-Path -LiteralPath $dockerDesktopCompose) {
+        return [pscustomobject]@{ FilePath = $dockerDesktopCompose; Prefix = @() }
+    }
+
+    throw 'Docker Compose v2 was not found. Install Docker Desktop or add its resources\\bin directory to PATH.'
+}
+
 $validationValues = [ordered]@{
     COUNCIL_BOOTSTRAP_SUBJECT  = 'compose-validation'
     COUNCIL_BOOTSTRAP_PASSWORD = 'validation-only-password'
@@ -17,8 +39,8 @@ foreach ($name in $validationValues.Keys) {
 }
 
 try {
-    Get-Command docker -ErrorAction Stop | Out-Null
-    & docker compose --env-file (Join-Path $PSScriptRoot '.env.example') -f (Join-Path $PSScriptRoot 'docker-compose.yml') config
+    $compose = Resolve-ComposeCommand
+    & $compose.FilePath @($compose.Prefix) --env-file (Join-Path $PSScriptRoot '.env.example') -f (Join-Path $PSScriptRoot 'docker-compose.yml') config --quiet
     if ($LASTEXITCODE -ne 0) {
         throw "docker compose config failed with exit code $LASTEXITCODE"
     }

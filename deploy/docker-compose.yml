@@ -44,6 +44,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.council
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     command:
       - --rbac
       - --rbac-bootstrap-subject
@@ -80,6 +82,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.runner
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     command:
       - --token
       - ${RUNNER_TOKEN:?set RUNNER_TOKEN}

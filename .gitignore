@@ -3,6 +3,7 @@
 .env
 .env.*
 !.env.example
+deploy/certs/
 *.db
 *.db-shm
 *.db-wal
