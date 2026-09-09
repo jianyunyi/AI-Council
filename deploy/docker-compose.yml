@@ -1,21 +1,110 @@
 services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+      council:
+        condition: service_healthy
+    environment:
+      COUNCIL_UPSTREAM: ${COUNCIL_UPSTREAM:-council:8080}
+      WEB_UPSTREAM: ${WEB_UPSTREAM:-web:3000}
+      TLS_CERT: ${TLS_CERT:?set TLS_CERT}
+      TLS_KEY: ${TLS_KEY:?set TLS_KEY}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${TLS_CERT_DIRECTORY:-./certs}:/certs:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - public
+      - app
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    environment:
+      NODE_ENV: production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/', res => process.exit(res.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - app
+
   council:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.council
+    command:
+      - --rbac
+      - --rbac-bootstrap-subject
+      - ${COUNCIL_BOOTSTRAP_SUBJECT:?set COUNCIL_BOOTSTRAP_SUBJECT}
+      - --runner
+      - runner:9091
+      - --runner-token
+      - ${RUNNER_TOKEN:?set RUNNER_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      runner:
+        condition: service_healthy
     environment:
-      AICOUNCIL_TOKEN: ${AICOUNCIL_TOKEN:?set AICOUNCIL_TOKEN}
-    ports: ["127.0.0.1:8080:8080"]
-    volumes: ["council-data:/app/.data"]
+      COUNCIL_BOOTSTRAP_PASSWORD: ${COUNCIL_BOOTSTRAP_PASSWORD:?set COUNCIL_BOOTSTRAP_PASSWORD}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+    volumes:
+      - council-data:/app/.data
+    healthcheck:
+      test: ["CMD", "/healthcheck", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - app
+      - egress
+
   runner:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.runner
-    environment:
-      AICOUNCIL_TOKEN: ${AICOUNCIL_TOKEN:?set AICOUNCIL_TOKEN}
-    ports: ["127.0.0.1:8081:8081", "127.0.0.1:9091:9091"]
-    volumes: ["runner-data:/app/.data", "workspace-data:/workspace"]
+    command:
+      - --token
+      - ${RUNNER_TOKEN:?set RUNNER_TOKEN}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/healthcheck", "http://127.0.0.1:8081/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - runner-data:/app/.data
+      - workspace-data:/workspace
+    networks:
+      - app
+
+networks:
+  public:
+  egress:
+  app:
+    internal: true
+
 volumes:
+  caddy-data:
+  caddy-config:
   council-data:
   runner-data:
   workspace-data:
