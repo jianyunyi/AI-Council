@@ -1,3 +1,7 @@
+:80 {
+  redir https://{host}{uri} permanent
+}
+
 :443 {
   tls {$TLS_CERT} {$TLS_KEY}
 
@@ -5,9 +9,9 @@
     reverse_proxy {$COUNCIL_UPSTREAM:council:8080}
   }
 
-  # Health and metrics deliberately reach Council rather than the web server.
-  @observability path /healthz /metrics
-  handle @observability {
+  # Health is public for ingress checks. Metrics stay internal; expose them
+  # only through a separate, protected route when external scraping is needed.
+  handle /healthz {
     reverse_proxy {$COUNCIL_UPSTREAM:council:8080}
   }
 
