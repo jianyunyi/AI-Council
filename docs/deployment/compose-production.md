@@ -88,6 +88,27 @@ attached to the private `app` network, or add a separately authenticated and
 network-restricted metrics route. Do not expose it through the public Caddy
 site without access controls.
 
+## GitHub Actions CI and release readiness
+
+The repository's `ci` workflow runs automatically for pushes and pull requests.
+It runs the Go test suite and `go vet`, Web Vitest and production build, Linux
+Chromium Playwright E2E, deployment Compose-build configuration checks, and a
+local build of the Council, Runner, and Web images. The image build is only a
+build validation: CI does not push images, deploy this Compose stack, or read
+Provider API keys.
+
+To request an approval-gated release-readiness check for `master`, use the
+GitHub UI: **Actions → ci → Run workflow → master → Run workflow**. After the
+validation jobs succeed, `release-readiness` targets the `production` GitHub
+Environment. A repository administrator must configure required reviewers in
+**Settings → Environments → production** for this job to actually pause for
+human approval. Approving it only records that the commit is ready for a
+separate release decision; it does not publish an image or deploy to a host.
+
+This CI approval is deliberately separate from Compose operations. The operator
+with access to the deployment host must still supply certificates and secrets,
+then explicitly validate and start the stack using the commands in this guide.
+
 ## Upgrade, stop, and data
 
 To deploy a new checked-out version, validate, rebuild, and reconcile services:

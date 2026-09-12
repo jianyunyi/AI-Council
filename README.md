@@ -62,6 +62,14 @@ API Key 只应通过服务端配置或内存 Secret Vault 提供；不会写入 
 
 完整的先决条件、密钥与证书路径、验证、启动、首次登录、升级、优雅停机、数据卷备份和 metrics 安全边界见 [Compose 生产部署指南](docs/deployment/compose-production.md)。生产环境不要设置 `AUTH_COOKIE_SECURE=false`。后端 `/shutdown` 和 `/metrics` 不经过公开 Caddy 路由暴露。
 
+### GitHub Actions CI 与发布准备
+
+仓库的 `ci` 工作流会在 push 和 pull request 时自动运行 Go 全量测试与 vet、Web Vitest 与构建、Linux Chromium Playwright E2E、Compose 构建配置校验，以及 Council、Runner、Web 三个本地镜像构建。镜像构建只验证 Dockerfile 和 Compose 配置：工作流不会推送镜像、不会部署到服务器，也不会读取 Provider API Key。
+
+需要人工确认某个已验证提交具备发布条件时，在 GitHub 网页依次进入 **Actions → ci → Run workflow → master → Run workflow**。这会在其余检查通过后进入 `release-readiness`。该任务使用 `production` Environment；仓库管理员必须先在 **Settings → Environments → production** 配置 required reviewers，GitHub 才会在这里暂停并等待人工审批。审批任务仅写入发布准备摘要，仍不会发布镜像或执行部署。
+
+CI 的“发布准备”与本地/服务器 Compose 部署是两件事：前者验证提交并可请求人工审核；后者仍须由已获授权的运维人员按部署指南准备证书与密钥，并显式运行 `docker compose ... up -d --build`。
+
 ### 本地：HTTP 同域开发
 
 仅本地 HTTP 开发时，在 Council 终端显式设置 `AUTH_COOKIE_SECURE=false`。任何其他值（含未设置）都会保留 Secure。使用独立开发数据库，并保持前端与 API 共用下面代理的 `http://localhost:8088`：
