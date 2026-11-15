@@ -47,31 +47,25 @@ func TestRBACServerErrorLogsDoNotLeakCredentials(t *testing.T) {
 			http.Error(w, "injected failure", http.StatusInternalServerError)
 		}
 	})
-	testServer := httptest.NewServer(boundRBACHandler(t, server))
-	t.Cleanup(testServer.Close)
+	handler := boundRBACHandler(t, server)
 
 	const bearer = "rbac-bearer-secret-canary"
 	const cookie = "rbac-cookie-secret-canary"
 	const password = "rbac-password-secret-canary"
-	request, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/v1/auth/login",
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login",
 		strings.NewReader(`{"subject":"alice","password":"`+password+`"}`))
-	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	request.AddCookie(&http.Cookie{Name: "aicouncil_session", Value: cookie})
-	response, err := testServer.Client().Do(request)
-	require.NoError(t, err)
-	_, err = io.Copy(io.Discard, response.Body)
-	require.NoError(t, response.Body.Close())
-	require.NoError(t, err)
-	require.Equal(t, http.StatusInternalServerError, response.StatusCode)
-	// Wait for the entire middleware chain, including post-response log writes.
-	testServer.Close()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusInternalServerError, response.Code)
 
 	logs := output.String()
 	require.Contains(t, logs, `"msg":"http_request"`)
 	require.Contains(t, logs, `"method":"POST"`)
 	require.Contains(t, logs, `"path":"/api/v1/auth/login"`)
+	require.Contains(t, logs, `"status":500`)
 	require.Contains(t, logs, `"duration_ms":`)
 	for _, secret := range []string{bearer, cookie, password} {
 		if strings.Contains(logs, secret) {

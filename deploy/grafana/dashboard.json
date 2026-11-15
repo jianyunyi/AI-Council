@@ -1,1 +1,420 @@
-{"title":"AI Council","schemaVersion":39,"panels":[{"type":"timeseries","title":"HTTP requests","targets":[{"expr":"aicouncil_http_requests_total"}]},{"type":"stat","title":"Tasks created","targets":[{"expr":"aicouncil_tasks_created_total"}]},{"type":"stat","title":"Council runs","targets":[{"expr":"aicouncil_council_runs_total"}]},{"type":"stat","title":"Council failures","targets":[{"expr":"aicouncil_council_failures_total"}]},{"type":"stat","title":"Executions","targets":[{"expr":"aicouncil_executions_total"}]},{"type":"stat","title":"Execution failures","targets":[{"expr":"aicouncil_execution_failures_total"}]}]}
+{
+  "id": null,
+  "uid": "aicouncil-production",
+  "title": "AI Council Production",
+  "tags": [
+    "aicouncil",
+    "production"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "HTTP request rate",
+      "description": "Requests per second across the Council API.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(aicouncil_http_requests_total[5m]))",
+          "legendFormat": "requests/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "HTTP error rate",
+      "description": "Percentage of 4xx and 5xx responses.",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * sum(rate(aicouncil_http_responses_total{status_class=~\"4xx|5xx\"}[5m])) / clamp_min(sum(rate(aicouncil_http_requests_total[5m])), 0.001)",
+          "legendFormat": "error %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "HTTP p95 latency",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(aicouncil_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Authentication, permission and rate-limit events",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(aicouncil_auth_failures_total[5m]))",
+          "legendFormat": "auth failures/s"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(aicouncil_permission_denials_total[5m]))",
+          "legendFormat": "permission denials/s"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(aicouncil_rate_limited_total[5m]))",
+          "legendFormat": "rate limited/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Council activity",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(aicouncil_tasks_created_total[5m]))",
+          "legendFormat": "tasks created/s"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(aicouncil_council_runs_total[5m]))",
+          "legendFormat": "Council runs/s"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(aicouncil_council_failures_total[5m]))",
+          "legendFormat": "Council failures/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Human approval decisions",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(aicouncil_approvals_granted_total[5m]))",
+          "legendFormat": "approved/s"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(aicouncil_approvals_rejected_total[5m]))",
+          "legendFormat": "rejected/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Runner executions",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(aicouncil_executions_total[5m]))",
+          "legendFormat": "executions/s"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(aicouncil_execution_failures_total[5m]))",
+          "legendFormat": "failures/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Runner execution p95 latency",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(aicouncil_runner_execution_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Provider errors and retries",
+      "gridPos": {
+        "x": 8,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider) (rate(aicouncil_provider_errors_by_provider_total[5m]))",
+          "legendFormat": "{{provider}} errors/s"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (provider) (rate(aicouncil_provider_retries_by_provider_total[5m]))",
+          "legendFormat": "{{provider}} retries/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Estimated Provider cost",
+      "description": "Cumulative price-table estimate in USD; not a billing total.",
+      "gridPos": {
+        "x": 16,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider) (aicouncil_provider_estimated_cost_micros_by_provider_total) / 1000000",
+          "legendFormat": "{{provider}} USD"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "SQLite lock contention",
+      "description": "Busy/locked errors and time spent waiting before those errors were returned.",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(aicouncil_sqlite_lock_contentions_total[5m]))",
+          "legendFormat": "contentions/s"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(aicouncil_sqlite_lock_wait_seconds_bucket[5m])))",
+          "legendFormat": "wait p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Provider call volume",
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider) (rate(aicouncil_provider_calls_by_provider_total[5m]))",
+          "legendFormat": "{{provider}} calls/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "Prometheus",
+          "value": "prometheus"
+        }
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  }
+}

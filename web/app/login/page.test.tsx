@@ -6,6 +6,7 @@ const signIn=vi.fn()
 const push=vi.fn()
 vi.mock('next/navigation',()=>({useRouter:()=>({push})}))
 vi.mock('@/components/auth-session',()=>({useAuth:()=>({status:'anonymous',signIn})}))
+vi.mock('@/lib/api',()=>({listOAuthProviders:vi.fn().mockResolvedValue({providers:['github','google']}),oauthStartURL:(provider:string)=>`/api/v1/auth/oauth/${provider}/start`}))
 import LoginPage from './page'
 
 afterEach(()=>{cleanup();vi.clearAllMocks()})
@@ -29,5 +30,11 @@ describe('LoginPage',()=>{
   fireEvent.click(screen.getByRole('button',{name:'登录'}))
   expect((await screen.findByRole('alert')).textContent).toContain('invalid credentials')
   expect(screen.getByRole('alert').textContent).not.toContain('top-secret')
+ })
+
+ it('shows only the configured OAuth sign-in options',async()=>{
+  render(<LoginPage/> )
+  expect((await screen.findByRole('link',{name:'使用 GitHub 登录'})).getAttribute('href')).toBe('/api/v1/auth/oauth/github/start')
+  expect(screen.getByRole('link',{name:'使用 Google 登录'})).toBeTruthy()
  })
 })

@@ -1,14 +1,18 @@
 package council
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	identitysvc "github.com/aicouncil/aicouncil/internal/security/identity"
+	oauthsvc "github.com/aicouncil/aicouncil/internal/security/oauth"
 	"github.com/aicouncil/aicouncil/internal/security/rbac"
 	"github.com/zeromicro/go-zero/rest"
 	"github.com/zeromicro/go-zero/rest/pathvar"
@@ -23,6 +27,9 @@ type RBACAPI struct {
 	failures map[string][]time.Time
 	pending  map[string]int
 	now      func() time.Time
+	identity *identitysvc.Service
+	mailer   Mailer
+	oauth    *oauthsvc.Service
 }
 
 const limiterClientLimit = 1024
@@ -31,9 +38,26 @@ func NewRBACAPI(service *rbac.Service, options SessionOptions) *RBACAPI {
 	return &RBACAPI{service: service, options: normalizeSessionOptions(options), failures: make(map[string][]time.Time), pending: make(map[string]int), now: time.Now}
 }
 
+func NewRBACAPIWithIdentity(service *rbac.Service, options SessionOptions, identity *identitysvc.Service, mailer Mailer) *RBACAPI {
+	return NewRBACAPIWithAuthFlows(service, options, identity, mailer, nil)
+}
+
+func NewRBACAPIWithAuthFlows(service *rbac.Service, options SessionOptions, identity *identitysvc.Service, mailer Mailer, oauth *oauthsvc.Service) *RBACAPI {
+	a := NewRBACAPI(service, options)
+	a.identity, a.mailer, a.oauth = identity, mailer, oauth
+	return a
+}
+
 func (a *RBACAPI) Routes() []rest.Route {
 	return []rest.Route{
 		{Method: http.MethodPost, Path: "/api/v1/auth/login", Handler: a.login},
+		{Method: http.MethodPost, Path: "/api/v1/auth/register", Handler: a.register},
+		{Method: http.MethodPost, Path: "/api/v1/auth/verify-email", Handler: a.verifyEmail},
+		{Method: http.MethodPost, Path: "/api/v1/auth/password-reset/request", Handler: a.requestPasswordReset},
+		{Method: http.MethodPost, Path: "/api/v1/auth/password-reset/confirm", Handler: a.confirmPasswordReset},
+		{Method: http.MethodGet, Path: "/api/v1/auth/oauth/providers", Handler: a.oauthProviders},
+		{Method: http.MethodGet, Path: "/api/v1/auth/oauth/:provider/start", Handler: a.oauthStart},
+		{Method: http.MethodGet, Path: "/api/v1/auth/oauth/:provider/callback", Handler: a.oauthCallback},
 		{Method: http.MethodGet, Path: "/api/v1/auth/me", Handler: a.me},
 		{Method: http.MethodPost, Path: "/api/v1/auth/logout", Handler: a.logout},
 		{Method: http.MethodGet, Path: "/api/v1/admin/users", Handler: a.listUsers},
@@ -49,6 +73,19 @@ func (a *RBACAPI) Routes() []rest.Route {
 type loginRequest struct {
 	Subject  string `json:"subject"`
 	Password string `json:"password"`
+}
+type registerRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+type identityTokenRequest struct {
+	Token string `json:"token"`
+}
+type passwordResetRequest struct {
+	Email string `json:"email"`
+}
+type Mailer interface {
+	Send(context.Context, string, string, string) error
 }
 type identityResponse struct {
 	Subject     string     `json:"subject"`
@@ -109,6 +146,83 @@ func (a *RBACAPI) login(w http.ResponseWriter, r *http.Request) {
 	a.completeLoginAttempt(ip, false)
 	http.SetCookie(w, &http.Cookie{Name: a.options.CookieName, Value: token, Path: "/", HttpOnly: true, Secure: a.options.CookieSecure, SameSite: http.SameSiteStrictMode, MaxAge: int(a.options.TTL.Seconds()), Expires: a.now().Add(a.options.TTL)})
 	writeData(w, http.StatusOK, publicIdentity(identity))
+}
+
+func (a *RBACAPI) register(w http.ResponseWriter, r *http.Request) {
+	var in registerRequest
+	if a.identity == nil || a.mailer == nil {
+		writeErr(w, http.StatusServiceUnavailable, "registration_unavailable", "registration is unavailable")
+		return
+	}
+	if json.NewDecoder(r.Body).Decode(&in) != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_registration", "email and password are required")
+		return
+	}
+	token, err := a.identity.RegisterEmail(r.Context(), in.Email, in.Password)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_registration", "email may already be registered or registration details are invalid")
+		return
+	}
+	if err := a.mailer.Send(r.Context(), strings.TrimSpace(in.Email), "Verify your AI Council account", "Your one-time verification token is: "+token); err != nil {
+		_ = a.identity.CancelUnverifiedRegistration(r.Context(), in.Email, token)
+		slog.Error("registration verification email delivery failed")
+		writeInternal(w)
+		return
+	}
+	writeData(w, http.StatusAccepted, map[string]string{"status": "verification_sent"})
+}
+
+func (a *RBACAPI) verifyEmail(w http.ResponseWriter, r *http.Request) {
+	var in identityTokenRequest
+	if a.identity == nil || json.NewDecoder(r.Body).Decode(&in) != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_token", "verification token is invalid or expired")
+		return
+	}
+	if err := a.identity.VerifyEmail(r.Context(), in.Token); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_token", "verification token is invalid or expired")
+		return
+	}
+	writeData(w, http.StatusOK, map[string]string{"status": "verified"})
+}
+
+func (a *RBACAPI) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
+	var in passwordResetRequest
+	if a.identity == nil || a.mailer == nil {
+		writeErr(w, http.StatusServiceUnavailable, "password_reset_unavailable", "password reset is unavailable")
+		return
+	}
+	if json.NewDecoder(r.Body).Decode(&in) != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_reset_request", "email is required")
+		return
+	}
+	token, err := a.identity.RequestPasswordReset(r.Context(), in.Email)
+	if err != nil {
+		writeInternal(w)
+		return
+	}
+	if token != "" {
+		if err := a.mailer.Send(r.Context(), strings.TrimSpace(in.Email), "Reset your AI Council password", "Your one-time password reset token is: "+token); err != nil {
+			// Keep the response indistinguishable from an unknown email address.
+			slog.Error("password reset email delivery failed")
+		}
+	}
+	writeData(w, http.StatusAccepted, map[string]string{"status": "if_account_exists_email_sent"})
+}
+
+func (a *RBACAPI) confirmPasswordReset(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if a.identity == nil || json.NewDecoder(r.Body).Decode(&in) != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_reset", "reset token or password is invalid")
+		return
+	}
+	if err := a.identity.ResetPassword(r.Context(), in.Token, in.Password); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_reset", "reset token or password is invalid")
+		return
+	}
+	writeData(w, http.StatusOK, map[string]string{"status": "password_updated"})
 }
 
 func (a *RBACAPI) me(w http.ResponseWriter, r *http.Request) {

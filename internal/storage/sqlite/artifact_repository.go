@@ -26,6 +26,10 @@ func NewArtifactRepository(db *gorm.DB, root string) *ArtifactRepository {
 }
 
 func (r *ArtifactRepository) Save(ctx context.Context, runID string, env artifact.Envelope) error {
+	return r.SaveOwned(ctx, "", runID, env)
+}
+
+func (r *ArtifactRepository) SaveOwned(ctx context.Context, ownerID, runID string, env artifact.Envelope) error {
 	if env.ID == "" || env.Type == "" {
 		return errors.New("artifact id and type are required")
 	}
@@ -63,7 +67,7 @@ func (r *ArtifactRepository) Save(ctx context.Context, runID string, env artifac
 	if err = os.Rename(tmpPath, finalPath); err != nil {
 		return err
 	}
-	record := ArtifactRecord{ID: env.ID, RunID: runID, Type: env.Type, SchemaVersion: env.SchemaVersion, ParentID: env.ParentID, ContentHash: env.ContentHash, FilePath: finalPath}
+	record := ArtifactRecord{ID: env.ID, OwnerUserID: ownerID, RunID: runID, Type: env.Type, SchemaVersion: env.SchemaVersion, ParentID: env.ParentID, ContentHash: env.ContentHash, FilePath: finalPath}
 	if err := r.db.WithContext(ctx).Save(&record).Error; err != nil {
 		return fmt.Errorf("save artifact index: %w", err)
 	}
@@ -71,8 +75,23 @@ func (r *ArtifactRepository) Save(ctx context.Context, runID string, env artifac
 }
 
 func (r *ArtifactRepository) Load(ctx context.Context, id string) (artifact.Envelope, error) {
+	return r.load(ctx, id, "", "")
+}
+
+func (r *ArtifactRepository) LoadForRun(ctx context.Context, id, runID, ownerID string) (artifact.Envelope, error) {
+	return r.load(ctx, id, runID, ownerID)
+}
+
+func (r *ArtifactRepository) load(ctx context.Context, id, runID, ownerID string) (artifact.Envelope, error) {
 	var record ArtifactRecord
-	if err := r.db.WithContext(ctx).First(&record, "id = ?", id).Error; err != nil {
+	query := r.db.WithContext(ctx).Where("id = ?", id)
+	if runID != "" {
+		query = query.Where("run_id = ?", runID)
+	}
+	if ownerID != "" {
+		query = query.Where("owner_user_id = ?", ownerID)
+	}
+	if err := query.First(&record).Error; err != nil {
 		return artifact.Envelope{}, err
 	}
 	raw, err := os.ReadFile(record.FilePath)

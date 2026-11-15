@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aicouncil/aicouncil/internal/observability/metrics"
 	"github.com/aicouncil/aicouncil/internal/security/rbac"
 )
 
@@ -46,9 +47,13 @@ func IdentityFromRequest(r *http.Request) (rbac.Identity, bool) {
 }
 
 func BearerAuth(expected string) func(http.HandlerFunc) http.HandlerFunc {
+	return BearerAuthWithMetrics(expected, nil)
+}
+
+func BearerAuthWithMetrics(expected string, m *metrics.Metrics) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/healthz" {
+			if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -58,6 +63,9 @@ func BearerAuth(expected string) func(http.HandlerFunc) http.HandlerFunc {
 			}
 			raw := strings.TrimSpace(r.Header.Get("Authorization"))
 			if len(raw) < 7 || !strings.EqualFold(raw[:7], "bearer ") || subtle.ConstantTimeCompare([]byte(strings.TrimSpace(raw[7:])), []byte(expected)) != 1 {
+				if m != nil {
+					m.RecordAuthFailure()
+				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"valid bearer token required"}}`))
@@ -79,6 +87,10 @@ func RBACAuth(service *rbac.Service, role string) func(http.HandlerFunc) http.Ha
 // argument is intentionally ignored: route permissions supersede the old
 // single-role gate while keeping source compatibility with existing callers.
 func RBACAuthWithOptions(service *rbac.Service, _ string, options SessionOptions) func(http.HandlerFunc) http.HandlerFunc {
+	return RBACAuthWithMetrics(service, "", options, nil)
+}
+
+func RBACAuthWithMetrics(service *rbac.Service, _ string, options SessionOptions, m *metrics.Metrics) func(http.HandlerFunc) http.HandlerFunc {
 	options = normalizeSessionOptions(options)
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -87,14 +99,23 @@ func RBACAuthWithOptions(service *rbac.Service, _ string, options SessionOptions
 				return
 			}
 			if service == nil {
+				if m != nil {
+					m.RecordAuthFailure()
+				}
 				writeRBACError(w, http.StatusUnauthorized, "unauthorized", "rbac service unavailable")
 				return
 			}
 			identity, bearerPresented, err := authenticateRBACRequest(r, service, options)
 			if err != nil {
 				if err == rbac.ErrForbidden {
+					if m != nil {
+						m.RecordPermissionDenial()
+					}
 					writeRBACError(w, http.StatusForbidden, "forbidden", "permission denied")
 					return
+				}
+				if m != nil {
+					m.RecordAuthFailure()
 				}
 				message := "valid bearer token or session required"
 				if bearerPresented {
@@ -105,10 +126,16 @@ func RBACAuthWithOptions(service *rbac.Service, _ string, options SessionOptions
 			}
 			permission, mapped := rbacRoutePermission(r.Method, r.URL.Path)
 			if !mapped {
+				if m != nil {
+					m.RecordPermissionDenial()
+				}
 				writeRBACError(w, http.StatusForbidden, "forbidden", "permission denied")
 				return
 			}
 			if permission != "" && !identityHasPermission(identity, permission) {
+				if m != nil {
+					m.RecordPermissionDenial()
+				}
 				writeRBACError(w, http.StatusForbidden, "forbidden", "permission denied")
 				return
 			}
@@ -146,7 +173,7 @@ func identityHasPermission(identity rbac.Identity, permission string) bool {
 }
 
 func isPublicRBACPath(method, path string) bool {
-	if path == "/healthz" || path == "/metrics" {
+	if path == "/healthz" || path == "/readyz" || path == "/metrics" {
 		return true
 	}
 	if method == http.MethodGet && path == "/api/v1/auth/oauth/providers" {
@@ -173,7 +200,7 @@ func rbacRoutePermission(method, path string) (string, bool) {
 		return "workspace:write", true
 	case method == http.MethodGet && (path == "/api/v1/workspaces" || singleSegment(path, "/api/v1/workspaces")):
 		return "workspace:read", true
-	case method == http.MethodGet && workspaceChildPath(path,"members"):
+	case method == http.MethodGet && workspaceChildPath(path, "members"):
 		return "workspace:write", true
 	case workspaceSharePath(method, path, http.MethodGet, 2):
 		return "workspace:read", true
@@ -207,18 +234,26 @@ func rbacRoutePermission(method, path string) (string, bool) {
 }
 
 func workspaceChildPath(path, child string) bool {
-	const prefix="/api/v1/workspaces/"
-	if !strings.HasPrefix(path,prefix) { return false }
-	parts:=strings.Split(strings.TrimPrefix(path,prefix),"/")
-	return len(parts)==2 && parts[0]!="" && parts[1]==child
+	const prefix = "/api/v1/workspaces/"
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(path, prefix), "/")
+	return len(parts) == 2 && parts[0] != "" && parts[1] == child
 }
 
 func workspaceSharePath(method, path string, wantMethod string, count int) bool {
 	const prefix = "/api/v1/workspaces/"
-	if method != wantMethod || !strings.HasPrefix(path, prefix) { return false }
+	if method != wantMethod || !strings.HasPrefix(path, prefix) {
+		return false
+	}
 	parts := strings.Split(strings.TrimPrefix(path, prefix), "/")
-	if len(parts) != count || parts[0] == "" || parts[1] != "shares" { return false }
-	if count == 2 { return true }
+	if len(parts) != count || parts[0] == "" || parts[1] != "shares" {
+		return false
+	}
+	if count == 2 {
+		return true
+	}
 	return parts[2] != ""
 }
 

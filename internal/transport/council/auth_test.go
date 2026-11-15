@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/aicouncil/aicouncil/internal/observability/metrics"
 	"github.com/aicouncil/aicouncil/internal/security/rbac"
 	storage "github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	"github.com/stretchr/testify/require"
@@ -230,6 +231,32 @@ func TestRBACAuthEnforcesTaskAndAdminPermissionsAndKeepsHealthPublic(t *testing.
 	require.Contains(t, denied.Body.String(), `"code":"forbidden"`)
 	require.Equal(t, http.StatusForbidden, call(http.MethodGet, "/api/v1/admin/users", "reader-token").Code)
 	require.Equal(t, http.StatusNoContent, call(http.MethodGet, "/api/v1/admin/users", "admin-token").Code)
+}
+
+func TestRBACAuthRecordsAuthenticationAndPermissionDenials(t *testing.T) {
+	ctx := context.Background()
+	service := newRBACService(t)
+	require.NoError(t, service.CreateUserWithPassword(ctx, "metrics-user", "password"))
+	token, _, err := service.Login(ctx, "metrics-user", "password", time.Hour)
+	require.NoError(t, err)
+	m := metrics.New()
+	handler := RBACAuthWithMetrics(service, "", SessionOptions{}, m)(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	unauthorized := httptest.NewRecorder()
+	handler(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1", nil))
+	require.Equal(t, http.StatusUnauthorized, unauthorized.Code)
+	denied := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/unmapped", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	handler(denied, request)
+	require.Equal(t, http.StatusForbidden, denied.Code)
+
+	recorder := httptest.NewRecorder()
+	m.Handler(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	require.Contains(t, recorder.Body.String(), "aicouncil_auth_failures_total 1")
+	require.Contains(t, recorder.Body.String(), "aicouncil_permission_denials_total 1")
 }
 
 func TestProviderKeyRoutesRequireProviderPermissions(t *testing.T) {

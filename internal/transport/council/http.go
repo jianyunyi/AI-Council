@@ -4,13 +4,20 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	identitysvc "github.com/aicouncil/aicouncil/internal/security/identity"
 	oauthsvc "github.com/aicouncil/aicouncil/internal/security/oauth"
+	"github.com/aicouncil/aicouncil/internal/security/ratelimit"
 	"github.com/aicouncil/aicouncil/internal/security/rbac"
 	"github.com/aicouncil/aicouncil/internal/security/tlsconfig"
 	"github.com/zeromicro/go-zero/rest"
 )
+
+func (a *API) rateLimitMiddleware() func(http.HandlerFunc) http.HandlerFunc {
+	limiter := ratelimit.New(time.Minute, 60, 10000)
+	return limiter.MiddlewareWithReject(func(r *http.Request) string { return requestOwnerID(r) }, ratelimit.LimitedAPIRoute, a.metrics.RecordRateLimited)
+}
 
 func NewServer(conf rest.RestConf) *rest.Server {
 	return NewServerWithAPI(conf, NewAPI())
@@ -26,14 +33,16 @@ func NewServerWithAPIAndAuth(conf rest.RestConf, api *API, token string) *rest.S
 	conf.Middlewares.Recover = true
 	server := rest.MustNewServer(conf)
 	server.Use(RequestLoggerWithMetrics(slog.Default(), api.metrics))
+	server.Use(api.rateLimitMiddleware())
 	if token != "" {
-		server.Use(BearerAuth(token))
+		server.Use(BearerAuthWithMetrics(token, api.metrics))
 	}
 	server.AddRoute(rest.Route{
 		Method:  http.MethodGet,
 		Path:    "/healthz",
 		Handler: healthHandler,
 	})
+	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/readyz", Handler: api.readyHandler})
 	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/metrics", Handler: api.metrics.Handler})
 	for _, route := range api.Routes() {
 		server.AddRoute(route)
@@ -61,10 +70,12 @@ func NewTLSServerWithAPIAndAuth(conf rest.RestConf, api *API, token, certFile, k
 		return nil, err
 	}
 	server.Use(RequestLoggerWithMetrics(slog.Default(), api.metrics))
+	server.Use(api.rateLimitMiddleware())
 	if token != "" {
-		server.Use(BearerAuth(token))
+		server.Use(BearerAuthWithMetrics(token, api.metrics))
 	}
 	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/healthz", Handler: healthHandler})
+	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/readyz", Handler: api.readyHandler})
 	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/metrics", Handler: api.metrics.Handler})
 	for _, route := range api.Routes() {
 		server.AddRoute(route)
@@ -98,7 +109,8 @@ func NewServerWithAPIAndAuthFlows(conf rest.RestConf, api *API, service *rbac.Se
 	conf.Middlewares.Recover = true
 	server := rest.MustNewServer(conf)
 	server.Use(RequestLoggerWithMetrics(slog.Default(), api.metrics))
-	server.Use(RBACAuthWithOptions(service, role, options))
+	server.Use(RBACAuthWithMetrics(service, role, options, api.metrics))
+	server.Use(api.rateLimitMiddleware())
 	registerRBACServerRoutes(server, api, NewRBACAPIWithAuthFlows(service, options, identity, mailer, oauth))
 	return server
 }
@@ -132,13 +144,15 @@ func NewTLSServerWithAPIAndAuthFlows(conf rest.RestConf, api *API, service *rbac
 		return nil, err
 	}
 	server.Use(RequestLoggerWithMetrics(slog.Default(), api.metrics))
-	server.Use(RBACAuthWithOptions(service, role, options))
+	server.Use(RBACAuthWithMetrics(service, role, options, api.metrics))
+	server.Use(api.rateLimitMiddleware())
 	registerRBACServerRoutes(server, api, NewRBACAPIWithAuthFlows(service, options, identity, mailer, oauth))
 	return server, nil
 }
 
 func registerRBACServerRoutes(server *rest.Server, api *API, rbacAPI *RBACAPI) {
 	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/healthz", Handler: healthHandler})
+	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/readyz", Handler: api.readyHandler})
 	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/metrics", Handler: api.metrics.Handler})
 	for _, route := range api.Routes() {
 		server.AddRoute(route)
@@ -152,6 +166,20 @@ func registerRBACServerRoutes(server *rest.Server, api *API, rbacAPI *RBACAPI) {
 	for _, route := range rbacAPI.Routes() {
 		server.AddRoute(route)
 	}
+}
+
+func (a *API) readyHandler(w http.ResponseWriter, r *http.Request) {
+	for _, check := range a.readinessChecks {
+		if err := check(r.Context()); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"not_ready"}`))
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ready"}`))
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {

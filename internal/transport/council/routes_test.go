@@ -323,6 +323,9 @@ func TestPersistentAPIExecutesCouncilPlanThroughRunner(t *testing.T) {
 	require.NotNil(t, runner.req)
 	require.Equal(t, int32(1), runner.req.PlanVersion)
 	require.Equal(t, []string{"echo", "ok"}, append([]string{runner.req.Commands[0].Executable}, runner.req.Commands[0].Args...))
+	require.EqualValues(t, 1, a.Metrics().ApprovalsGranted.Load())
+	require.EqualValues(t, 1, a.Metrics().Executions.Load())
+	require.EqualValues(t, 1, a.Metrics().RunnerExecutionCount.Load())
 	reloaded := NewPersistentAPI(db)
 	require.NotNil(t, reloaded.tasks[id].Verification)
 }

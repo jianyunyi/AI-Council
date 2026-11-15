@@ -81,7 +81,7 @@ services:
     volumes:
       - council-data:/app/.data
     healthcheck:
-      test: ["CMD", "/healthcheck", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "/healthcheck", "http://127.0.0.1:8080/readyz"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -114,6 +114,20 @@ services:
     networks:
       - app
 
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=2GB
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - app
+
 networks:
   public:
   egress:
@@ -125,3 +139,4 @@ volumes:
   caddy-config:
   council-data:
   runner-data:
+  prometheus-data:

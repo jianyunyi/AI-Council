@@ -39,6 +39,7 @@ type API struct {
 	providerKeys    *providerkeysvc.Service
 	workspaceAccess *workspaceaccess.Service
 	metrics         *metrics.Metrics
+	readinessChecks []func(context.Context) error
 }
 type runClient interface {
 	ExecuteApprovedPlan(context.Context, *runnerv1.ExecuteApprovedPlanRequest, ...grpc.CallOption) (*runnerv1.ExecuteApprovedPlanResponse, error)
@@ -110,6 +111,14 @@ func NewAPI() *API {
 func NewPersistentAPI(db *gorm.DB) *API {
 	a := NewAPI()
 	a.db = db
+	installSQLiteMetricsLogger(db, a.metrics)
+	a.WithReadinessCheck(func(ctx context.Context) error {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		return sqlDB.PingContext(ctx)
+	})
 	a.workspaceAccess = workspaceaccess.New(db)
 	a.eventRepo = sqlite.NewEventRepository(db)
 	a.approvalRepo = sqlite.NewApprovalRepository(db)
@@ -156,8 +165,15 @@ func (a *API) WithArtifactRoot(root string) *API {
 	}
 	return a
 }
+func (a *API) Metrics() *metrics.Metrics                    { return a.metrics }
 func (a *API) WithRunnerClient(client runClient) *API       { a.runnerClient = client; return a }
 func (a *API) WithCouncil(council appTask.CouncilPort) *API { a.council = council; return a }
+func (a *API) WithReadinessCheck(check func(context.Context) error) *API {
+	if check != nil {
+		a.readinessChecks = append(a.readinessChecks, check)
+	}
+	return a
+}
 func (a *API) WithCouncilFactory(factory func(context.Context, string) (appTask.CouncilPort, error)) *API {
 	a.councilFactory = factory
 	return a
@@ -460,6 +476,7 @@ func (a *API) approveTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
 		return
 	}
+	a.metrics.ApprovalsGranted.Add(1)
 	writeData(w, 200, t)
 }
 func (a *API) rejectTask(w http.ResponseWriter, r *http.Request) {
@@ -474,6 +491,7 @@ func (a *API) rejectTask(w http.ResponseWriter, r *http.Request) {
 	t.Approved = false
 	a.persistTask(t)
 	a.append(t, "approval.rejected", map[string]string{"state": t.State})
+	a.metrics.ApprovalsRejected.Add(1)
 	writeData(w, 200, t)
 }
 func (a *API) getArtifact(w http.ResponseWriter, r *http.Request) {
@@ -539,7 +557,6 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	a.metrics.Executions.Add(1)
 	req := &runnerv1.ExecuteApprovedPlanRequest{RequestId: t.ID + ":" + strconv.Itoa(t.PlanVersion), RunId: t.ID, WorkspaceId: t.WorkspaceID, PlanVersion: int32(t.PlanVersion), ApprovalHash: t.ApprovalHash, Acceptance: append([]string(nil), t.Plan.Acceptance...)}
 	for _, p := range t.Plan.Patches {
 		req.Patches = append(req.Patches, &runnerv1.ApprovedPatch{Path: p.Path, UnifiedDiff: p.UnifiedDiff, BeforeHash: p.BeforeHash})
@@ -550,14 +567,15 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	for _, c := range t.Plan.VerificationCommands {
 		req.VerificationCommands = append(req.VerificationCommands, &runnerv1.ApprovedCommand{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, TimeoutSeconds: int32(c.TimeoutSeconds), Purpose: c.Purpose})
 	}
+	runnerStarted := time.Now()
 	resp, err := a.runnerClient.ExecuteApprovedPlan(r.Context(), req)
 	if err != nil {
-		a.metrics.ExecutionFailures.Add(1)
+		a.metrics.RecordRunnerExecution(false, time.Since(runnerStarted))
 		writeErr(w, http.StatusBadGateway, "runner_unavailable", err.Error())
 		return
 	}
 	if resp == nil || resp.Status != "SUCCEEDED" {
-		a.metrics.ExecutionFailures.Add(1)
+		a.metrics.RecordRunnerExecution(false, time.Since(runnerStarted))
 		t.State = "FAILED"
 		if persistErr := a.persistTask(t); persistErr != nil {
 			writeErr(w, http.StatusInternalServerError, "task_persistence_failed", persistErr.Error())
@@ -574,6 +592,7 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "execution_failed", errorCode)
 		return
 	}
+	a.metrics.RecordRunnerExecution(true, time.Since(runnerStarted))
 	t.Verification = resp
 	t.State = "VERIFYING"
 	if err := a.persistTask(t); err != nil {

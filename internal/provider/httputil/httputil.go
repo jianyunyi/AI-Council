@@ -57,6 +57,7 @@ func DoJSONWithHeaders(ctx context.Context, client *http.Client, method, url str
 			break
 		}
 		if attempt < 2 {
+			provider.RecordRetry(ctx)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
