@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	identitysvc "github.com/aicouncil/aicouncil/internal/security/identity"
+	oauthsvc "github.com/aicouncil/aicouncil/internal/security/oauth"
 	"github.com/aicouncil/aicouncil/internal/security/rbac"
 	"github.com/aicouncil/aicouncil/internal/security/tlsconfig"
 	"github.com/zeromicro/go-zero/rest"
@@ -79,6 +81,14 @@ func NewServerWithAPIAndRBAC(conf rest.RestConf, api *API, service *rbac.Service
 // NewServerWithAPIAndRBACWithOptions adds password sessions to the persistent
 // RBAC server while preserving the original constructor for existing callers.
 func NewServerWithAPIAndRBACWithOptions(conf rest.RestConf, api *API, service *rbac.Service, role string, options SessionOptions) *rest.Server {
+	return NewServerWithAPIAndRBACWithIdentity(conf, api, service, role, options, nil, nil)
+}
+
+func NewServerWithAPIAndRBACWithIdentity(conf rest.RestConf, api *API, service *rbac.Service, role string, options SessionOptions, identity *identitysvc.Service, mailer Mailer) *rest.Server {
+	return NewServerWithAPIAndAuthFlows(conf, api, service, role, options, identity, mailer, nil)
+}
+
+func NewServerWithAPIAndAuthFlows(conf rest.RestConf, api *API, service *rbac.Service, role string, options SessionOptions, identity *identitysvc.Service, mailer Mailer, oauth *oauthsvc.Service) *rest.Server {
 	// go-zero's LogHandler dumps request bodies and headers for 5xx responses.
 	// RBAC endpoints carry passwords and session credentials, so retain only our
 	// metadata-only request logger below.
@@ -89,7 +99,7 @@ func NewServerWithAPIAndRBACWithOptions(conf rest.RestConf, api *API, service *r
 	server := rest.MustNewServer(conf)
 	server.Use(RequestLoggerWithMetrics(slog.Default(), api.metrics))
 	server.Use(RBACAuthWithOptions(service, role, options))
-	registerRBACServerRoutes(server, api, NewRBACAPI(service, options))
+	registerRBACServerRoutes(server, api, NewRBACAPIWithAuthFlows(service, options, identity, mailer, oauth))
 	return server
 }
 
@@ -100,6 +110,14 @@ func NewTLSServerWithAPIAndRBAC(conf rest.RestConf, api *API, service *rbac.Serv
 // NewTLSServerWithAPIAndRBACWithOptions is the TLS equivalent of the options
 // constructor and uses the same route registration as the HTTP server.
 func NewTLSServerWithAPIAndRBACWithOptions(conf rest.RestConf, api *API, service *rbac.Service, role, certFile, keyFile string, options SessionOptions) (*rest.Server, error) {
+	return NewTLSServerWithAPIAndRBACWithIdentity(conf, api, service, role, certFile, keyFile, options, nil, nil)
+}
+
+func NewTLSServerWithAPIAndRBACWithIdentity(conf rest.RestConf, api *API, service *rbac.Service, role, certFile, keyFile string, options SessionOptions, identity *identitysvc.Service, mailer Mailer) (*rest.Server, error) {
+	return NewTLSServerWithAPIAndAuthFlows(conf, api, service, role, certFile, keyFile, options, identity, mailer, nil)
+}
+
+func NewTLSServerWithAPIAndAuthFlows(conf rest.RestConf, api *API, service *rbac.Service, role, certFile, keyFile string, options SessionOptions, identity *identitysvc.Service, mailer Mailer, oauth *oauthsvc.Service) (*rest.Server, error) {
 	if certFile == "" || keyFile == "" {
 		return nil, fmt.Errorf("tls certificate and key are required")
 	}
@@ -115,7 +133,7 @@ func NewTLSServerWithAPIAndRBACWithOptions(conf rest.RestConf, api *API, service
 	}
 	server.Use(RequestLoggerWithMetrics(slog.Default(), api.metrics))
 	server.Use(RBACAuthWithOptions(service, role, options))
-	registerRBACServerRoutes(server, api, NewRBACAPI(service, options))
+	registerRBACServerRoutes(server, api, NewRBACAPIWithAuthFlows(service, options, identity, mailer, oauth))
 	return server, nil
 }
 
@@ -123,6 +141,12 @@ func registerRBACServerRoutes(server *rest.Server, api *API, rbacAPI *RBACAPI) {
 	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/healthz", Handler: healthHandler})
 	server.AddRoute(rest.Route{Method: http.MethodGet, Path: "/metrics", Handler: api.metrics.Handler})
 	for _, route := range api.Routes() {
+		server.AddRoute(route)
+	}
+	for _, route := range api.ProviderKeyRoutes() {
+		server.AddRoute(route)
+	}
+	for _, route := range api.WorkspaceShareRoutes() {
 		server.AddRoute(route)
 	}
 	for _, route := range rbacAPI.Routes() {

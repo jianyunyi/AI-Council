@@ -15,6 +15,8 @@ import (
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	"github.com/aicouncil/aicouncil/internal/observability/metrics"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
+	providerkeysvc "github.com/aicouncil/aicouncil/internal/security/providerkeys"
+	workspaceaccess "github.com/aicouncil/aicouncil/internal/security/workspaceaccess"
 	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	"github.com/zeromicro/go-zero/rest"
 	"github.com/zeromicro/go-zero/rest/pathvar"
@@ -23,20 +25,26 @@ import (
 )
 
 type API struct {
-	mu           sync.Mutex
-	tasks        map[string]*task
-	nextID       int64
-	workspaces   map[string]workspace
-	db           *gorm.DB
-	eventRepo    *sqlite.EventRepository
-	approvalRepo *sqlite.ApprovalRepository
-	artifactRepo *sqlite.ArtifactRepository
-	runnerClient runClient
-	council      appTask.CouncilPort
-	metrics      *metrics.Metrics
+	mu              sync.Mutex
+	tasks           map[string]*task
+	nextID          int64
+	workspaces      map[string]workspace
+	db              *gorm.DB
+	eventRepo       *sqlite.EventRepository
+	approvalRepo    *sqlite.ApprovalRepository
+	artifactRepo    *sqlite.ArtifactRepository
+	runnerClient    runClient
+	council         appTask.CouncilPort
+	councilFactory  func(context.Context, string) (appTask.CouncilPort, error)
+	providerKeys    *providerkeysvc.Service
+	workspaceAccess *workspaceaccess.Service
+	metrics         *metrics.Metrics
 }
 type runClient interface {
 	ExecuteApprovedPlan(context.Context, *runnerv1.ExecuteApprovedPlanRequest, ...grpc.CallOption) (*runnerv1.ExecuteApprovedPlanResponse, error)
+}
+type workspaceRegistrar interface {
+	RegisterWorkspace(context.Context, *runnerv1.RegisterWorkspaceRequest, ...grpc.CallOption) (*runnerv1.RegisterWorkspaceResponse, error)
 }
 type workspaceDescriber interface {
 	DescribeWorkspace(context.Context, *runnerv1.DescribeWorkspaceRequest, ...grpc.CallOption) (*runnerv1.DescribeWorkspaceResponse, error)
@@ -45,10 +53,14 @@ type workspaceContextReader interface {
 	ReadWorkspaceContext(context.Context, *runnerv1.ReadWorkspaceContextRequest, ...grpc.CallOption) (*runnerv1.ReadWorkspaceContextResponse, error)
 }
 type workspace struct {
-	ID    string `json:"id"`
-	Root  string `json:"root"`
-	IsGit bool   `json:"is_git"`
-	Dirty bool   `json:"dirty"`
+	ID          string `json:"id"`
+	Root        string `json:"root"`
+	IsGit       bool   `json:"is_git"`
+	Dirty       bool   `json:"dirty"`
+	Access      string `json:"access,omitempty"`
+	IsOwner     bool   `json:"is_owner"`
+	OwnerUserID string `json:"-"`
+	RunnerPath  string `json:"-"`
 }
 type task struct {
 	ID           string                                `json:"id"`
@@ -62,6 +74,7 @@ type task struct {
 	Plan         schema.ExecutionPlan                  `json:"plan,omitempty"`
 	Verification *runnerv1.ExecuteApprovedPlanResponse `json:"verification,omitempty"`
 	Events       []Event                               `json:"-"`
+	OwnerUserID  string                                `json:"-"`
 }
 type Event struct {
 	ID        int64     `json:"id"`
@@ -83,11 +96,6 @@ type createTaskRequest struct {
 	Requirement string   `json:"requirement"`
 	Acceptance  []string `json:"acceptance"`
 }
-type providerTestRequest struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	APIKey   string `json:"api_key"`
-}
 type workspaceRequest struct {
 	Root string `json:"root"`
 }
@@ -102,6 +110,7 @@ func NewAPI() *API {
 func NewPersistentAPI(db *gorm.DB) *API {
 	a := NewAPI()
 	a.db = db
+	a.workspaceAccess = workspaceaccess.New(db)
 	a.eventRepo = sqlite.NewEventRepository(db)
 	a.approvalRepo = sqlite.NewApprovalRepository(db)
 	a.artifactRepo = sqlite.NewArtifactRepository(db, ".data/artifacts")
@@ -110,7 +119,7 @@ func NewPersistentAPI(db *gorm.DB) *API {
 	var workspaceRows []sqlite.WorkspaceRecord
 	_ = db.Find(&workspaceRows).Error
 	for _, r := range workspaceRows {
-		a.workspaces[r.ID] = workspace{ID: r.ID, Root: r.CanonicalRoot, IsGit: r.IsGit, Dirty: r.Dirty}
+		a.workspaces[r.ID] = workspace{ID: r.ID, Root: r.CanonicalRoot, IsGit: r.IsGit, Dirty: r.Dirty, OwnerUserID: r.OwnerUserID, RunnerPath: r.RunnerPath}
 	}
 	for _, r := range rows {
 		var acceptance []string
@@ -127,7 +136,7 @@ func NewPersistentAPI(db *gorm.DB) *API {
 		if verification.RequestId != "" {
 			v = &verification
 		}
-		a.tasks[r.ID] = &task{ID: r.ID, State: state, WorkspaceID: r.WorkspaceID, Requirement: r.Requirement, Acceptance: acceptance, PlanVersion: r.PlanVersion, ApprovalHash: r.ApprovalHash, Approved: r.ApprovalGranted, Plan: plan, Verification: v}
+		a.tasks[r.ID] = &task{ID: r.ID, State: state, WorkspaceID: r.WorkspaceID, Requirement: r.Requirement, Acceptance: acceptance, PlanVersion: r.PlanVersion, ApprovalHash: r.ApprovalHash, Approved: r.ApprovalGranted, Plan: plan, Verification: v, OwnerUserID: r.OwnerUserID}
 	}
 	for id := range a.tasks {
 		if n, err := strconv.ParseInt(strings.TrimPrefix(id, "task-"), 10, 64); err == nil && n > a.nextID {
@@ -149,28 +158,57 @@ func (a *API) WithArtifactRoot(root string) *API {
 }
 func (a *API) WithRunnerClient(client runClient) *API       { a.runnerClient = client; return a }
 func (a *API) WithCouncil(council appTask.CouncilPort) *API { a.council = council; return a }
+func (a *API) WithCouncilFactory(factory func(context.Context, string) (appTask.CouncilPort, error)) *API {
+	a.councilFactory = factory
+	return a
+}
+func (a *API) WithProviderKeys(service *providerkeysvc.Service) *API {
+	a.providerKeys = service
+	return a
+}
 func (a *API) Routes() []rest.Route {
-	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/providers/test", Handler: a.testProvider}, {Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
+	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
 }
 
-func (a *API) testProvider(w http.ResponseWriter, r *http.Request) {
-	var in providerTestRequest
-	if json.NewDecoder(r.Body).Decode(&in) != nil || in.Provider == "" || in.Model == "" {
-		writeErr(w, 400, "invalid_provider", "provider and model are required")
+func (a *API) getWorkspace(w http.ResponseWriter, r *http.Request) {
+	id := pathvar.Vars(r)["id"]
+	if !a.canReadWorkspace(r.Context(), id, requestOwnerID(r)) {
+		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
 		return
 	}
-	writeData(w, 200, map[string]string{"profile_id": "profile-" + strconv.FormatInt(time.Now().UnixNano(), 10), "provider": in.Provider, "model": in.Model, "status": "ok"})
+	a.mu.Lock()
+	ws, ok := a.workspaces[id]
+	a.mu.Unlock()
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+		return
+	}
+	access, _ := a.effectiveWorkspaceAccess(r.Context(), id, requestOwnerID(r))
+	ws.Access = string(access)
+	ws.IsOwner = ws.OwnerUserID == requestOwnerID(r)
+	writeData(w, http.StatusOK, ws)
 }
+
 func (a *API) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	var in workspaceRequest
 	if json.NewDecoder(r.Body).Decode(&in) != nil || strings.TrimSpace(in.Root) == "" {
 		writeErr(w, 400, "invalid_workspace", "root is required")
 		return
 	}
-	root := filepath.Clean(strings.TrimSpace(in.Root))
+	root := strings.TrimSpace(in.Root)
+	if !validRunnerRelativePath(root) {
+		writeErr(w, http.StatusBadRequest, "invalid_workspace", "root must be a relative directory beneath the Runner workspace root")
+		return
+	}
+	registrar, ok := a.runnerClient.(workspaceRegistrar)
+	if !ok {
+		writeErr(w, http.StatusServiceUnavailable, "runner_unavailable", "Runner workspace registration is required")
+		return
+	}
+	owner := requestOwnerID(r)
 	a.mu.Lock()
 	for _, existing := range a.workspaces {
-		if existing.Root == root {
+		if existing.RunnerPath == root && existing.OwnerUserID == owner {
 			a.mu.Unlock()
 			writeData(w, http.StatusOK, existing)
 			return
@@ -178,25 +216,47 @@ func (a *API) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	a.nextID++
 	id := "workspace-" + strconv.FormatInt(a.nextID, 10)
-	ws := workspace{ID: id, Root: root, IsGit: false}
-	if describer, ok := a.runnerClient.(workspaceDescriber); ok {
-		if info, err := describer.DescribeWorkspace(r.Context(), &runnerv1.DescribeWorkspaceRequest{WorkspaceId: id}); err == nil {
-			ws.Root, ws.IsGit, ws.Dirty = info.Root, info.IsGit, info.Dirty
-		}
+	registered, err := registrar.RegisterWorkspace(r.Context(), &runnerv1.RegisterWorkspaceRequest{WorkspaceId: id, RelativePath: root})
+	if err != nil || registered == nil {
+		a.nextID--
+		a.mu.Unlock()
+		writeErr(w, http.StatusBadGateway, "runner_registration_failed", "Runner rejected workspace registration")
+		return
 	}
+	ws := workspace{ID: id, Root: registered.Root, IsGit: registered.IsGit, Dirty: registered.Dirty, Access: string(workspaceaccess.Editor), IsOwner: true, OwnerUserID: owner, RunnerPath: root}
 	a.workspaces[id] = ws
 	if a.db != nil {
-		_ = a.db.Save(&sqlite.WorkspaceRecord{ID: id, CanonicalRoot: ws.Root, IsGit: ws.IsGit, Dirty: ws.Dirty}).Error
+		if err := a.db.Create(&sqlite.WorkspaceRecord{ID: id, OwnerUserID: owner, CanonicalRoot: ws.Root, RunnerPath: root, IsGit: ws.IsGit, Dirty: ws.Dirty}).Error; err != nil {
+			delete(a.workspaces, id)
+			a.nextID--
+			a.mu.Unlock()
+			writeErr(w, http.StatusInternalServerError, "workspace_persistence_failed", "workspace could not be saved")
+			return
+		}
 	}
 	a.mu.Unlock()
 	writeData(w, 201, ws)
 }
-func (a *API) listWorkspaces(w http.ResponseWriter, _ *http.Request) {
+
+func validRunnerRelativePath(value string) bool {
+	if strings.TrimSpace(value) == "" || strings.HasPrefix(value, "/") || filepath.IsAbs(value) || filepath.VolumeName(value) != "" || strings.Contains(value, `\`) || strings.Contains(value, ":") {
+		return false
+	}
+	clean := filepath.Clean(value)
+	return clean == "." || (clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator)))
+}
+func (a *API) listWorkspaces(w http.ResponseWriter, r *http.Request) {
+	owner := requestOwnerID(r)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := make([]workspace, 0, len(a.workspaces))
 	for _, ws := range a.workspaces {
-		out = append(out, ws)
+		access, err := a.effectiveWorkspaceAccess(r.Context(), ws.ID, owner)
+		if err == nil && access != workspaceaccess.AccessNone {
+			ws.Access = string(access)
+			ws.IsOwner = ws.OwnerUserID == owner
+			out = append(out, ws)
+		}
 	}
 	writeData(w, 200, out)
 }
@@ -207,20 +267,23 @@ func (a *API) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	if _, ok := a.workspaces[in.WorkspaceID]; !ok {
+	owner := requestOwnerID(r)
+	_, ok := a.workspaces[in.WorkspaceID]
+	access, accessErr := a.effectiveWorkspaceAccess(r.Context(), in.WorkspaceID, owner)
+	if !ok || accessErr != nil || access != workspaceaccess.Editor {
 		a.mu.Unlock()
 		writeErr(w, http.StatusBadRequest, "unknown_workspace", "workspace must be registered before creating a task")
 		return
 	}
 	a.nextID++
 	id := "task-" + strconv.FormatInt(a.nextID, 10)
-	t := &task{ID: id, State: "DRAFT", WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, Acceptance: in.Acceptance, PlanVersion: 1}
+	t := &task{ID: id, State: "DRAFT", WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, Acceptance: in.Acceptance, PlanVersion: 1, OwnerUserID: owner}
 	t.Plan.Version = t.PlanVersion
 	a.tasks[id] = t
 	a.metrics.TasksCreated.Add(1)
 	if a.db != nil {
 		raw, _ := json.Marshal(in.Acceptance)
-		_ = a.db.Save(&sqlite.TaskRecord{ID: id, WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, AcceptanceJSON: raw, State: t.State, PlanVersion: t.PlanVersion}).Error
+		_ = a.db.Save(&sqlite.TaskRecord{ID: id, OwnerUserID: owner, WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, AcceptanceJSON: raw, State: t.State, PlanVersion: t.PlanVersion}).Error
 	}
 	a.append(t, "task.created", t)
 	a.mu.Unlock()
@@ -231,7 +294,7 @@ func (a *API) getTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	t := a.tasks[taskID(r)]
-	if t == nil {
+	if t == nil || !a.canReadWorkspace(r.Context(), t.WorkspaceID, requestOwnerID(r)) {
 		writeErr(w, http.StatusNotFound, "not_found", "task not found")
 		return
 	}
@@ -240,7 +303,7 @@ func (a *API) getTask(w http.ResponseWriter, r *http.Request) {
 func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	t := a.tasks[taskID(r)]
-	if t == nil {
+	if t == nil || !a.canEditWorkspace(r.Context(), t.WorkspaceID, requestOwnerID(r)) {
 		a.mu.Unlock()
 		writeErr(w, 404, "not_found", "task not found")
 		return
@@ -252,9 +315,19 @@ func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
 	}
 	requirement := t.Requirement
 	workspaceID := t.WorkspaceID
+	ownerID := t.OwnerUserID
+	council := a.council
 	a.mu.Unlock()
+	if a.councilFactory != nil {
+		var err error
+		council, err = a.councilFactory(r.Context(), ownerID)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, "council_unavailable", "could not configure the account's model providers")
+			return
+		}
+	}
 	var workspaceFiles []schema.WorkspaceFile
-	if _, ok := a.council.(appTask.WorkspaceCouncilPort); ok {
+	if _, ok := council.(appTask.WorkspaceCouncilPort); ok {
 		reader, ok := a.runnerClient.(workspaceContextReader)
 		if !ok {
 			writeErr(w, http.StatusServiceUnavailable, "runner_unavailable", "runner workspace context is required")
@@ -272,9 +345,9 @@ func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var plan schema.ExecutionPlan
-	if a.council != nil {
+	if council != nil {
 		a.metrics.CouncilRuns.Add(1)
-		if err := a.council.Analyze(r.Context(), requirement); err != nil {
+		if err := council.Analyze(r.Context(), requirement); err != nil {
 			a.metrics.CouncilFailures.Add(1)
 			writeErr(w, http.StatusBadGateway, "council_unavailable", err.Error())
 			return
@@ -292,7 +365,7 @@ func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
 		}
 		a.mu.Unlock()
 		var err error
-		if progressCouncil, ok := a.council.(appTask.ProgressingWorkspaceCouncilPort); ok {
+		if progressCouncil, ok := council.(appTask.ProgressingWorkspaceCouncilPort); ok {
 			plan, err = progressCouncil.DeliberateWithWorkspaceProgress(r.Context(), requirement, workspaceFiles, func(state string) error {
 				if state == "ANALYZING" {
 					return nil
@@ -301,10 +374,10 @@ func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
 				defer a.mu.Unlock()
 				return a.transitionTask(t, state)
 			})
-		} else if workspaceCouncil, ok := a.council.(appTask.WorkspaceCouncilPort); ok {
+		} else if workspaceCouncil, ok := council.(appTask.WorkspaceCouncilPort); ok {
 			plan, err = workspaceCouncil.DeliberateWithWorkspace(r.Context(), requirement, workspaceFiles)
 		} else {
-			plan, err = a.council.Deliberate(r.Context(), requirement)
+			plan, err = council.Deliberate(r.Context(), requirement)
 		}
 		if err != nil {
 			a.metrics.CouncilFailures.Add(1)
@@ -323,7 +396,7 @@ func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "invalid_state", "task already started")
 		return
 	}
-	if a.council != nil {
+	if council != nil {
 		t.Plan = plan
 		if t.Plan.Version == 0 {
 			t.Plan.Version = t.PlanVersion
@@ -355,7 +428,7 @@ func (a *API) approveTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	t := a.tasks[taskID(r)]
-	if t == nil {
+	if t == nil || !a.canEditWorkspace(r.Context(), t.WorkspaceID, requestOwnerID(r)) {
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
@@ -393,7 +466,7 @@ func (a *API) rejectTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	t := a.tasks[taskID(r)]
-	if t == nil {
+	if t == nil || !a.canEditWorkspace(r.Context(), t.WorkspaceID, requestOwnerID(r)) {
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
@@ -408,7 +481,15 @@ func (a *API) getArtifact(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not_found", "artifact not found")
 		return
 	}
-	env, err := a.artifactRepo.Load(r.Context(), pathvar.Vars(r)["artifactId"])
+	a.mu.Lock()
+	t := a.tasks[taskID(r)]
+	allowed := t != nil && a.canReadWorkspace(r.Context(), t.WorkspaceID, requestOwnerID(r))
+	a.mu.Unlock()
+	if !allowed {
+		writeErr(w, http.StatusNotFound, "not_found", "artifact not found")
+		return
+	}
+	env, err := a.artifactRepo.LoadForRun(r.Context(), pathvar.Vars(r)["artifactId"], taskID(r), "")
 	if err != nil {
 		writeErr(w, 404, "not_found", "artifact not found")
 		return
@@ -419,7 +500,7 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	t := a.tasks[taskID(r)]
-	if t == nil {
+	if t == nil || !a.canEditWorkspace(r.Context(), t.WorkspaceID, requestOwnerID(r)) {
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
@@ -518,7 +599,7 @@ func (a *API) cancelTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	t := a.tasks[taskID(r)]
-	if t == nil {
+	if t == nil || !a.canEditWorkspace(r.Context(), t.WorkspaceID, requestOwnerID(r)) {
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
@@ -557,6 +638,45 @@ func (a *API) transitionTask(t *task, state string) error {
 		return err
 	}
 	return a.append(t, "state.changed", map[string]string{"state": state})
+}
+
+func requestOwnerID(r *http.Request) string {
+	identity, ok := IdentityFromRequest(r)
+	if !ok {
+		return ""
+	}
+	return identity.UserID
+}
+
+func ownsOwner(resourceOwner, requestOwner string) bool {
+	return requestOwner == "" || resourceOwner == requestOwner
+}
+
+func (a *API) effectiveWorkspaceAccess(ctx context.Context, workspaceID, userID string) (workspaceaccess.Access, error) {
+	if a.workspaceAccess != nil {
+		return a.workspaceAccess.EffectiveAccess(ctx, workspaceID, userID)
+	}
+	if userID == "" {
+		return workspaceaccess.Editor, nil
+	}
+	ws, ok := a.workspaces[workspaceID]
+	if !ok {
+		return workspaceaccess.AccessNone, workspaceaccess.ErrWorkspaceNotFound
+	}
+	if ws.OwnerUserID == userID {
+		return workspaceaccess.Editor, nil
+	}
+	return workspaceaccess.AccessNone, nil
+}
+
+func (a *API) canReadWorkspace(ctx context.Context, workspaceID, userID string) bool {
+	access, err := a.effectiveWorkspaceAccess(ctx, workspaceID, userID)
+	return err == nil && access != workspaceaccess.AccessNone
+}
+
+func (a *API) canEditWorkspace(ctx context.Context, workspaceID, userID string) bool {
+	access, err := a.effectiveWorkspaceAccess(ctx, workspaceID, userID)
+	return err == nil && access == workspaceaccess.Editor
 }
 func writeData(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

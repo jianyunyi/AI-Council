@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/aicouncil/aicouncil/internal/runner/idempotency"
 	"github.com/aicouncil/aicouncil/internal/runner/pathguard"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
+	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
@@ -30,6 +32,15 @@ type Service struct {
 	idem           *idempotency.Store
 	collector      *runnercontext.Collector
 	newTransaction func() transaction
+	registry       *WorkspaceRegistry
+}
+
+type workspaceRuntime struct {
+	root           string
+	guard          *pathguard.Guard
+	executor       *command.Executor
+	collector      *runnercontext.Collector
+	newTransaction func() transaction
 }
 
 type transaction interface {
@@ -38,9 +49,17 @@ type transaction interface {
 }
 
 func NewService(root string) (*Service, error) {
-	return NewServiceWithDB(root, nil)
+	db, err := sqlite.Open(":memory:")
+	if err != nil {
+		return nil, err
+	}
+	return NewServiceWithDB(root, db)
 }
 func NewServiceWithDB(root string, db *gorm.DB) (*Service, error) {
+	registry, err := NewWorkspaceRegistry(root, db)
+	if err != nil {
+		return nil, err
+	}
 	guard, err := pathguard.New(root, 16<<20)
 	if err != nil {
 		return nil, err
@@ -49,22 +68,51 @@ func NewServiceWithDB(root string, db *gorm.DB) (*Service, error) {
 	if db != nil {
 		idem = idempotency.NewWithDB(db)
 	}
-	return &Service{root: guard.Root(), guard: guard, executor: command.NewExecutor(guard), idem: idem, collector: runnercontext.NewCollector(runnercontext.Limits{}), newTransaction: func() transaction { return files.NewTransaction(guard) }}, nil
+	return &Service{root: guard.Root(), guard: guard, executor: command.NewExecutor(guard), idem: idem, collector: runnercontext.NewCollector(runnercontext.Limits{}), newTransaction: func() transaction { return files.NewTransaction(guard) }, registry: registry}, nil
 }
-func (s *Service) DescribeWorkspace(ctx context.Context, _ *runnerv1.DescribeWorkspaceRequest) (*runnerv1.DescribeWorkspaceResponse, error) {
-	root, isGit, dirty := s.workspaceState(ctx)
-	resp := &runnerv1.DescribeWorkspaceResponse{Root: root, IsGit: isGit, Dirty: dirty}
-	if _, err := os.Stat(s.root + string(os.PathSeparator) + "go.mod"); err == nil {
-		resp.DetectedStacks = append(resp.DetectedStacks, "go")
+
+func (s *Service) RegisterWorkspace(ctx context.Context, req *runnerv1.RegisterWorkspaceRequest) (*runnerv1.RegisterWorkspaceResponse, error) {
+	root, err := s.registry.Register(req.GetWorkspaceId(), req.GetRelativePath())
+	if err != nil {
+		if errors.Is(err, ErrWorkspacePathOutsideRoot) || errors.Is(err, ErrWorkspaceIDRebound) || errors.Is(err, ErrWorkspacePathAlreadyRegistered) {
+			return nil, status.Error(codes.InvalidArgument, "workspace registration rejected")
+		}
+		return nil, status.Error(codes.Internal, "workspace registration failed")
 	}
-	if _, err := os.Stat(s.root + string(os.PathSeparator) + "package.json"); err == nil {
-		resp.DetectedStacks = append(resp.DetectedStacks, "node")
-	}
+	stateRoot, isGit, dirty := workspaceState(ctx, root)
+	resp := &runnerv1.RegisterWorkspaceResponse{Root: stateRoot, IsGit: isGit, Dirty: dirty}
+	resp.DetectedStacks = detectedStacks(root)
 	return resp, nil
 }
 
-func (s *Service) ReadWorkspaceContext(ctx context.Context, _ *runnerv1.ReadWorkspaceContextRequest) (*runnerv1.ReadWorkspaceContextResponse, error) {
-	snapshot, err := s.collector.Collect(ctx, s.root)
+func (s *Service) DescribeWorkspace(ctx context.Context, req *runnerv1.DescribeWorkspaceRequest) (*runnerv1.DescribeWorkspaceResponse, error) {
+	runtime, err := s.runtimeForWorkspace(req.GetWorkspaceId())
+	if err != nil {
+		return nil, err
+	}
+	root, isGit, dirty := workspaceState(ctx, runtime.root)
+	resp := &runnerv1.DescribeWorkspaceResponse{Root: root, IsGit: isGit, Dirty: dirty}
+	resp.DetectedStacks = detectedStacks(runtime.root)
+	return resp, nil
+}
+
+func detectedStacks(root string) []string {
+	var stacks []string
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+		stacks = append(stacks, "go")
+	}
+	if _, err := os.Stat(filepath.Join(root, "package.json")); err == nil {
+		stacks = append(stacks, "node")
+	}
+	return stacks
+}
+
+func (s *Service) ReadWorkspaceContext(ctx context.Context, req *runnerv1.ReadWorkspaceContextRequest) (*runnerv1.ReadWorkspaceContextResponse, error) {
+	runtime, err := s.runtimeForWorkspace(req.GetWorkspaceId())
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := runtime.collector.Collect(ctx, runtime.root)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, status.Error(codes.Canceled, err.Error())
@@ -74,7 +122,7 @@ func (s *Service) ReadWorkspaceContext(ctx context.Context, _ *runnerv1.ReadWork
 		}
 		return nil, status.Errorf(codes.Internal, "collect workspace context: %v", err)
 	}
-	root, isGit, dirty := s.workspaceState(ctx)
+	root, isGit, dirty := workspaceState(ctx, runtime.root)
 	resp := &runnerv1.ReadWorkspaceContextResponse{Root: root, IsGit: isGit, Dirty: dirty}
 	for _, file := range snapshot.Files {
 		resp.Files = append(resp.Files, &runnerv1.WorkspaceFile{Path: file.Path, Content: file.Content})
@@ -82,16 +130,34 @@ func (s *Service) ReadWorkspaceContext(ctx context.Context, _ *runnerv1.ReadWork
 	return resp, nil
 }
 
-func (s *Service) workspaceState(ctx context.Context) (root string, isGit bool, dirty bool) {
-	root = s.root
-	if _, err := os.Stat(s.root + string(os.PathSeparator) + ".git"); err == nil {
+func workspaceState(ctx context.Context, root string) (string, bool, bool) {
+	isGit, dirty := false, false
+	if _, err := os.Stat(filepath.Join(root, ".git")); err == nil {
 		isGit = true
-		cmd := exec.CommandContext(ctx, "git", "-C", s.root, "status", "--porcelain")
+		cmd := exec.CommandContext(ctx, "git", "-C", root, "status", "--porcelain")
 		if out, e := cmd.Output(); e == nil {
 			dirty = len(strings.TrimSpace(string(out))) > 0
 		}
 	}
 	return root, isGit, dirty
+}
+
+func (s *Service) runtimeForWorkspace(id string) (*workspaceRuntime, error) {
+	root, err := s.registry.Resolve(id)
+	if err != nil {
+		if errors.Is(err, ErrWorkspaceNotRegistered) {
+			return nil, status.Error(codes.NotFound, "workspace not registered")
+		}
+		return nil, status.Error(codes.PermissionDenied, "workspace path is no longer safe")
+	}
+	if filepath.Clean(root) == filepath.Clean(s.root) {
+		return &workspaceRuntime{root: root, guard: s.guard, executor: s.executor, collector: s.collector, newTransaction: s.newTransaction}, nil
+	}
+	guard, err := pathguard.New(root, 16<<20)
+	if err != nil {
+		return nil, status.Error(codes.PermissionDenied, "workspace path is unavailable")
+	}
+	return &workspaceRuntime{root: root, guard: guard, executor: command.NewExecutor(guard), collector: runnercontext.NewCollector(runnercontext.Limits{}), newTransaction: func() transaction { return files.NewTransaction(guard) }}, nil
 }
 func (s *Service) GetExecution(_ context.Context, req *runnerv1.GetExecutionRequest) (*runnerv1.ExecuteApprovedPlanResponse, error) {
 	if v, ok := s.idem.Get(req.RequestId); ok {
@@ -102,6 +168,10 @@ func (s *Service) GetExecution(_ context.Context, req *runnerv1.GetExecutionRequ
 func (s *Service) ExecuteApprovedPlan(ctx context.Context, req *runnerv1.ExecuteApprovedPlanRequest) (*runnerv1.ExecuteApprovedPlanResponse, error) {
 	if req.RequestId == "" {
 		return nil, status.Error(codes.InvalidArgument, "request_id is required")
+	}
+	runtime, err := s.runtimeForWorkspace(req.GetWorkspaceId())
+	if err != nil {
+		return nil, err
 	}
 	if saved, ok := s.idem.Get(req.RequestId); ok {
 		return saved, nil
@@ -134,7 +204,7 @@ func (s *Service) ExecuteApprovedPlan(ctx context.Context, req *runnerv1.Execute
 		return nil, status.Error(codes.PermissionDenied, "approval mismatch")
 	}
 	response := &runnerv1.ExecuteApprovedPlanResponse{RequestId: req.RequestId, Status: "SUCCEEDED"}
-	transaction := s.newTransaction()
+	transaction := runtime.newTransaction()
 	patchesApplied := len(plan.Patches) > 0
 	if patchesApplied {
 		if _, err := transaction.Apply(ctx, plan.Patches); err != nil {
@@ -150,7 +220,7 @@ func (s *Service) ExecuteApprovedPlan(ctx context.Context, req *runnerv1.Execute
 	}
 	runCommands := func(commands []schema.Command, kind string) bool {
 		for _, c := range commands {
-			result, runErr := s.executor.Run(ctx, command.Spec{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, Timeout: time.Duration(c.TimeoutSeconds) * time.Second, OutputLimit: 1 << 20})
+			result, runErr := runtime.executor.Run(ctx, command.Spec{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, Timeout: time.Duration(c.TimeoutSeconds) * time.Second, OutputLimit: 1 << 20})
 			step := &runnerv1.StepResult{Kind: kind, Name: c.Executable, ExitCode: int32(result.ExitCode), Stdout: result.Stdout, Stderr: result.Stderr, DurationMs: result.Duration.Milliseconds(), Status: "SUCCEEDED"}
 			if runErr != nil || result.TimedOut || result.ExitCode != 0 {
 				step.Status = "FAILED"

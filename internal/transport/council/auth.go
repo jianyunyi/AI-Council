@@ -146,7 +146,21 @@ func identityHasPermission(identity rbac.Identity, permission string) bool {
 }
 
 func isPublicRBACPath(method, path string) bool {
-	return path == "/healthz" || path == "/metrics" || (method == http.MethodPost && (path == "/api/v1/auth/login" || path == "/api/v1/auth/logout"))
+	if path == "/healthz" || path == "/metrics" {
+		return true
+	}
+	if method == http.MethodGet && path == "/api/v1/auth/oauth/providers" {
+		return true
+	}
+	if method == http.MethodGet {
+		for _, action := range []string{"start", "callback"} {
+			prefix := "/api/v1/auth/oauth/"
+			if strings.HasSuffix(path, "/"+action) && singleSegment(strings.TrimSuffix(path, "/"+action), prefix[:len(prefix)-1]) {
+				return true
+			}
+		}
+	}
+	return method == http.MethodPost && (path == "/api/v1/auth/login" || path == "/api/v1/auth/logout" || path == "/api/v1/auth/register" || path == "/api/v1/auth/verify-email" || path == "/api/v1/auth/password-reset/request" || path == "/api/v1/auth/password-reset/confirm")
 }
 
 func rbacRoutePermission(method, path string) (string, bool) {
@@ -157,12 +171,28 @@ func rbacRoutePermission(method, path string) (string, bool) {
 		return "workspace:read", true
 	case method == http.MethodPost && path == "/api/v1/workspaces":
 		return "workspace:write", true
-	case method == http.MethodPost && path == "/api/v1/providers/test":
+	case method == http.MethodGet && (path == "/api/v1/workspaces" || singleSegment(path, "/api/v1/workspaces")):
+		return "workspace:read", true
+	case method == http.MethodGet && workspaceChildPath(path,"members"):
 		return "workspace:write", true
+	case workspaceSharePath(method, path, http.MethodGet, 2):
+		return "workspace:read", true
+	case workspaceSharePath(method, path, http.MethodPut, 3), workspaceSharePath(method, path, http.MethodDelete, 3):
+		return "workspace:write", true
+	case method == http.MethodGet && path == "/api/v1/providers/keys":
+		return "provider:read", true
+	case method == http.MethodPost && path == "/api/v1/providers/keys":
+		return "provider:write", true
 	case method == http.MethodPost && path == "/api/v1/tasks":
 		return "task:write", true
 	case method == http.MethodGet && path == "/api/v1/admin/permissions":
 		return "admin:permissions", true
+	}
+	if strings.HasPrefix(path, "/api/v1/providers/keys/") && method == http.MethodDelete {
+		id := strings.TrimPrefix(path, "/api/v1/providers/keys/")
+		if id != "" && !strings.Contains(id, "/") {
+			return "provider:write", true
+		}
 	}
 	if permission, ok := taskRoutePermission(method, path); ok {
 		return permission, true
@@ -174,6 +204,22 @@ func rbacRoutePermission(method, path string) (string, bool) {
 		return "admin:roles", true
 	}
 	return "", false
+}
+
+func workspaceChildPath(path, child string) bool {
+	const prefix="/api/v1/workspaces/"
+	if !strings.HasPrefix(path,prefix) { return false }
+	parts:=strings.Split(strings.TrimPrefix(path,prefix),"/")
+	return len(parts)==2 && parts[0]!="" && parts[1]==child
+}
+
+func workspaceSharePath(method, path string, wantMethod string, count int) bool {
+	const prefix = "/api/v1/workspaces/"
+	if method != wantMethod || !strings.HasPrefix(path, prefix) { return false }
+	parts := strings.Split(strings.TrimPrefix(path, prefix), "/")
+	if len(parts) != count || parts[0] == "" || parts[1] != "shares" { return false }
+	if count == 2 { return true }
+	return parts[2] != ""
 }
 
 func taskRoutePermission(method, path string) (string, bool) {

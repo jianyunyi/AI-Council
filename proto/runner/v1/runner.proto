@@ -3,11 +3,14 @@ package aicouncil.runner.v1;
 option go_package = "github.com/aicouncil/aicouncil/internal/runner/rpc/generated;runnerv1";
 
 service WorkspaceRunner {
+  rpc RegisterWorkspace(RegisterWorkspaceRequest) returns (RegisterWorkspaceResponse);
   rpc DescribeWorkspace(DescribeWorkspaceRequest) returns (DescribeWorkspaceResponse);
   rpc ReadWorkspaceContext(ReadWorkspaceContextRequest) returns (ReadWorkspaceContextResponse);
   rpc ExecuteApprovedPlan(ExecuteApprovedPlanRequest) returns (ExecuteApprovedPlanResponse);
   rpc GetExecution(GetExecutionRequest) returns (ExecuteApprovedPlanResponse);
 }
+message RegisterWorkspaceRequest { string workspace_id = 1; string relative_path = 2; }
+message RegisterWorkspaceResponse { string root = 1; bool is_git = 2; bool dirty = 3; repeated string detected_stacks = 4; }
 message DescribeWorkspaceRequest { string workspace_id = 1; }
 message DescribeWorkspaceResponse { string root = 1; bool is_git = 2; bool dirty = 3; repeated string detected_stacks = 4; }
 message ReadWorkspaceContextRequest { string workspace_id = 1; }

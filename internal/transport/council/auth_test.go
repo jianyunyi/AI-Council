@@ -232,6 +232,42 @@ func TestRBACAuthEnforcesTaskAndAdminPermissionsAndKeepsHealthPublic(t *testing.
 	require.Equal(t, http.StatusNoContent, call(http.MethodGet, "/api/v1/admin/users", "admin-token").Code)
 }
 
+func TestProviderKeyRoutesRequireProviderPermissions(t *testing.T) {
+	for _, tc := range []struct{ method, path, want string }{
+		{http.MethodGet, "/api/v1/providers/keys", "provider:read"},
+		{http.MethodPost, "/api/v1/providers/keys", "provider:write"},
+		{http.MethodDelete, "/api/v1/providers/keys/key_1", "provider:write"},
+	} {
+		got, ok := rbacRoutePermission(tc.method, tc.path)
+		require.True(t, ok, tc.method+" "+tc.path)
+		require.Equal(t, tc.want, got)
+	}
+	if _, ok := rbacRoutePermission(http.MethodGet, "/api/v1/providers/keys/key_1"); ok {
+		t.Fatal("secret details must not be readable through an ID endpoint")
+	}
+}
+
+func TestWorkspaceShareRoutesRequireExactMethodsAndPaths(t *testing.T) {
+	for _, tc := range []struct{ method, path, want string }{
+		{http.MethodGet, "/api/v1/workspaces/ws/shares", "workspace:read"},
+		{http.MethodPut, "/api/v1/workspaces/ws/shares/alice", "workspace:write"},
+		{http.MethodDelete, "/api/v1/workspaces/ws/shares/alice", "workspace:write"},
+	} {
+		got, ok := rbacRoutePermission(tc.method, tc.path)
+		require.True(t, ok)
+		require.Equal(t, tc.want, got)
+	}
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/workspaces/ws/shares/alice"},
+		{http.MethodPut, "/api/v1/workspaces/ws/shares/a/b"},
+		{http.MethodDelete, "/api/v1/workspaces/ws/shares"},
+	} {
+		if _, ok := rbacRoutePermission(tc.method, tc.path); ok {
+			t.Fatalf("unexpected permission mapping for %s %s", tc.method, tc.path)
+		}
+	}
+}
+
 func TestRBACAuthDeniesUnknownTaskAndAdminDescendants(t *testing.T) {
 	service := newRBACService(t)
 	ctx := context.Background()

@@ -22,6 +22,7 @@ type AuditRecord struct {
 
 type ArtifactRecord struct {
 	ID            string `gorm:"primaryKey;size:64"`
+	OwnerUserID   string `gorm:"size:64;index"`
 	RunID         string `gorm:"not null;index"`
 	Type          string `gorm:"not null;size:64"`
 	SchemaVersion string `gorm:"not null;size:16"`
@@ -32,21 +33,40 @@ type ArtifactRecord struct {
 }
 
 type ProviderProfileRecord struct {
-	ID             string `gorm:"primaryKey;size:64"`
-	Provider       string
-	Model          string
-	ParametersJSON []byte
+	ID               string `gorm:"primaryKey;size:64"`
+	OwnerUserID      string `gorm:"size:64;index"`
+	Provider         string `gorm:"not null;size:32"`
+	Model            string `gorm:"not null;size:128"`
+	APIKeyCiphertext []byte
+	ParametersJSON   []byte
+	CreatedAt        time.Time
 }
 type WorkspaceRecord struct {
 	ID            string `gorm:"primaryKey;size:64"`
+	OwnerUserID   string `gorm:"size:64;index"`
 	CanonicalRoot string
+	RunnerPath    string
 	RunnerID      string
 	IsGit         bool
 	Dirty         bool
 	PolicyJSON    []byte
 }
+type WorkspaceShareRecord struct {
+	WorkspaceID string    `gorm:"primaryKey;size:64;uniqueIndex:idx_workspace_share_user,priority:1;index"`
+	UserID      string    `gorm:"primaryKey;size:64;uniqueIndex:idx_workspace_share_user,priority:2;index"`
+	Access      string    `gorm:"not null;size:16"`
+	GrantedBy   string    `gorm:"not null;size:64"`
+	CreatedAt   time.Time `gorm:"not null"`
+	UpdatedAt   time.Time `gorm:"not null"`
+}
+type RunnerWorkspaceRecord struct {
+	WorkspaceID   string    `gorm:"primaryKey;size:64"`
+	CanonicalRoot string    `gorm:"not null;uniqueIndex"`
+	CreatedAt     time.Time `gorm:"not null"`
+}
 type TaskRecord struct {
 	ID               string `gorm:"primaryKey;size:64"`
+	OwnerUserID      string `gorm:"size:64;index"`
 	WorkspaceID      string
 	Requirement      string
 	ConstraintsJSON  []byte
@@ -87,12 +107,42 @@ type ExecutionRecord struct {
 	CreatedAt    time.Time
 }
 type UserRecord struct {
-	ID           string  `gorm:"primaryKey;size:64"`
-	Subject      string  `gorm:"uniqueIndex;size:128"`
-	TokenHash    string  `gorm:"size:128"`
-	PasswordHash *string `gorm:"size:255"`
-	Disabled     bool
+	ID              string  `gorm:"primaryKey;size:64"`
+	Subject         string  `gorm:"uniqueIndex;size:128"`
+	Email           *string `gorm:"uniqueIndex;size:254"`
+	EmailVerifiedAt *time.Time
+	TokenHash       string  `gorm:"size:128"`
+	PasswordHash    *string `gorm:"size:255"`
+	Disabled        bool
+	CreatedAt       time.Time
+}
+
+type IdentityTokenRecord struct {
+	ID         string    `gorm:"primaryKey;size:64"`
+	UserID     string    `gorm:"not null;size:64;index"`
+	Purpose    string    `gorm:"not null;size:32;index"`
+	TokenHash  string    `gorm:"not null;uniqueIndex;size:64"`
+	ExpiresAt  time.Time `gorm:"not null;index"`
+	ConsumedAt *time.Time
+	CreatedAt  time.Time
+}
+
+type OAuthFlowRecord struct {
+	StateHash    string    `gorm:"primaryKey;size:64"`
+	Provider     string    `gorm:"not null;size:32"`
+	NonceHash    string    `gorm:"not null;size:64"`
+	VerifierHash string    `gorm:"not null;size:64"`
+	ExpiresAt    time.Time `gorm:"not null;index"`
+	ConsumedAt   *time.Time
 	CreatedAt    time.Time
+}
+
+type OAuthIdentityRecord struct {
+	ID              string `gorm:"primaryKey;size:64"`
+	UserID          string `gorm:"not null;size:64;index"`
+	Provider        string `gorm:"not null;size:32;uniqueIndex:idx_oauth_identity_provider_subject,priority:1"`
+	ProviderSubject string `gorm:"not null;size:255;uniqueIndex:idx_oauth_identity_provider_subject,priority:2"`
+	CreatedAt       time.Time
 }
 type RoleRecord struct {
 	ID   string `gorm:"primaryKey;size:64"`
