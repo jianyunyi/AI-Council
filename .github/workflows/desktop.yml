@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: '1.25.x' }
+        with: { go-version: '1.26.x' }
       - uses: pnpm/action-setup@v4
         with: { version: '9.15.0' }
       - uses: actions/setup-node@v4
