@@ -13,6 +13,8 @@ func TestWorkspaceRegistryPersistsAndRejectsRebindingOrAliasing(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "root")
 	require.NoError(t, os.Mkdir(root, 0o700))
+	root, err := filepath.EvalSymlinks(root)
+	require.NoError(t, err)
 	db, err := sqlite.Open(filepath.Join(base, "runner.db"))
 	require.NoError(t, err)
 	pool, err := db.DB()

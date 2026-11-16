@@ -262,7 +262,14 @@ func validateWorkspaceFiles(files []schema.WorkspaceFile) error {
 
 func isSafeRelativePath(value string) bool {
 	value = strings.TrimSpace(value)
-	return value != "" && !filepath.IsAbs(value) && !pathpkg.IsAbs(value) && filepath.VolumeName(value) == "" && !hasTraversalComponent(value)
+	return value != "" && !filepath.IsAbs(value) && !pathpkg.IsAbs(value) && !hasWindowsVolume(value) && filepath.VolumeName(value) == "" && !hasTraversalComponent(value)
+}
+
+func hasWindowsVolume(value string) bool {
+	if len(value) >= 2 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':' {
+		return true
+	}
+	return strings.HasPrefix(value, `\\`)
 }
 
 func isSafeWorkDir(value string) bool {

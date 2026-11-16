@@ -29,8 +29,12 @@ foreach ($dockerfile in 'Dockerfile.council', 'Dockerfile.runner') {
 
 $compose = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'docker-compose.yml')
 foreach ($service in 'council', 'runner') {
-    $buildArgument = '(?ms)^  {0}:\r?\n    build:.*?^      args:\r?\n^        GOPROXY: \$\{{GOPROXY:-https://goproxy\.cn,direct\}}\r?$' -f $service
-    Assert-Match -Content $compose -Pattern $buildArgument -Description "$service must pass GOPROXY to its image build"
+    $serviceBlockPattern = '(?ms)^  {0}:\r?\n(?<block>.*?)(?=^  [a-z][\w-]*:|\z)' -f $service
+    if ($compose -notmatch $serviceBlockPattern) {
+        throw "Could not find Compose service block: $service"
+    }
+    $buildArgument = '(?m)^\s+GOPROXY: \$\{GOPROXY:-https://goproxy\.cn,direct\}\r?$'
+    Assert-Match -Content $Matches['block'] -Pattern $buildArgument -Description "$service must pass GOPROXY to its image build"
 }
 
 $validatorPath = Join-Path $PSScriptRoot 'validate-compose.ps1'
