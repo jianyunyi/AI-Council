@@ -55,6 +55,8 @@ func TestExecuteApprovedPlanAppliesPatchAndIsIdempotent(t *testing.T) {
 
 func TestRegisteredWorkspaceIDsResolveToIsolatedRootsAndPersist(t *testing.T) {
 	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(base)
+	require.NoError(t, err)
 	firstRoot := filepath.Join(base, "first")
 	secondRoot := filepath.Join(base, "second")
 	require.NoError(t, os.Mkdir(firstRoot, 0o700))
