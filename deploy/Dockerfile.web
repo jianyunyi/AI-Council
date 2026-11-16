@@ -5,8 +5,9 @@ RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 
 FROM base AS dependencies
 
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 COPY web/package.json web/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --registry=${NPM_REGISTRY}
 
 FROM dependencies AS build
 

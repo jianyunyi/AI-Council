@@ -14,6 +14,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type contractRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f contractRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func contractClient(handler http.Handler) *http.Client {
+	return &http.Client{Transport: contractRoundTripper(func(r *http.Request) (*http.Response, error) {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, r)
+		return recorder.Result(), nil
+	})}
+}
+
 func TestAdaptersNormalizeResponses(t *testing.T) {
 	tests := []struct {
 		name string
@@ -32,14 +44,13 @@ func TestAdaptersNormalizeResponses(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				require.NotEmpty(t, r.Header.Get("Authorization"))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(tt.body))
-			}))
-			defer srv.Close()
-			resp, err := tt.new(srv.URL, srv.Client()).Generate(context.Background(), provider.Request{Messages: []provider.Message{{Role: "user", Content: "return json"}}})
+			})
+			resp, err := tt.new("https://provider.example/v1", contractClient(handler)).Generate(context.Background(), provider.Request{Messages: []provider.Message{{Role: "user", Content: "return json"}}})
 			require.NoError(t, err)
 			require.JSONEq(t, `{"ok":true}`, string(resp.Content))
 			require.Equal(t, int64(3), resp.Usage.InputTokens)
@@ -66,12 +77,11 @@ func TestAdaptersNormalizeRateLimitErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusTooManyRequests)
 				_, _ = w.Write([]byte(`{"error":"slow down"}`))
-			}))
-			defer srv.Close()
-			_, err := tt.new(srv.URL, srv.Client()).Generate(context.Background(), provider.Request{Messages: []provider.Message{{Role: "user", Content: "x"}}})
+			})
+			_, err := tt.new("https://provider.example/v1", contractClient(handler)).Generate(context.Background(), provider.Request{Messages: []provider.Message{{Role: "user", Content: "x"}}})
 			require.Error(t, err)
 			require.True(t, errors.Is(err, provider.ErrRateLimited), err)
 		})

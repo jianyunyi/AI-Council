@@ -12,6 +12,7 @@ import (
 
 	appTask "github.com/aicouncil/aicouncil/internal/app/task"
 	"github.com/aicouncil/aicouncil/internal/approval"
+	artifactcore "github.com/aicouncil/aicouncil/internal/core/artifact"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	"github.com/aicouncil/aicouncil/internal/observability/metrics"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
@@ -64,18 +65,19 @@ type workspace struct {
 	RunnerPath  string `json:"-"`
 }
 type task struct {
-	ID           string                                `json:"id"`
-	State        string                                `json:"state"`
-	WorkspaceID  string                                `json:"workspace_id"`
-	Requirement  string                                `json:"requirement"`
-	Acceptance   []string                              `json:"acceptance"`
-	PlanVersion  int                                   `json:"plan_version"`
-	ApprovalHash string                                `json:"approval_hash,omitempty"`
-	Approved     bool                                  `json:"approved"`
-	Plan         schema.ExecutionPlan                  `json:"plan,omitempty"`
-	Verification *runnerv1.ExecuteApprovedPlanResponse `json:"verification,omitempty"`
-	Events       []Event                               `json:"-"`
-	OwnerUserID  string                                `json:"-"`
+	ID                     string                                `json:"id"`
+	State                  string                                `json:"state"`
+	WorkspaceID            string                                `json:"workspace_id"`
+	Requirement            string                                `json:"requirement"`
+	Acceptance             []string                              `json:"acceptance"`
+	PlanVersion            int                                   `json:"plan_version"`
+	ApprovalHash           string                                `json:"approval_hash,omitempty"`
+	Approved               bool                                  `json:"approved"`
+	Plan                   schema.ExecutionPlan                  `json:"plan,omitempty"`
+	Verification           *runnerv1.ExecuteApprovedPlanResponse `json:"verification,omitempty"`
+	VerificationArtifactID string                                `json:"verification_artifact_id,omitempty"`
+	Events                 []Event                               `json:"-"`
+	OwnerUserID            string                                `json:"-"`
 }
 type Event struct {
 	ID        int64     `json:"id"`
@@ -145,7 +147,11 @@ func NewPersistentAPI(db *gorm.DB) *API {
 		if verification.RequestId != "" {
 			v = &verification
 		}
-		a.tasks[r.ID] = &task{ID: r.ID, State: state, WorkspaceID: r.WorkspaceID, Requirement: r.Requirement, Acceptance: acceptance, PlanVersion: r.PlanVersion, ApprovalHash: r.ApprovalHash, Approved: r.ApprovalGranted, Plan: plan, Verification: v, OwnerUserID: r.OwnerUserID}
+		verificationArtifactID := ""
+		if v != nil {
+			verificationArtifactID = verificationArtifactIDFor(r.ID, r.PlanVersion)
+		}
+		a.tasks[r.ID] = &task{ID: r.ID, State: state, WorkspaceID: r.WorkspaceID, Requirement: r.Requirement, Acceptance: acceptance, PlanVersion: r.PlanVersion, ApprovalHash: r.ApprovalHash, Approved: r.ApprovalGranted, Plan: plan, Verification: v, VerificationArtifactID: verificationArtifactID, OwnerUserID: r.OwnerUserID}
 	}
 	for id := range a.tasks {
 		if n, err := strconv.ParseInt(strings.TrimPrefix(id, "task-"), 10, 64); err == nil && n > a.nextID {
@@ -594,6 +600,19 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	}
 	a.metrics.RecordRunnerExecution(true, time.Since(runnerStarted))
 	t.Verification = resp
+	if a.artifactRepo != nil {
+		artifactID := verificationArtifactIDFor(t.ID, t.PlanVersion)
+		verificationArtifact, artifactErr := artifactcore.New("runner.verification", artifactID, t.ID, resp)
+		if artifactErr != nil {
+			writeErr(w, http.StatusInternalServerError, "artifact_persistence_failed", "Runner verification artifact could not be encoded")
+			return
+		}
+		if artifactErr = a.artifactRepo.SaveOwned(r.Context(), t.OwnerUserID, t.ID, verificationArtifact); artifactErr != nil {
+			writeErr(w, http.StatusInternalServerError, "artifact_persistence_failed", "Runner verification artifact could not be stored")
+			return
+		}
+		t.VerificationArtifactID = artifactID
+	}
 	t.State = "VERIFYING"
 	if err := a.persistTask(t); err != nil {
 		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
@@ -614,6 +633,11 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	}
 	writeData(w, 200, t)
 }
+
+func verificationArtifactIDFor(taskID string, planVersion int) string {
+	return taskID + "-verification-v" + strconv.Itoa(planVersion)
+}
+
 func (a *API) cancelTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

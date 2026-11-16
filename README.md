@@ -104,3 +104,6 @@ http://localhost:8088 {
 ## 注意
 
 Playwright 测试已纳入项目，但 Windows 当前环境可能无法启动 Chromium（`spawn UNKNOWN`）；请在 CI/Linux 或可用浏览器运行时执行完整浏览器 E2E。由于环境关闭 CGO，SQLite 使用纯 Go 的 `glebarez/go-sqlite` 驱动；`go test -race` 需在启用 CGO 的机器上运行。
+# Deployment
+
+See [the single-host operations guide](docs/operations/single-host.md) for production setup and lifecycle procedures.

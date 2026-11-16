@@ -22,8 +22,7 @@ import (
 )
 
 func TestStartAndCompleteGitHubOAuthCreatesVerifiedMember(t *testing.T) {
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := oauthTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/token":
 			w.Header().Set("Content-Type", "application/json")
@@ -36,8 +35,8 @@ func TestStartAndCompleteGitHubOAuthCreatesVerifiedMember(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
-	svc := newTestOAuthService(t, map[string]Config{"github": {ClientID: "client", ClientSecret: "secret", RedirectURL: "https://app.example/api/v1/auth/oauth/github/callback", AuthURL: "https://github.com/login/oauth/authorize", TokenURL: server.URL + "/token", APIBaseURL: server.URL}})
+	const providerURL = "http://127.0.0.1"
+	svc := newTestOAuthService(t, map[string]Config{"github": {ClientID: "client", ClientSecret: "secret", RedirectURL: "https://app.example/api/v1/auth/oauth/github/callback", AuthURL: "https://github.com/login/oauth/authorize", TokenURL: providerURL + "/token", APIBaseURL: providerURL}}, client)
 	flow, err := svc.Start(context.Background(), "github")
 	require.NoError(t, err)
 	require.Contains(t, flow.URL, "code_challenge_method=S256")
@@ -52,7 +51,7 @@ func TestStartAndCompleteGitHubOAuthCreatesVerifiedMember(t *testing.T) {
 }
 
 func TestOAuthStateIsBoundToProviderAndVerifier(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := oauthTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/token":
 			w.Header().Set("Content-Type", "application/json")
@@ -65,11 +64,11 @@ func TestOAuthStateIsBoundToProviderAndVerifier(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
+	const providerURL = "http://127.0.0.1"
 	svc := newTestOAuthService(t, map[string]Config{
-		"github": {ClientID: "g", ClientSecret: "s", RedirectURL: "https://app.example/cb", AuthURL: "https://github.com/login/oauth/authorize", TokenURL: server.URL + "/token", APIBaseURL: server.URL},
+		"github": {ClientID: "g", ClientSecret: "s", RedirectURL: "https://app.example/cb", AuthURL: "https://github.com/login/oauth/authorize", TokenURL: providerURL + "/token", APIBaseURL: providerURL},
 		"google": {ClientID: "x", ClientSecret: "y", RedirectURL: "https://app.example/cb", AuthURL: "https://accounts.google.com/o/oauth2/v2/auth"},
-	})
+	}, client)
 	flow, err := svc.Start(context.Background(), "github")
 	require.NoError(t, err)
 	_, err = svc.Complete(context.Background(), "google", "code", flow.State, flow.Verifier, flow.Nonce, time.Hour)
@@ -85,8 +84,7 @@ func TestGoogleOAuthRequiresVerifiedSignedIDTokenWithMatchingAudienceAndNonce(t 
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 	var nonce string
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := oauthTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/token":
 			claims := map[string]any{"iss": "https://accounts.google.com", "sub": "google-subject", "aud": "google-client", "email": "google@example.com", "email_verified": true, "nonce": nonce, "iat": time.Now().Unix(), "exp": time.Now().Add(5 * time.Minute).Unix()}
@@ -102,8 +100,8 @@ func TestGoogleOAuthRequiresVerifiedSignedIDTokenWithMatchingAudienceAndNonce(t 
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
-	svc := newTestOAuthService(t, map[string]Config{"google": {ClientID: "google-client", ClientSecret: "secret", RedirectURL: "https://app.example/callback", AuthURL: "https://accounts.google.com/o/oauth2/v2/auth", TokenURL: server.URL + "/token", JWKSURL: server.URL + "/jwks"}})
+	const providerURL = "http://127.0.0.1"
+	svc := newTestOAuthService(t, map[string]Config{"google": {ClientID: "google-client", ClientSecret: "secret", RedirectURL: "https://app.example/callback", AuthURL: "https://accounts.google.com/o/oauth2/v2/auth", TokenURL: providerURL + "/token", JWKSURL: providerURL + "/jwks"}}, client)
 	flow, err := svc.Start(context.Background(), "google")
 	require.NoError(t, err)
 	nonce = flow.Nonce
@@ -135,7 +133,19 @@ func signTestJWT(t *testing.T, key *rsa.PrivateKey, claims map[string]any) strin
 	return message + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
-func newTestOAuthService(t *testing.T, configs map[string]Config) *Service {
+func oauthTestClient(handler http.Handler) *http.Client {
+	return &http.Client{Transport: oauthTestRoundTripper(func(r *http.Request) (*http.Response, error) {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, r)
+		return recorder.Result(), nil
+	})}
+}
+
+type oauthTestRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f oauthTestRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func newTestOAuthService(t *testing.T, configs map[string]Config, clients ...*http.Client) *Service {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "oauth.db"))
 	require.NoError(t, err)
@@ -143,5 +153,9 @@ func newTestOAuthService(t *testing.T, configs map[string]Config) *Service {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	require.NoError(t, rbac.New(db).SeedPermissions(context.Background()))
-	return New(db, configs, http.DefaultClient)
+	var client *http.Client
+	if len(clients) != 0 {
+		client = clients[0]
+	}
+	return New(db, configs, client)
 }

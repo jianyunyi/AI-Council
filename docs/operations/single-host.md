@@ -1,5 +1,22 @@
 # Single-host backup and restore
 
+## Host setup and lifecycle
+
+Use Docker Desktop with Linux containers on Windows, or Docker Engine plus the Compose v2 plugin on Linux. DNS for the chosen public hostname must resolve to the host before starting Caddy; ports 80 and 443 must reach it. Permit inbound TCP 80/443 only. Do not publish Council, Runner, Prometheus, or Grafana ports. Compose keeps monitoring on the private app network.
+
+Create a private `deploy/.env` from `deploy/.env.example`; do not check it in or paste its contents into logs. Generate independent random bootstrap password, Runner token, and 64-hex backup key. Set `PUBLIC_BASE_URL` to the exact HTTPS origin. Set SMTP host, port, and sender (and paired username/password when required) to enable email accounts. OAuth is optional; for each configured GitHub or Google provider, set both client ID and secret and register `https://your-host/api/v1/auth/oauth/<provider>/callback`. Put certificate and key files in the configured `TLS_CERT_DIRECTORY` (default `deploy/certs`) and set `TLS_CERT` / `TLS_KEY` to their `/certs/...` paths inside Caddy.
+
+Preflight and deploy from the repository root with PowerShell 7 on either host OS:
+
+```powershell
+pwsh -File deploy/preflight.ps1
+pwsh -File deploy/deploy.ps1
+```
+
+The deploy command tags application images with the current Git SHA by default. An explicit immutable tag can be passed with `-ReleaseTag`. It backs up a running prior Council deployment, pulls only Caddy and Prometheus, builds app images, activates Compose, checks Runner, Council, and Web container health plus public HTTPS `/healthz` and `/` routes, and records the release in `.data/deployments`. Failed first installs stop containers while preserving named volumes. Failed upgrades attempt to restore the prior recorded tag and verify health before reporting rollback success.
+
+To roll back, use the recorded release tag after confirming all three local app images are available: `pwsh -File deploy/rollback.ps1 -ReleaseTag <tag>`. The command verifies Runner, Council, and Web container health plus the public HTTPS health and home routes before updating the active manifest. To stop services without deleting data, run `docker compose --env-file deploy/.env -f deploy/docker-compose.yml down`; do not add `-v`. Windows Docker Desktop bind mount paths must be shared with Docker; on Linux ensure the deployment user can access certificate, workspace, and backup directories. Keep firewall rules and DNS aligned when moving hosts.
+
 ## Runner workspaces and sharing
 
 Compose mounts the host directory selected by `WORKSPACE_DIRECTORY` into Runner at `/workspace`. The default is `../workspaces` relative to the Compose project directory. Create the directory and place or clone repositories inside it before registering them in the web UI. For example, if the host directory is `F:\AI-council\workspaces`, clone a repository into `F:\AI-council\workspaces\team-a\service` and register `team-a/service` in the UI. The UI accepts Runner-relative paths only; absolute paths and paths outside the configured root are rejected.
