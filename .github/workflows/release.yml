@@ -2,6 +2,7 @@ name: release-images
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
