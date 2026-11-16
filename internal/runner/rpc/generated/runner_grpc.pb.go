@@ -19,6 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	WorkspaceRunner_RegisterWorkspace_FullMethodName    = "/aicouncil.runner.v1.WorkspaceRunner/RegisterWorkspace"
 	WorkspaceRunner_DescribeWorkspace_FullMethodName    = "/aicouncil.runner.v1.WorkspaceRunner/DescribeWorkspace"
 	WorkspaceRunner_ReadWorkspaceContext_FullMethodName = "/aicouncil.runner.v1.WorkspaceRunner/ReadWorkspaceContext"
 	WorkspaceRunner_ExecuteApprovedPlan_FullMethodName  = "/aicouncil.runner.v1.WorkspaceRunner/ExecuteApprovedPlan"
@@ -29,6 +30,7 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WorkspaceRunnerClient interface {
+	RegisterWorkspace(ctx context.Context, in *RegisterWorkspaceRequest, opts ...grpc.CallOption) (*RegisterWorkspaceResponse, error)
 	DescribeWorkspace(ctx context.Context, in *DescribeWorkspaceRequest, opts ...grpc.CallOption) (*DescribeWorkspaceResponse, error)
 	ReadWorkspaceContext(ctx context.Context, in *ReadWorkspaceContextRequest, opts ...grpc.CallOption) (*ReadWorkspaceContextResponse, error)
 	ExecuteApprovedPlan(ctx context.Context, in *ExecuteApprovedPlanRequest, opts ...grpc.CallOption) (*ExecuteApprovedPlanResponse, error)
@@ -41,6 +43,16 @@ type workspaceRunnerClient struct {
 
 func NewWorkspaceRunnerClient(cc grpc.ClientConnInterface) WorkspaceRunnerClient {
 	return &workspaceRunnerClient{cc}
+}
+
+func (c *workspaceRunnerClient) RegisterWorkspace(ctx context.Context, in *RegisterWorkspaceRequest, opts ...grpc.CallOption) (*RegisterWorkspaceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegisterWorkspaceResponse)
+	err := c.cc.Invoke(ctx, WorkspaceRunner_RegisterWorkspace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *workspaceRunnerClient) DescribeWorkspace(ctx context.Context, in *DescribeWorkspaceRequest, opts ...grpc.CallOption) (*DescribeWorkspaceResponse, error) {
@@ -87,6 +99,7 @@ func (c *workspaceRunnerClient) GetExecution(ctx context.Context, in *GetExecuti
 // All implementations must embed UnimplementedWorkspaceRunnerServer
 // for forward compatibility.
 type WorkspaceRunnerServer interface {
+	RegisterWorkspace(context.Context, *RegisterWorkspaceRequest) (*RegisterWorkspaceResponse, error)
 	DescribeWorkspace(context.Context, *DescribeWorkspaceRequest) (*DescribeWorkspaceResponse, error)
 	ReadWorkspaceContext(context.Context, *ReadWorkspaceContextRequest) (*ReadWorkspaceContextResponse, error)
 	ExecuteApprovedPlan(context.Context, *ExecuteApprovedPlanRequest) (*ExecuteApprovedPlanResponse, error)
@@ -101,6 +114,9 @@ type WorkspaceRunnerServer interface {
 // pointer dereference when methods are called.
 type UnimplementedWorkspaceRunnerServer struct{}
 
+func (UnimplementedWorkspaceRunnerServer) RegisterWorkspace(context.Context, *RegisterWorkspaceRequest) (*RegisterWorkspaceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RegisterWorkspace not implemented")
+}
 func (UnimplementedWorkspaceRunnerServer) DescribeWorkspace(context.Context, *DescribeWorkspaceRequest) (*DescribeWorkspaceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DescribeWorkspace not implemented")
 }
@@ -132,6 +148,24 @@ func RegisterWorkspaceRunnerServer(s grpc.ServiceRegistrar, srv WorkspaceRunnerS
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&WorkspaceRunner_ServiceDesc, srv)
+}
+
+func _WorkspaceRunner_RegisterWorkspace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterWorkspaceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkspaceRunnerServer).RegisterWorkspace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkspaceRunner_RegisterWorkspace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkspaceRunnerServer).RegisterWorkspace(ctx, req.(*RegisterWorkspaceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _WorkspaceRunner_DescribeWorkspace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -213,6 +247,10 @@ var WorkspaceRunner_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "aicouncil.runner.v1.WorkspaceRunner",
 	HandlerType: (*WorkspaceRunnerServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "RegisterWorkspace",
+			Handler:    _WorkspaceRunner_RegisterWorkspace_Handler,
+		},
 		{
 			MethodName: "DescribeWorkspace",
 			Handler:    _WorkspaceRunner_DescribeWorkspace_Handler,

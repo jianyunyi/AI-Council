@@ -13,6 +13,7 @@ import (
 	"github.com/aicouncil/aicouncil/internal/provider"
 	runnergrpc "github.com/aicouncil/aicouncil/internal/runner/grpc"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
+	"github.com/aicouncil/aicouncil/internal/security/rbac"
 	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	transport "github.com/aicouncil/aicouncil/internal/transport/council"
 	"github.com/stretchr/testify/require"
@@ -44,6 +45,8 @@ func (r runnerPort) Execute(ctx context.Context, in task.ApprovedExecution) (sch
 }
 func TestCouncilApprovalRunnerVerificationFlow(t *testing.T) {
 	root := t.TempDir()
+	workspaceRoot := filepath.Join(root, "repo")
+	require.NoError(t, os.Mkdir(workspaceRoot, 0o700))
 	db, err := sqlite.Open(filepath.Join(root, "db.sqlite"))
 	require.NoError(t, err)
 	sqlDB, _ := db.DB()
@@ -51,6 +54,8 @@ func TestCouncilApprovalRunnerVerificationFlow(t *testing.T) {
 	runRepo := sqlite.NewRunRepository(db)
 	approvalRepo := sqlite.NewApprovalRepository(db)
 	runner, err := runnergrpc.NewService(root)
+	require.NoError(t, err)
+	_, err = runner.RegisterWorkspace(context.Background(), &runnerv1.RegisterWorkspaceRequest{WorkspaceId: "ws-1", RelativePath: "repo"})
 	require.NoError(t, err)
 	svc := task.NewService(runRepo, approvalRepo, nil, nil, runnerPort{runner}, 1)
 	ctx := context.Background()
@@ -68,7 +73,9 @@ func TestCouncilApprovalRunnerVerificationFlow(t *testing.T) {
 
 func TestCouncilApprovalExecutionVerificationLifecycle(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, "message.txt"), []byte("before\n"), 0o600))
+	workspaceRoot := filepath.Join(root, "repo")
+	require.NoError(t, os.Mkdir(workspaceRoot, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceRoot, "message.txt"), []byte("before\n"), 0o600))
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "db.sqlite"))
 	require.NoError(t, err)
 	sqlDB, _ := db.DB()
@@ -99,23 +106,28 @@ func TestCouncilApprovalExecutionVerificationLifecycle(t *testing.T) {
 		council.Seat{ID: "judge", Provider: "judge", Model: "test"},
 		council.Seat{ID: "red-team", Provider: "red-team", Model: "test"},
 	)
+	auth := rbac.New(db)
+	require.NoError(t, auth.BootstrapLegacyAdmin(context.Background(), "owner", "owner-token", "admin"))
+	require.NoError(t, auth.BootstrapLegacyAdmin(context.Background(), "editor", "editor-token", "admin"))
 	api := transport.NewPersistentAPI(db).WithRunnerClient(runnerv1.NewWorkspaceRunnerClient(connection)).WithCouncil(workflow)
-	workspace := e2eCall(t, api, http.MethodPost, "/api/v1/workspaces", e2eJSON(t, map[string]any{"root": root}), "")
+	workspace := e2eCallAs(t, api, auth, "owner-token", http.MethodPost, "/api/v1/workspaces", e2eJSON(t, map[string]any{"root": "repo"}))
 	require.Equal(t, http.StatusCreated, workspace.Code)
 	workspaceID := e2eData(t, workspace)["id"].(string)
-	created := e2eCall(t, api, http.MethodPost, "/api/v1/tasks", e2eJSON(t, map[string]any{"workspace_id": workspaceID, "requirement": "replace the message", "acceptance": []string{"message is council"}}), "")
+	grant := e2eCallAs(t, api, auth, "owner-token", http.MethodPut, "/api/v1/workspaces/"+workspaceID+"/shares/editor", e2eJSON(t, map[string]string{"access": "editor"}))
+	require.Equal(t, http.StatusNoContent, grant.Code)
+	created := e2eCallAs(t, api, auth, "editor-token", http.MethodPost, "/api/v1/tasks", e2eJSON(t, map[string]any{"workspace_id": workspaceID, "requirement": "replace the message", "acceptance": []string{"message is council"}}))
 	require.Equal(t, http.StatusCreated, created.Code)
 	id := e2eData(t, created)["id"].(string)
-	started := e2eCall(t, api, http.MethodPost, "/api/v1/tasks/"+id+"/start", "", id)
+	started := e2eCallAs(t, api, auth, "editor-token", http.MethodPost, "/api/v1/tasks/"+id+"/start", "")
 	require.Equal(t, http.StatusOK, started.Code)
 	startedData := e2eData(t, started)
 	approvalHash := startedData["approval_hash"].(string)
-	approved := e2eCall(t, api, http.MethodPost, "/api/v1/tasks/"+id+"/approve", e2eJSON(t, map[string]any{"plan_version": 1, "approval_hash": approvalHash}), id)
+	approved := e2eCallAs(t, api, auth, "editor-token", http.MethodPost, "/api/v1/tasks/"+id+"/approve", e2eJSON(t, map[string]any{"plan_version": 1, "approval_hash": approvalHash}))
 	require.Equal(t, http.StatusOK, approved.Code)
 
-	executed := e2eCall(t, api, http.MethodPost, "/api/v1/tasks/"+id+"/execute", "", id)
+	executed := e2eCallAs(t, api, auth, "editor-token", http.MethodPost, "/api/v1/tasks/"+id+"/execute", "")
 	require.Equal(t, http.StatusOK, executed.Code)
-	require.Equal(t, "council\n", string(mustReadFile(t, filepath.Join(root, "message.txt"))))
+	require.Equal(t, "council\n", string(mustReadFile(t, filepath.Join(workspaceRoot, "message.txt"))))
 	executedData := e2eData(t, executed)
 	verification, ok := executedData["verification"].(map[string]any)
 	require.True(t, ok)
@@ -124,12 +136,21 @@ func TestCouncilApprovalExecutionVerificationLifecycle(t *testing.T) {
 	require.True(t, e2eHasSuccessfulStep(steps, "command"))
 	require.True(t, e2eHasSuccessfulStep(steps, "verification"))
 
-	readback := e2eCall(t, api, http.MethodGet, "/api/v1/tasks/"+id, "", id)
+	readback := e2eCallAs(t, api, auth, "editor-token", http.MethodGet, "/api/v1/tasks/"+id, "")
 	require.Equal(t, http.StatusOK, readback.Code)
 	require.Equal(t, "SUCCEEDED", e2eData(t, readback)["state"])
-	second := e2eCall(t, api, http.MethodPost, "/api/v1/tasks/"+id+"/execute", "", id)
+	second := e2eCallAs(t, api, auth, "editor-token", http.MethodPost, "/api/v1/tasks/"+id+"/execute", "")
 	require.Equal(t, http.StatusConflict, second.Code)
-	require.Equal(t, "council\n", string(mustReadFile(t, filepath.Join(root, "message.txt"))))
+	require.Equal(t, "council\n", string(mustReadFile(t, filepath.Join(workspaceRoot, "message.txt"))))
+	revoked := e2eCallAs(t, api, auth, "owner-token", http.MethodDelete, "/api/v1/workspaces/"+workspaceID+"/shares/editor", "")
+	require.Equal(t, http.StatusNoContent, revoked.Code)
+	require.Equal(t, http.StatusNotFound, e2eCallAs(t, api, auth, "editor-token", http.MethodGet, "/api/v1/workspaces/"+workspaceID, "").Code)
+	require.Equal(t, http.StatusNotFound, e2eCallAs(t, api, auth, "editor-token", http.MethodGet, "/api/v1/tasks/"+id, "").Code)
+	require.Equal(t, http.StatusNotFound, e2eCallAs(t, api, auth, "editor-token", http.MethodGet, "/api/v1/tasks/"+id+"/artifacts/private", "").Code)
+	require.Equal(t, http.StatusNotFound, e2eCallAs(t, api, auth, "editor-token", http.MethodPost, "/api/v1/tasks/"+id+"/start", "").Code)
+	events := e2eCallAs(t, api, auth, "editor-token", http.MethodGet, "/api/v1/tasks/"+id+"/events", "")
+	require.NotContains(t, events.Body.String(), "task.created")
+	require.Equal(t, http.StatusOK, e2eCallAs(t, api, auth, "owner-token", http.MethodGet, "/api/v1/workspaces/"+workspaceID, "").Code)
 }
 
 type lifecycleProvider struct {
@@ -150,23 +171,51 @@ func (p *lifecycleProvider) Generate(_ context.Context, _ provider.Request) (pro
 }
 
 func e2eCall(t *testing.T, api *transport.API, method, requestPath, body, id string) *httptest.ResponseRecorder {
+	return e2eCallAs(t, api, nil, "", method, requestPath, body)
+}
+
+func e2eCallAs(t *testing.T, api *transport.API, auth *rbac.Service, token, method, requestPath, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	for _, route := range api.Routes() {
+	routes := append(api.Routes(), api.WorkspaceShareRoutes()...)
+	for _, route := range routes {
 		if route.Method != method {
 			continue
 		}
-		if (id == "" && route.Path == requestPath) || (id != "" && route.Path == "/api/v1/tasks/:id"+strings.TrimPrefix(requestPath, "/api/v1/tasks/"+id)) {
+		vars, ok := matchE2ERoute(route.Path, requestPath)
+		if ok {
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(method, requestPath, bytes.NewBufferString(body))
-			if id != "" {
-				request = pathvar.WithVars(request, map[string]string{"id": id})
+			if len(vars) > 0 {
+				request = pathvar.WithVars(request, vars)
 			}
-			route.Handler(recorder, request)
+			handler := route.Handler
+			if auth != nil {
+				request.Header.Set("Authorization", "Bearer "+token)
+				handler = transport.RBACAuth(auth, "")(handler)
+			}
+			handler(recorder, request)
 			return recorder
 		}
 	}
 	t.Fatalf("missing route %s %s", method, requestPath)
 	return nil
+}
+
+func matchE2ERoute(pattern, requestPath string) (map[string]string, bool) {
+	patternParts := strings.Split(strings.Trim(pattern, "/"), "/")
+	requestParts := strings.Split(strings.Trim(requestPath, "/"), "/")
+	if len(patternParts) != len(requestParts) {
+		return nil, false
+	}
+	vars := map[string]string{}
+	for i, part := range patternParts {
+		if strings.HasPrefix(part, ":") {
+			vars[strings.TrimPrefix(part, ":")] = requestParts[i]
+		} else if part != requestParts[i] {
+			return nil, false
+		}
+	}
+	return vars, true
 }
 
 func e2eData(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {

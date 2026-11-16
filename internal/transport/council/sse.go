@@ -15,6 +15,7 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
+	workspaceID, runID := t.WorkspaceID, t.ID
 	after, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
 	if q := r.URL.Query().Get("after"); q != "" {
 		after, _ = strconv.ParseInt(q, 10, 64)
@@ -22,12 +23,16 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 	events := append([]Event(nil), t.Events...)
 	a.mu.Unlock()
 	if a.eventRepo != nil {
-		if persisted, err := a.eventRepo.After(r.Context(), t.ID, after, 200); err == nil {
+		if persisted, err := a.eventRepo.After(r.Context(), runID, after, 200); err == nil {
 			events = events[:0]
 			for _, e := range persisted {
 				events = append(events, Event{ID: e.Sequence, Type: e.Type, Data: json.RawMessage(e.Data), CreatedAt: e.CreatedAt})
 			}
 		}
+	}
+	if !a.canReadWorkspace(r.Context(), workspaceID, requestOwnerID(r)) {
+		writeErr(w, http.StatusNotFound, "not_found", "task not found")
+		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -37,6 +42,9 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, e := range events {
+		if !a.canReadWorkspace(r.Context(), workspaceID, requestOwnerID(r)) {
+			return
+		}
 		if e.ID <= after {
 			continue
 		}

@@ -141,6 +141,9 @@ func TestRuntimeStartsLoopbackServicesWithIsolatedConfiguration(t *testing.T) {
 	if got := council.Env["OPENAI_API_KEY"]; got != "provider-secret" {
 		t.Errorf("council environment secret = %q", got)
 	}
+	if got := council.Env["RUNNER_WORKSPACE_ROOT"]; got != "C:/workspace" {
+		t.Errorf("council runner workspace root = %q, want %q", got, "C:/workspace")
+	}
 	if _, ok := runner.Env["OPENAI_API_KEY"]; ok {
 		t.Error("provider key must not be injected into runner")
 	}

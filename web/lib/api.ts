@@ -1,4 +1,4 @@
-import {CreateRoleInput,CreateUserInput,Envelope,Identity,ManagedRole,ManagedUser,Permission,Task,UpdateRoleInput,UpdateUserInput,Workspace} from './types'
+import {CreateRoleInput,CreateUserInput,Envelope,Identity,ManagedRole,ManagedUser,Permission,Task,UpdateRoleInput,UpdateUserInput,Workspace,WorkspaceShare} from './types'
 import {apiBase,authorizationHeader} from './desktop'
 
 const unauthorizedListeners=new Set<()=>void>()
@@ -26,6 +26,16 @@ export async function request<T>(path:string,init:RequestInit={}):Promise<T>{
 }
 
 export function login(input:{subject:string;password:string}){return request<Identity>('/auth/login',{method:'POST',body:JSON.stringify(input)})}
+export function register(input:{email:string;password:string}){return request<{status:string}>('/auth/register',{method:'POST',body:JSON.stringify(input)})}
+export function verifyEmail(token:string){return request<{status:string}>('/auth/verify-email',{method:'POST',body:JSON.stringify({token})})}
+export function requestPasswordReset(email:string){return request<{status:string}>('/auth/password-reset/request',{method:'POST',body:JSON.stringify({email})})}
+export function confirmPasswordReset(input:{token:string;password:string}){return request<{status:string}>('/auth/password-reset/confirm',{method:'POST',body:JSON.stringify(input)})}
+export function oauthStartURL(provider:'github'|'google'){return `${apiBase()}/auth/oauth/${provider}/start`}
+export function listOAuthProviders(){return request<{providers:string[]}>('/auth/oauth/providers')}
+export type ProviderKeyProfile={id:string;provider:'openai'|'deepseek'|'anthropic';model:string;masked_key:string;has_key:boolean;created_at:string}
+export function listProviderKeys(){return request<ProviderKeyProfile[]>('/providers/keys')}
+export function createProviderKey(input:{provider:ProviderKeyProfile['provider'];model:string;api_key:string}){return request<ProviderKeyProfile>('/providers/keys',{method:'POST',body:JSON.stringify(input)})}
+export function deleteProviderKey(id:string){return request<void>(`/providers/keys/${encodeURIComponent(id)}`,{method:'DELETE'})}
 export function me(){return request<Identity>('/auth/me')}
 export function logout(){return request<void>('/auth/logout',{method:'POST'})}
 export function listUsers(){return request<ManagedUser[]>('/admin/users')}
@@ -37,6 +47,11 @@ export function updateRole(name:string,input:UpdateRoleInput){return request<Man
 export function listPermissions(){return request<Permission[]>('/admin/permissions')}
 export function createWorkspace(root:string){return request<Workspace>('/workspaces',{method:'POST',body:JSON.stringify({root})})}
 export function listWorkspaces(){return request<Workspace[]>('/workspaces')}
+export function getWorkspace(id:string){return request<Workspace>(`/workspaces/${encodeURIComponent(id)}`)}
+export function listWorkspaceShares(id:string){return request<WorkspaceShare[]>(`/workspaces/${encodeURIComponent(id)}/shares`)}
+export function searchWorkspaceMembers(id:string,query:string){return request<{subject:string}[]>(`/workspaces/${encodeURIComponent(id)}/members?q=${encodeURIComponent(query)}`)}
+export function putWorkspaceShare(id:string,subject:string,access:WorkspaceShare['access']){return request<void>(`/workspaces/${encodeURIComponent(id)}/shares/${encodeURIComponent(subject)}`,{method:'PUT',body:JSON.stringify({access})})}
+export function deleteWorkspaceShare(id:string,subject:string){return request<void>(`/workspaces/${encodeURIComponent(id)}/shares/${encodeURIComponent(subject)}`,{method:'DELETE'})}
 export function createTask(input:{workspaceId:string;requirement:string;acceptance:string[]}){return request<Task>('/tasks',{method:'POST',body:JSON.stringify({workspace_id:input.workspaceId,requirement:input.requirement,acceptance:input.acceptance})})}
 export function getTask(id:string){return request<Task>(`/tasks/${encodeURIComponent(id)}`)}
 export function startTask(id:string){return request<Task>(`/tasks/${encodeURIComponent(id)}/start`,{method:'POST'})}

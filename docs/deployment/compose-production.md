@@ -64,7 +64,10 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml logs --follow
 ```
 
 The services restart with `unless-stopped`. Caddy waits for the web console and
-Council health checks; Council waits for Runner health before it starts.
+Council liveness checks; Council waits for Runner health before it starts. The
+Council container health check uses `/readyz`, which also checks its SQLite
+connection and Runner gRPC connectivity. `/readyz` is internal and is not
+routed by Caddy.
 
 ## First login and checks
 
@@ -83,10 +86,27 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
 ```
 
 Only `/api/*`, `/healthz`, and the web application are routed by Caddy.
-`/metrics` is deliberately not public. Scrape it only from a protected service
-attached to the private `app` network, or add a separately authenticated and
-network-restricted metrics route. Do not expose it through the public Caddy
-site without access controls.
+`/metrics` is deliberately not public. Compose includes an internal Prometheus
+service on the private `app` network; it scrapes Council every 15 seconds and
+stores up to 30 days or 2 GB of samples in a persistent volume. Prometheus
+publishes no host port. Do not expose either `/metrics` or Prometheus through public Caddy
+routes without access controls.
+
+Council exports bounded-cardinality HTTP status and latency, authentication
+failure, permission denial, rate-limit, task, Council run, approval, Runner
+execution latency/failure, and Provider call/error/retry/cost metrics. Provider
+labels are restricted to `openai`, `anthropic`, `deepseek`, or `other`; request,
+user, workspace, task, model, and credential values are never used as labels.
+It also reports SQLite busy/locked errors and the time spent waiting before
+those errors were returned.
+Provider cost values are estimates in integer microdollars based on the
+configured model price table, not billing totals from the provider.
+SQLite lock-wait samples are recorded when a SQLite busy/locked error is
+returned, including the time spent waiting before that error; successful waits
+are not separately observable with the configured SQLite driver. Import
+[`deploy/grafana/dashboard.json`](../../deploy/grafana/dashboard.json) into
+Grafana and select the Prometheus datasource to view HTTP, Council, Runner,
+Provider, security, cost, and SQLite panels.
 
 ## GitHub Actions CI and release readiness
 

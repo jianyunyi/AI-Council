@@ -35,6 +35,48 @@ func TestAuthConfigCookieSecureOnlyExplicitFalseDowngrades(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyOwnershipRequiresBootstrapAndAssignsExistingRows(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "ownership.db"))
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, db.Create(&sqlite.WorkspaceRecord{ID: "old-workspace", CanonicalRoot: "/workspace"}).Error)
+	require.Error(t, migrateLegacyOwnership(context.Background(), db, ""))
+	admin := sqlite.UserRecord{ID: "admin-id", Subject: "admin"}
+	require.NoError(t, db.Create(&admin).Error)
+	require.NoError(t, migrateLegacyOwnership(context.Background(), db, "admin"))
+	var got sqlite.WorkspaceRecord
+	require.NoError(t, db.First(&got, "id = ?", "old-workspace").Error)
+	require.Equal(t, admin.ID, got.OwnerUserID)
+}
+
+func TestConfiguredOAuthRequiresCompleteCredentialsAndHTTPSBaseURL(t *testing.T) {
+	getenv := func(values map[string]string) func(string) string {
+		return func(key string) string { return values[key] }
+	}
+	service, err := configuredOAuth(nil, getenv(map[string]string{}))
+	require.NoError(t, err)
+	require.Nil(t, service)
+	_, err = configuredOAuth(nil, getenv(map[string]string{"GITHUB_OAUTH_CLIENT_ID": "id", "PUBLIC_BASE_URL": "https://council.example"}))
+	require.Error(t, err)
+	_, err = configuredOAuth(nil, getenv(map[string]string{"GITHUB_OAUTH_CLIENT_ID": "id", "GITHUB_OAUTH_CLIENT_SECRET": "secret", "PUBLIC_BASE_URL": "http://council.example"}))
+	require.Error(t, err)
+	service, err = configuredOAuth(nil, getenv(map[string]string{"GITHUB_OAUTH_CLIENT_ID": "id", "GITHUB_OAUTH_CLIENT_SECRET": "secret", "PUBLIC_BASE_URL": "https://council.example"}))
+	require.NoError(t, err)
+	require.True(t, service.Enabled("github"))
+	require.False(t, service.Enabled("google"))
+}
+
+func TestConfiguredOAuthRejectsIncompleteProviderPair(t *testing.T) {
+	values := map[string]string{
+		"PUBLIC_BASE_URL":        "https://council.example",
+		"GOOGLE_OAUTH_CLIENT_ID": "id",
+	}
+	_, err := configuredOAuth(nil, func(key string) string { return values[key] })
+	require.Error(t, err)
+}
+
 func TestAuthFlagHelpDoesNotExposeEnvironmentPassword(t *testing.T) {
 	flags := flag.NewFlagSet("auth", flag.ContinueOnError)
 	var help bytes.Buffer
@@ -125,7 +167,7 @@ func TestConfigureRBACPasswordBootstrapAndRestart(t *testing.T) {
 	require.Equal(t, []string{"admin:users"}, roles[0].Permissions)
 	permissions, err := service.ListPermissions(ctx)
 	require.NoError(t, err)
-	require.Len(t, permissions, 10)
+	require.Len(t, permissions, 12)
 }
 
 func TestConfigureRBACLegacyBootstrapKeepsBearerToken(t *testing.T) {

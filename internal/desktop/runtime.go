@@ -195,6 +195,10 @@ func (r *Runtime) Start(ctx context.Context) error {
 	}
 
 	startContext := context.WithoutCancel(ctx)
+	councilEnvironment := cloneEnvironment(r.options.Environment)
+	if r.options.WorkspaceRoot != "" {
+		councilEnvironment["RUNNER_WORKSPACE_ROOT"] = r.options.WorkspaceRoot
+	}
 	runner, err := r.startChild(startContext, "runner", ProcessSpec{
 		Name:   r.options.Config.RunnerBinary,
 		Args:   runnerArgs,
@@ -207,7 +211,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	council, err := r.startChild(startContext, "council", ProcessSpec{
 		Name:   r.options.Config.CouncilBinary,
 		Args:   councilArgs,
-		Env:    cloneEnvironment(r.options.Environment),
+		Env:    councilEnvironment,
 		Stdout: councilLog,
 		Stderr: councilLog,
 	})

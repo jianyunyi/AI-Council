@@ -14,17 +14,28 @@ import (
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	"github.com/aicouncil/aicouncil/internal/runner/files"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
+	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
+func newRegisteredService(t *testing.T, root string, ids ...string) *Service {
+	t.Helper()
+	svc, err := NewService(root)
+	require.NoError(t, err)
+	for _, id := range ids {
+		_, err := svc.RegisterWorkspace(context.Background(), &runnerv1.RegisterWorkspaceRequest{WorkspaceId: id, RelativePath: "."})
+		require.NoError(t, err)
+	}
+	return svc
+}
+
 func TestExecuteApprovedPlanAppliesPatchAndIsIdempotent(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.go")
 	require.NoError(t, os.WriteFile(path, []byte("old\n"), 0o600))
-	svc, err := NewService(root)
-	require.NoError(t, err)
+	svc := newRegisteredService(t, root, "ws-1")
 	h := sha256.Sum256([]byte("old\n"))
 	plan := schema.ExecutionPlan{Version: 1, Patches: []schema.Patch{{Path: "main.go", UnifiedDiff: "@@ -1 +1 @@\n-old\n+new\n", BeforeHash: hex.EncodeToString(h[:])}}}
 	hash, err := approval.Hash("run-1", "ws-1", plan)
@@ -42,12 +53,58 @@ func TestExecuteApprovedPlanAppliesPatchAndIsIdempotent(t *testing.T) {
 	require.Equal(t, "new\n", string(got))
 }
 
+func TestRegisteredWorkspaceIDsResolveToIsolatedRootsAndPersist(t *testing.T) {
+	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(base)
+	require.NoError(t, err)
+	firstRoot := filepath.Join(base, "first")
+	secondRoot := filepath.Join(base, "second")
+	require.NoError(t, os.Mkdir(firstRoot, 0o700))
+	require.NoError(t, os.Mkdir(secondRoot, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(firstRoot, "first.txt"), []byte("first"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(secondRoot, "second.txt"), []byte("second"), 0o600))
+	db, err := sqlite.Open(filepath.Join(base, "runner.db"))
+	require.NoError(t, err)
+	pool, err := db.DB()
+	require.NoError(t, err)
+	defer pool.Close()
+	svc, err := NewServiceWithDB(filepath.Join(base), db)
+	require.NoError(t, err)
+	for id, path := range map[string]string{"ws-first": "first", "ws-second": "second"} {
+		_, err := svc.RegisterWorkspace(context.Background(), &runnerv1.RegisterWorkspaceRequest{WorkspaceId: id, RelativePath: path})
+		require.NoError(t, err)
+	}
+	first, err := svc.ReadWorkspaceContext(context.Background(), &runnerv1.ReadWorkspaceContextRequest{WorkspaceId: "ws-first"})
+	require.NoError(t, err)
+	require.Equal(t, firstRoot, first.Root)
+	require.Equal(t, "first.txt", first.Files[0].Path)
+	second, err := svc.ReadWorkspaceContext(context.Background(), &runnerv1.ReadWorkspaceContextRequest{WorkspaceId: "ws-second"})
+	require.NoError(t, err)
+	require.Equal(t, secondRoot, second.Root)
+	require.Equal(t, "second.txt", second.Files[0].Path)
+	_, err = svc.DescribeWorkspace(context.Background(), &runnerv1.DescribeWorkspaceRequest{WorkspaceId: "unknown"})
+	require.Equal(t, codes.NotFound, status.Code(err))
+
+	svc, err = NewServiceWithDB(base, db)
+	require.NoError(t, err)
+	registered, err := svc.DescribeWorkspace(context.Background(), &runnerv1.DescribeWorkspaceRequest{WorkspaceId: "ws-first"})
+	require.NoError(t, err)
+	require.Equal(t, firstRoot, registered.Root)
+}
+
+func TestRunnerRejectsUnknownWorkspaceForContextAndExecution(t *testing.T) {
+	svc := newRegisteredService(t, t.TempDir(), "known")
+	_, err := svc.ReadWorkspaceContext(context.Background(), &runnerv1.ReadWorkspaceContextRequest{WorkspaceId: "unknown"})
+	require.Equal(t, codes.NotFound, status.Code(err))
+	_, err = svc.ExecuteApprovedPlan(context.Background(), &runnerv1.ExecuteApprovedPlanRequest{RequestId: "unknown-run", RunId: "run", WorkspaceId: "unknown"})
+	require.Equal(t, codes.NotFound, status.Code(err))
+}
+
 func TestExecuteApprovedPlanRestoresPatchWhenVerificationFails(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.go")
 	require.NoError(t, os.WriteFile(path, []byte("old\n"), 0o600))
-	svc, err := NewService(root)
-	require.NoError(t, err)
+	svc := newRegisteredService(t, root, "ws-verify")
 	h := sha256.Sum256([]byte("old\n"))
 	plan := schema.ExecutionPlan{
 		Version:              1,
@@ -75,8 +132,7 @@ func TestExecuteApprovedPlanRestoresPatchWhenVerificationFails(t *testing.T) {
 }
 
 func TestExecuteApprovedPlanStopsAfterCommandFailure(t *testing.T) {
-	svc, err := NewService(t.TempDir())
-	require.NoError(t, err)
+	svc := newRegisteredService(t, t.TempDir(), "ws-command-failure")
 
 	plan := schema.ExecutionPlan{
 		Version:              1,
@@ -100,8 +156,7 @@ func TestExecuteApprovedPlanStopsAfterCommandFailure(t *testing.T) {
 }
 
 func TestExecuteApprovedPlanReportsRollbackFailure(t *testing.T) {
-	svc, err := NewService(t.TempDir())
-	require.NoError(t, err)
+	svc := newRegisteredService(t, t.TempDir(), "ws-rollback-failure")
 	svc.newTransaction = func() transaction { return restoreFailingTransaction{} }
 
 	plan := schema.ExecutionPlan{
@@ -134,15 +189,13 @@ func (restoreFailingTransaction) Apply(context.Context, []schema.Patch) ([]files
 func (restoreFailingTransaction) Restore() error { return errors.New("restore failed") }
 
 func TestExecuteApprovedPlanRejectsTamperedApproval(t *testing.T) {
-	svc, err := NewService(t.TempDir())
-	require.NoError(t, err)
-	_, err = svc.ExecuteApprovedPlan(context.Background(), &runnerv1.ExecuteApprovedPlanRequest{RequestId: "req-1", RunId: "run-1", WorkspaceId: "ws-1", PlanVersion: 1, ApprovalHash: "tampered"})
+	svc := newRegisteredService(t, t.TempDir(), "ws-1")
+	_, err := svc.ExecuteApprovedPlan(context.Background(), &runnerv1.ExecuteApprovedPlanRequest{RequestId: "req-1", RunId: "run-1", WorkspaceId: "ws-1", PlanVersion: 1, ApprovalHash: "tampered"})
 	require.Error(t, err)
 }
 
 func TestExecuteApprovedPlanRejectsTamperedRequest(t *testing.T) {
-	svc, err := NewService(t.TempDir())
-	require.NoError(t, err)
+	svc := newRegisteredService(t, t.TempDir(), "ws-tampered")
 
 	plan := schema.ExecutionPlan{Version: 1, Commands: []schema.Command{{Executable: "echo", Args: []string{"approved"}}}}
 	hash, err := approval.Hash("run-tampered", "ws-tampered", plan)
@@ -159,9 +212,8 @@ func TestDescribeWorkspaceDetectsGitAndStacks(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte("module sample\n"), 0o600))
-	svc, err := NewService(root)
-	require.NoError(t, err)
-	resp, err := svc.DescribeWorkspace(context.Background(), &runnerv1.DescribeWorkspaceRequest{})
+	svc := newRegisteredService(t, root, "ws-describe")
+	resp, err := svc.DescribeWorkspace(context.Background(), &runnerv1.DescribeWorkspaceRequest{WorkspaceId: "ws-describe"})
 	require.NoError(t, err)
 	require.True(t, resp.IsGit)
 	require.Contains(t, resp.DetectedStacks, "go")
@@ -173,12 +225,11 @@ func TestReadWorkspaceContextUsesConfiguredRootAndSafeFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET=value\n"), 0o600))
 
-	svc, err := NewService(root)
-	require.NoError(t, err)
-	described, err := svc.DescribeWorkspace(context.Background(), &runnerv1.DescribeWorkspaceRequest{})
+	svc := newRegisteredService(t, root, "ws-context")
+	described, err := svc.DescribeWorkspace(context.Background(), &runnerv1.DescribeWorkspaceRequest{WorkspaceId: "ws-context"})
 	require.NoError(t, err)
 
-	resp, err := svc.ReadWorkspaceContext(context.Background(), &runnerv1.ReadWorkspaceContextRequest{WorkspaceId: "untrusted-workspace-id"})
+	resp, err := svc.ReadWorkspaceContext(context.Background(), &runnerv1.ReadWorkspaceContextRequest{WorkspaceId: "ws-context"})
 	require.NoError(t, err)
 	require.Equal(t, described.Root, resp.Root)
 	require.Equal(t, described.IsGit, resp.IsGit)
@@ -187,21 +238,19 @@ func TestReadWorkspaceContextUsesConfiguredRootAndSafeFiles(t *testing.T) {
 }
 
 func TestReadWorkspaceContextMapsCanceledContextToCanceled(t *testing.T) {
-	svc, err := NewService(t.TempDir())
-	require.NoError(t, err)
+	svc := newRegisteredService(t, t.TempDir(), "ws-canceled")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err = svc.ReadWorkspaceContext(ctx, &runnerv1.ReadWorkspaceContextRequest{})
+	_, err := svc.ReadWorkspaceContext(ctx, &runnerv1.ReadWorkspaceContextRequest{WorkspaceId: "ws-canceled"})
 	require.Equal(t, codes.Canceled, status.Code(err))
 }
 
 func TestReadWorkspaceContextMapsExpiredContextToDeadlineExceeded(t *testing.T) {
-	svc, err := NewService(t.TempDir())
-	require.NoError(t, err)
+	svc := newRegisteredService(t, t.TempDir(), "ws-deadline")
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
-	_, err = svc.ReadWorkspaceContext(ctx, &runnerv1.ReadWorkspaceContextRequest{})
+	_, err := svc.ReadWorkspaceContext(ctx, &runnerv1.ReadWorkspaceContextRequest{WorkspaceId: "ws-deadline"})
 	require.Equal(t, codes.DeadlineExceeded, status.Code(err))
 }

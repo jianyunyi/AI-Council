@@ -1,5 +1,6 @@
 .worktrees/
 .data/
+/workspaces/
 .env
 .env.*
 !.env.example

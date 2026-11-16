@@ -21,6 +21,126 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type RegisterWorkspaceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkspaceId   string                 `protobuf:"bytes,1,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
+	RelativePath  string                 `protobuf:"bytes,2,opt,name=relative_path,json=relativePath,proto3" json:"relative_path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterWorkspaceRequest) Reset() {
+	*x = RegisterWorkspaceRequest{}
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterWorkspaceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterWorkspaceRequest) ProtoMessage() {}
+
+func (x *RegisterWorkspaceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterWorkspaceRequest.ProtoReflect.Descriptor instead.
+func (*RegisterWorkspaceRequest) Descriptor() ([]byte, []int) {
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *RegisterWorkspaceRequest) GetWorkspaceId() string {
+	if x != nil {
+		return x.WorkspaceId
+	}
+	return ""
+}
+
+func (x *RegisterWorkspaceRequest) GetRelativePath() string {
+	if x != nil {
+		return x.RelativePath
+	}
+	return ""
+}
+
+type RegisterWorkspaceResponse struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Root           string                 `protobuf:"bytes,1,opt,name=root,proto3" json:"root,omitempty"`
+	IsGit          bool                   `protobuf:"varint,2,opt,name=is_git,json=isGit,proto3" json:"is_git,omitempty"`
+	Dirty          bool                   `protobuf:"varint,3,opt,name=dirty,proto3" json:"dirty,omitempty"`
+	DetectedStacks []string               `protobuf:"bytes,4,rep,name=detected_stacks,json=detectedStacks,proto3" json:"detected_stacks,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RegisterWorkspaceResponse) Reset() {
+	*x = RegisterWorkspaceResponse{}
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterWorkspaceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterWorkspaceResponse) ProtoMessage() {}
+
+func (x *RegisterWorkspaceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterWorkspaceResponse.ProtoReflect.Descriptor instead.
+func (*RegisterWorkspaceResponse) Descriptor() ([]byte, []int) {
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *RegisterWorkspaceResponse) GetRoot() string {
+	if x != nil {
+		return x.Root
+	}
+	return ""
+}
+
+func (x *RegisterWorkspaceResponse) GetIsGit() bool {
+	if x != nil {
+		return x.IsGit
+	}
+	return false
+}
+
+func (x *RegisterWorkspaceResponse) GetDirty() bool {
+	if x != nil {
+		return x.Dirty
+	}
+	return false
+}
+
+func (x *RegisterWorkspaceResponse) GetDetectedStacks() []string {
+	if x != nil {
+		return x.DetectedStacks
+	}
+	return nil
+}
+
 type DescribeWorkspaceRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	WorkspaceId   string                 `protobuf:"bytes,1,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
@@ -30,7 +150,7 @@ type DescribeWorkspaceRequest struct {
 
 func (x *DescribeWorkspaceRequest) Reset() {
 	*x = DescribeWorkspaceRequest{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[0]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -42,7 +162,7 @@ func (x *DescribeWorkspaceRequest) String() string {
 func (*DescribeWorkspaceRequest) ProtoMessage() {}
 
 func (x *DescribeWorkspaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[0]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -55,7 +175,7 @@ func (x *DescribeWorkspaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeWorkspaceRequest.ProtoReflect.Descriptor instead.
 func (*DescribeWorkspaceRequest) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{0}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *DescribeWorkspaceRequest) GetWorkspaceId() string {
@@ -77,7 +197,7 @@ type DescribeWorkspaceResponse struct {
 
 func (x *DescribeWorkspaceResponse) Reset() {
 	*x = DescribeWorkspaceResponse{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[1]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -89,7 +209,7 @@ func (x *DescribeWorkspaceResponse) String() string {
 func (*DescribeWorkspaceResponse) ProtoMessage() {}
 
 func (x *DescribeWorkspaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[1]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -102,7 +222,7 @@ func (x *DescribeWorkspaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeWorkspaceResponse.ProtoReflect.Descriptor instead.
 func (*DescribeWorkspaceResponse) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{1}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *DescribeWorkspaceResponse) GetRoot() string {
@@ -142,7 +262,7 @@ type ReadWorkspaceContextRequest struct {
 
 func (x *ReadWorkspaceContextRequest) Reset() {
 	*x = ReadWorkspaceContextRequest{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[2]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -154,7 +274,7 @@ func (x *ReadWorkspaceContextRequest) String() string {
 func (*ReadWorkspaceContextRequest) ProtoMessage() {}
 
 func (x *ReadWorkspaceContextRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[2]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -167,7 +287,7 @@ func (x *ReadWorkspaceContextRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadWorkspaceContextRequest.ProtoReflect.Descriptor instead.
 func (*ReadWorkspaceContextRequest) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{2}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ReadWorkspaceContextRequest) GetWorkspaceId() string {
@@ -187,7 +307,7 @@ type WorkspaceFile struct {
 
 func (x *WorkspaceFile) Reset() {
 	*x = WorkspaceFile{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[3]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -199,7 +319,7 @@ func (x *WorkspaceFile) String() string {
 func (*WorkspaceFile) ProtoMessage() {}
 
 func (x *WorkspaceFile) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[3]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -212,7 +332,7 @@ func (x *WorkspaceFile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkspaceFile.ProtoReflect.Descriptor instead.
 func (*WorkspaceFile) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{3}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *WorkspaceFile) GetPath() string {
@@ -241,7 +361,7 @@ type ReadWorkspaceContextResponse struct {
 
 func (x *ReadWorkspaceContextResponse) Reset() {
 	*x = ReadWorkspaceContextResponse{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[4]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -253,7 +373,7 @@ func (x *ReadWorkspaceContextResponse) String() string {
 func (*ReadWorkspaceContextResponse) ProtoMessage() {}
 
 func (x *ReadWorkspaceContextResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[4]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -266,7 +386,7 @@ func (x *ReadWorkspaceContextResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadWorkspaceContextResponse.ProtoReflect.Descriptor instead.
 func (*ReadWorkspaceContextResponse) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{4}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ReadWorkspaceContextResponse) GetRoot() string {
@@ -308,7 +428,7 @@ type ApprovedPatch struct {
 
 func (x *ApprovedPatch) Reset() {
 	*x = ApprovedPatch{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[5]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -320,7 +440,7 @@ func (x *ApprovedPatch) String() string {
 func (*ApprovedPatch) ProtoMessage() {}
 
 func (x *ApprovedPatch) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[5]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -333,7 +453,7 @@ func (x *ApprovedPatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApprovedPatch.ProtoReflect.Descriptor instead.
 func (*ApprovedPatch) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{5}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ApprovedPatch) GetPath() string {
@@ -370,7 +490,7 @@ type ApprovedCommand struct {
 
 func (x *ApprovedCommand) Reset() {
 	*x = ApprovedCommand{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[6]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -382,7 +502,7 @@ func (x *ApprovedCommand) String() string {
 func (*ApprovedCommand) ProtoMessage() {}
 
 func (x *ApprovedCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[6]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -395,7 +515,7 @@ func (x *ApprovedCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApprovedCommand.ProtoReflect.Descriptor instead.
 func (*ApprovedCommand) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{6}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ApprovedCommand) GetExecutable() string {
@@ -450,7 +570,7 @@ type ExecuteApprovedPlanRequest struct {
 
 func (x *ExecuteApprovedPlanRequest) Reset() {
 	*x = ExecuteApprovedPlanRequest{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[7]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -462,7 +582,7 @@ func (x *ExecuteApprovedPlanRequest) String() string {
 func (*ExecuteApprovedPlanRequest) ProtoMessage() {}
 
 func (x *ExecuteApprovedPlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[7]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -475,7 +595,7 @@ func (x *ExecuteApprovedPlanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteApprovedPlanRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteApprovedPlanRequest) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{7}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ExecuteApprovedPlanRequest) GetRequestId() string {
@@ -556,7 +676,7 @@ type StepResult struct {
 
 func (x *StepResult) Reset() {
 	*x = StepResult{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[8]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -568,7 +688,7 @@ func (x *StepResult) String() string {
 func (*StepResult) ProtoMessage() {}
 
 func (x *StepResult) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[8]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -581,7 +701,7 @@ func (x *StepResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepResult.ProtoReflect.Descriptor instead.
 func (*StepResult) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{8}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *StepResult) GetKind() string {
@@ -646,7 +766,7 @@ type ExecuteApprovedPlanResponse struct {
 
 func (x *ExecuteApprovedPlanResponse) Reset() {
 	*x = ExecuteApprovedPlanResponse{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[9]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -658,7 +778,7 @@ func (x *ExecuteApprovedPlanResponse) String() string {
 func (*ExecuteApprovedPlanResponse) ProtoMessage() {}
 
 func (x *ExecuteApprovedPlanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[9]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -671,7 +791,7 @@ func (x *ExecuteApprovedPlanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteApprovedPlanResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteApprovedPlanResponse) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{9}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ExecuteApprovedPlanResponse) GetRequestId() string {
@@ -718,7 +838,7 @@ type GetExecutionRequest struct {
 
 func (x *GetExecutionRequest) Reset() {
 	*x = GetExecutionRequest{}
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[10]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -730,7 +850,7 @@ func (x *GetExecutionRequest) String() string {
 func (*GetExecutionRequest) ProtoMessage() {}
 
 func (x *GetExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_runner_v1_runner_proto_msgTypes[10]
+	mi := &file_proto_runner_v1_runner_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -743,7 +863,7 @@ func (x *GetExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetExecutionRequest.ProtoReflect.Descriptor instead.
 func (*GetExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{10}
+	return file_proto_runner_v1_runner_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *GetExecutionRequest) GetRequestId() string {
@@ -757,7 +877,15 @@ var File_proto_runner_v1_runner_proto protoreflect.FileDescriptor
 
 const file_proto_runner_v1_runner_proto_rawDesc = "" +
 	"\n" +
-	"\x1cproto/runner/v1/runner.proto\x12\x13aicouncil.runner.v1\"=\n" +
+	"\x1cproto/runner/v1/runner.proto\x12\x13aicouncil.runner.v1\"b\n" +
+	"\x18RegisterWorkspaceRequest\x12!\n" +
+	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\x12#\n" +
+	"\rrelative_path\x18\x02 \x01(\tR\frelativePath\"\x85\x01\n" +
+	"\x19RegisterWorkspaceResponse\x12\x12\n" +
+	"\x04root\x18\x01 \x01(\tR\x04root\x12\x15\n" +
+	"\x06is_git\x18\x02 \x01(\bR\x05isGit\x12\x14\n" +
+	"\x05dirty\x18\x03 \x01(\bR\x05dirty\x12'\n" +
+	"\x0fdetected_stacks\x18\x04 \x03(\tR\x0edetectedStacks\"=\n" +
 	"\x18DescribeWorkspaceRequest\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\"\x85\x01\n" +
 	"\x19DescribeWorkspaceResponse\x12\x12\n" +
@@ -822,8 +950,9 @@ const file_proto_runner_v1_runner_proto_rawDesc = "" +
 	"error_code\x18\x05 \x01(\tR\terrorCode\"4\n" +
 	"\x13GetExecutionRequest\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\tR\trequestId2\xe8\x03\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId2\xdc\x04\n" +
 	"\x0fWorkspaceRunner\x12r\n" +
+	"\x11RegisterWorkspace\x12-.aicouncil.runner.v1.RegisterWorkspaceRequest\x1a..aicouncil.runner.v1.RegisterWorkspaceResponse\x12r\n" +
 	"\x11DescribeWorkspace\x12-.aicouncil.runner.v1.DescribeWorkspaceRequest\x1a..aicouncil.runner.v1.DescribeWorkspaceResponse\x12{\n" +
 	"\x14ReadWorkspaceContext\x120.aicouncil.runner.v1.ReadWorkspaceContextRequest\x1a1.aicouncil.runner.v1.ReadWorkspaceContextResponse\x12x\n" +
 	"\x13ExecuteApprovedPlan\x12/.aicouncil.runner.v1.ExecuteApprovedPlanRequest\x1a0.aicouncil.runner.v1.ExecuteApprovedPlanResponse\x12j\n" +
@@ -841,36 +970,40 @@ func file_proto_runner_v1_runner_proto_rawDescGZIP() []byte {
 	return file_proto_runner_v1_runner_proto_rawDescData
 }
 
-var file_proto_runner_v1_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_proto_runner_v1_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_proto_runner_v1_runner_proto_goTypes = []any{
-	(*DescribeWorkspaceRequest)(nil),     // 0: aicouncil.runner.v1.DescribeWorkspaceRequest
-	(*DescribeWorkspaceResponse)(nil),    // 1: aicouncil.runner.v1.DescribeWorkspaceResponse
-	(*ReadWorkspaceContextRequest)(nil),  // 2: aicouncil.runner.v1.ReadWorkspaceContextRequest
-	(*WorkspaceFile)(nil),                // 3: aicouncil.runner.v1.WorkspaceFile
-	(*ReadWorkspaceContextResponse)(nil), // 4: aicouncil.runner.v1.ReadWorkspaceContextResponse
-	(*ApprovedPatch)(nil),                // 5: aicouncil.runner.v1.ApprovedPatch
-	(*ApprovedCommand)(nil),              // 6: aicouncil.runner.v1.ApprovedCommand
-	(*ExecuteApprovedPlanRequest)(nil),   // 7: aicouncil.runner.v1.ExecuteApprovedPlanRequest
-	(*StepResult)(nil),                   // 8: aicouncil.runner.v1.StepResult
-	(*ExecuteApprovedPlanResponse)(nil),  // 9: aicouncil.runner.v1.ExecuteApprovedPlanResponse
-	(*GetExecutionRequest)(nil),          // 10: aicouncil.runner.v1.GetExecutionRequest
+	(*RegisterWorkspaceRequest)(nil),     // 0: aicouncil.runner.v1.RegisterWorkspaceRequest
+	(*RegisterWorkspaceResponse)(nil),    // 1: aicouncil.runner.v1.RegisterWorkspaceResponse
+	(*DescribeWorkspaceRequest)(nil),     // 2: aicouncil.runner.v1.DescribeWorkspaceRequest
+	(*DescribeWorkspaceResponse)(nil),    // 3: aicouncil.runner.v1.DescribeWorkspaceResponse
+	(*ReadWorkspaceContextRequest)(nil),  // 4: aicouncil.runner.v1.ReadWorkspaceContextRequest
+	(*WorkspaceFile)(nil),                // 5: aicouncil.runner.v1.WorkspaceFile
+	(*ReadWorkspaceContextResponse)(nil), // 6: aicouncil.runner.v1.ReadWorkspaceContextResponse
+	(*ApprovedPatch)(nil),                // 7: aicouncil.runner.v1.ApprovedPatch
+	(*ApprovedCommand)(nil),              // 8: aicouncil.runner.v1.ApprovedCommand
+	(*ExecuteApprovedPlanRequest)(nil),   // 9: aicouncil.runner.v1.ExecuteApprovedPlanRequest
+	(*StepResult)(nil),                   // 10: aicouncil.runner.v1.StepResult
+	(*ExecuteApprovedPlanResponse)(nil),  // 11: aicouncil.runner.v1.ExecuteApprovedPlanResponse
+	(*GetExecutionRequest)(nil),          // 12: aicouncil.runner.v1.GetExecutionRequest
 }
 var file_proto_runner_v1_runner_proto_depIdxs = []int32{
-	3,  // 0: aicouncil.runner.v1.ReadWorkspaceContextResponse.files:type_name -> aicouncil.runner.v1.WorkspaceFile
-	5,  // 1: aicouncil.runner.v1.ExecuteApprovedPlanRequest.patches:type_name -> aicouncil.runner.v1.ApprovedPatch
-	6,  // 2: aicouncil.runner.v1.ExecuteApprovedPlanRequest.commands:type_name -> aicouncil.runner.v1.ApprovedCommand
-	6,  // 3: aicouncil.runner.v1.ExecuteApprovedPlanRequest.verification_commands:type_name -> aicouncil.runner.v1.ApprovedCommand
-	8,  // 4: aicouncil.runner.v1.ExecuteApprovedPlanResponse.steps:type_name -> aicouncil.runner.v1.StepResult
-	0,  // 5: aicouncil.runner.v1.WorkspaceRunner.DescribeWorkspace:input_type -> aicouncil.runner.v1.DescribeWorkspaceRequest
-	2,  // 6: aicouncil.runner.v1.WorkspaceRunner.ReadWorkspaceContext:input_type -> aicouncil.runner.v1.ReadWorkspaceContextRequest
-	7,  // 7: aicouncil.runner.v1.WorkspaceRunner.ExecuteApprovedPlan:input_type -> aicouncil.runner.v1.ExecuteApprovedPlanRequest
-	10, // 8: aicouncil.runner.v1.WorkspaceRunner.GetExecution:input_type -> aicouncil.runner.v1.GetExecutionRequest
-	1,  // 9: aicouncil.runner.v1.WorkspaceRunner.DescribeWorkspace:output_type -> aicouncil.runner.v1.DescribeWorkspaceResponse
-	4,  // 10: aicouncil.runner.v1.WorkspaceRunner.ReadWorkspaceContext:output_type -> aicouncil.runner.v1.ReadWorkspaceContextResponse
-	9,  // 11: aicouncil.runner.v1.WorkspaceRunner.ExecuteApprovedPlan:output_type -> aicouncil.runner.v1.ExecuteApprovedPlanResponse
-	9,  // 12: aicouncil.runner.v1.WorkspaceRunner.GetExecution:output_type -> aicouncil.runner.v1.ExecuteApprovedPlanResponse
-	9,  // [9:13] is the sub-list for method output_type
-	5,  // [5:9] is the sub-list for method input_type
+	5,  // 0: aicouncil.runner.v1.ReadWorkspaceContextResponse.files:type_name -> aicouncil.runner.v1.WorkspaceFile
+	7,  // 1: aicouncil.runner.v1.ExecuteApprovedPlanRequest.patches:type_name -> aicouncil.runner.v1.ApprovedPatch
+	8,  // 2: aicouncil.runner.v1.ExecuteApprovedPlanRequest.commands:type_name -> aicouncil.runner.v1.ApprovedCommand
+	8,  // 3: aicouncil.runner.v1.ExecuteApprovedPlanRequest.verification_commands:type_name -> aicouncil.runner.v1.ApprovedCommand
+	10, // 4: aicouncil.runner.v1.ExecuteApprovedPlanResponse.steps:type_name -> aicouncil.runner.v1.StepResult
+	0,  // 5: aicouncil.runner.v1.WorkspaceRunner.RegisterWorkspace:input_type -> aicouncil.runner.v1.RegisterWorkspaceRequest
+	2,  // 6: aicouncil.runner.v1.WorkspaceRunner.DescribeWorkspace:input_type -> aicouncil.runner.v1.DescribeWorkspaceRequest
+	4,  // 7: aicouncil.runner.v1.WorkspaceRunner.ReadWorkspaceContext:input_type -> aicouncil.runner.v1.ReadWorkspaceContextRequest
+	9,  // 8: aicouncil.runner.v1.WorkspaceRunner.ExecuteApprovedPlan:input_type -> aicouncil.runner.v1.ExecuteApprovedPlanRequest
+	12, // 9: aicouncil.runner.v1.WorkspaceRunner.GetExecution:input_type -> aicouncil.runner.v1.GetExecutionRequest
+	1,  // 10: aicouncil.runner.v1.WorkspaceRunner.RegisterWorkspace:output_type -> aicouncil.runner.v1.RegisterWorkspaceResponse
+	3,  // 11: aicouncil.runner.v1.WorkspaceRunner.DescribeWorkspace:output_type -> aicouncil.runner.v1.DescribeWorkspaceResponse
+	6,  // 12: aicouncil.runner.v1.WorkspaceRunner.ReadWorkspaceContext:output_type -> aicouncil.runner.v1.ReadWorkspaceContextResponse
+	11, // 13: aicouncil.runner.v1.WorkspaceRunner.ExecuteApprovedPlan:output_type -> aicouncil.runner.v1.ExecuteApprovedPlanResponse
+	11, // 14: aicouncil.runner.v1.WorkspaceRunner.GetExecution:output_type -> aicouncil.runner.v1.ExecuteApprovedPlanResponse
+	10, // [10:15] is the sub-list for method output_type
+	5,  // [5:10] is the sub-list for method input_type
 	5,  // [5:5] is the sub-list for extension type_name
 	5,  // [5:5] is the sub-list for extension extendee
 	0,  // [0:5] is the sub-list for field type_name
@@ -887,7 +1020,7 @@ func file_proto_runner_v1_runner_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_runner_v1_runner_proto_rawDesc), len(file_proto_runner_v1_runner_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

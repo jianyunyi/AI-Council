@@ -2,6 +2,9 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: &json_log
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
     depends_on:
       web:
         condition: service_healthy
@@ -13,8 +16,8 @@ services:
       TLS_CERT: ${TLS_CERT:?set TLS_CERT}
       TLS_KEY: ${TLS_KEY:?set TLS_KEY}
     ports:
-      - "80:80"
-      - "443:443"
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ${TLS_CERT_DIRECTORY:-./certs}:/certs:ro
@@ -25,12 +28,16 @@ services:
       - app
 
   web:
+    image: aicouncil-web:${AICOUNCIL_RELEASE_TAG:-local}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.web
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
     environment:
       NODE_ENV: production
     restart: unless-stopped
+    logging: *json_log
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/', res => process.exit(res.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 10s
@@ -41,6 +48,7 @@ services:
       - app
 
   council:
+    image: aicouncil-council:${AICOUNCIL_RELEASE_TAG:-local}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.council
@@ -55,11 +63,24 @@ services:
       - --runner-token
       - ${RUNNER_TOKEN:?set RUNNER_TOKEN}
     restart: unless-stopped
+    logging: *json_log
     depends_on:
       runner:
         condition: service_healthy
     environment:
       COUNCIL_BOOTSTRAP_PASSWORD: ${COUNCIL_BOOTSTRAP_PASSWORD:?set COUNCIL_BOOTSTRAP_PASSWORD}
+      AICOUNCIL_BACKUP_KEY: ${AICOUNCIL_BACKUP_KEY:?set AICOUNCIL_BACKUP_KEY}
+      PROVIDER_KEY_ENCRYPTION_KEY: ${PROVIDER_KEY_ENCRYPTION_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
@@ -69,7 +90,7 @@ services:
     volumes:
       - council-data:/app/.data
     healthcheck:
-      test: ["CMD", "/healthcheck", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "/healthcheck", "http://127.0.0.1:8080/readyz"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -79,6 +100,7 @@ services:
       - egress
 
   runner:
+    image: aicouncil-runner:${AICOUNCIL_RELEASE_TAG:-local}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.runner
@@ -87,7 +109,12 @@ services:
     command:
       - --token
       - ${RUNNER_TOKEN:?set RUNNER_TOKEN}
+      - --grpc-listen
+      - 0.0.0.0:9091
+      - --workspace-root
+      - /workspace
     restart: unless-stopped
+    logging: *json_log
     healthcheck:
       test: ["CMD", "/healthcheck", "http://127.0.0.1:8081/healthz"]
       interval: 10s
@@ -96,7 +123,22 @@ services:
       start_period: 10s
     volumes:
       - runner-data:/app/.data
-      - workspace-data:/workspace
+      - ${WORKSPACE_DIRECTORY:-../workspaces}:/workspace
+    networks:
+      - app
+
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    restart: unless-stopped
+    logging: *json_log
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=2GB
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
     networks:
       - app
 
@@ -111,4 +153,4 @@ volumes:
   caddy-config:
   council-data:
   runner-data:
-  workspace-data:
+  prometheus-data:

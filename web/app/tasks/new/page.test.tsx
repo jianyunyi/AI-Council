@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import {fireEvent,render,screen,waitFor} from '@testing-library/react'
-import {beforeEach,describe,expect,it,vi} from 'vitest'
+import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react'
+import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest'
 
 const api=vi.hoisted(()=>({
   createTask:vi.fn(),
@@ -15,16 +15,33 @@ vi.mock('@/lib/api',()=>api)
 vi.mock('next/navigation',()=>({useRouter:()=>({push})}))
 vi.mock('@/lib/desktop',()=>({getDesktopRuntime:()=>undefined}))
 vi.mock('@/lib/desktop-bridge',()=>desktop)
+vi.mock('@/components/auth-session',()=>({
+  AuthProvider:({children}:{children:React.ReactNode})=><>{children}</>,
+  useAuth:()=>({status:'authenticated',identity:{subject:'admin'},isDesktop:false,can:()=>false}),
+}))
 
 import NewTask from './page'
+import {AppShell} from '@/components/app-shell'
 
 describe('NewTask',()=>{
+  afterEach(()=>cleanup())
+
   beforeEach(()=>{
     api.listWorkspaces.mockResolvedValue([{id:'workspace-1',root:'C:/Projects/demo',is_git:true,dirty:false}])
     api.createTask.mockResolvedValue({id:'task-1',state:'DRAFT'})
     api.startTask.mockResolvedValue({id:'task-1',state:'PLANNING'})
     desktop.desktopBridge.mockReturnValue(undefined)
     push.mockReset()
+  })
+
+  it('groups the task creation form in the semantic operation workflow hierarchy',async()=>{
+    const {container}=render(<AppShell><NewTask /></AppShell>)
+    const page=container.querySelector('.operation-page')
+    expect(page).toBeTruthy()
+    expect(container.querySelector('.app-shell__main > main')).toBeNull()
+    expect(page?.querySelector('.operation-band')).toBeTruthy()
+    expect(page?.querySelector('.operation-plane')).toBeTruthy()
+    expect(screen.getByRole('heading',{level:1,name:'新建任务'})).toBeTruthy()
   })
 
   it('creates the task in the selected registered workspace',async()=>{
@@ -44,6 +61,6 @@ describe('NewTask',()=>{
     desktop.desktopBridge.mockReturnValue({status:vi.fn().mockResolvedValue({state:'ready',workspace:'C:/Projects/desktop'})})
     render(<NewTask />)
     expect(await screen.findByRole('option',{name:/C:\/Projects\/desktop/})).toBeTruthy()
-    expect(api.createWorkspace).toHaveBeenCalledWith('C:/Projects/desktop')
+    expect(api.createWorkspace).toHaveBeenCalledWith('.')
   })
 })

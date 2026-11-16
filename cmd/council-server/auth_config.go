@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
+	oauthsvc "github.com/aicouncil/aicouncil/internal/security/oauth"
 	"github.com/aicouncil/aicouncil/internal/security/rbac"
+	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	transport "github.com/aicouncil/aicouncil/internal/transport/council"
 	"gorm.io/gorm"
 )
@@ -20,6 +24,60 @@ type authConfig struct {
 	BootstrapToken    string
 	Session           transport.SessionOptions
 	passwordFromEnv   string
+}
+
+func migrateLegacyOwnership(ctx context.Context, db *gorm.DB, bootstrapSubject string) error {
+	models := []any{&sqlite.WorkspaceRecord{}, &sqlite.TaskRecord{}, &sqlite.ArtifactRecord{}, &sqlite.ProviderProfileRecord{}}
+	needsOwner := false
+	for _, model := range models {
+		var count int64
+		if err := db.WithContext(ctx).Model(model).Where("owner_user_id = '' OR owner_user_id IS NULL").Count(&count).Error; err != nil {
+			return err
+		}
+		needsOwner = needsOwner || count > 0
+	}
+	if !needsOwner {
+		return nil
+	}
+	if strings.TrimSpace(bootstrapSubject) == "" {
+		return errors.New("existing unowned resources require a bootstrap administrator for ownership migration")
+	}
+	var admin sqlite.UserRecord
+	if err := db.WithContext(ctx).Where("subject = ?", bootstrapSubject).First(&admin).Error; err != nil {
+		return fmt.Errorf("load bootstrap administrator for ownership migration: %w", err)
+	}
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, model := range models {
+			if err := tx.Model(model).Where("owner_user_id = '' OR owner_user_id IS NULL").Update("owner_user_id", admin.ID).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func configuredOAuth(db *gorm.DB, getenv func(string) string) (*oauthsvc.Service, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(getenv("PUBLIC_BASE_URL")), "/")
+	githubID, githubSecret := getenv("GITHUB_OAUTH_CLIENT_ID"), getenv("GITHUB_OAUTH_CLIENT_SECRET")
+	googleID, googleSecret := getenv("GOOGLE_OAUTH_CLIENT_ID"), getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+	if githubID == "" && githubSecret == "" && googleID == "" && googleSecret == "" && baseURL == "" {
+		return nil, nil
+	}
+	if baseURL == "" || ((githubID == "") != (githubSecret == "")) || ((googleID == "") != (googleSecret == "")) || (githubID == "" && googleID == "") {
+		return nil, errors.New("configure PUBLIC_BASE_URL and complete client ID/secret pairs for at least one OAuth provider")
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("PUBLIC_BASE_URL must be an HTTPS origin or base path without credentials, query, or fragment")
+	}
+	configs := make(map[string]oauthsvc.Config)
+	if githubID != "" {
+		configs["github"] = oauthsvc.Config{ClientID: githubID, ClientSecret: githubSecret, RedirectURL: baseURL + "/api/v1/auth/oauth/github/callback", AuthURL: "https://github.com/login/oauth/authorize", TokenURL: "https://github.com/login/oauth/access_token", APIBaseURL: "https://api.github.com"}
+	}
+	if googleID != "" {
+		configs["google"] = oauthsvc.Config{ClientID: googleID, ClientSecret: googleSecret, RedirectURL: baseURL + "/api/v1/auth/oauth/google/callback", AuthURL: "https://accounts.google.com/o/oauth2/v2/auth", TokenURL: "https://oauth2.googleapis.com/token", JWKSURL: "https://www.googleapis.com/oauth2/v3/certs"}
+	}
+	return oauthsvc.New(db, configs, nil), nil
 }
 
 func registerAuthFlags(flags *flag.FlagSet, getenv func(string) string) *authConfig {

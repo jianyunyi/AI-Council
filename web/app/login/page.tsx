@@ -1,9 +1,10 @@
 'use client'
 
 import Link from 'next/link'
-import {FormEvent,useState} from 'react'
+import {FormEvent,useEffect,useState} from 'react'
 import {useRouter} from 'next/navigation'
 import {useAuth} from '@/components/auth-session'
+import {listOAuthProviders,oauthStartURL} from '@/lib/api'
 
 export default function LoginPage(){
  const auth=useAuth()
@@ -12,6 +13,8 @@ export default function LoginPage(){
  const [password,setPassword]=useState('')
  const [busy,setBusy]=useState(false)
  const [error,setError]=useState('')
+ const [oauthProviders,setOAuthProviders]=useState<string[]>([])
+ useEffect(()=>{let active=true;listOAuthProviders().then(result=>{if(active)setOAuthProviders(result.providers)}).catch(()=>{});return()=>{active=false}},[])
  async function submit(event:FormEvent){
   event.preventDefault();setBusy(true);setError('')
   try{await auth.signIn(subject.trim(),password);setPassword('');router.push('/account')}
@@ -28,6 +31,8 @@ export default function LoginPage(){
    {error&&<p role="alert">{error} 请重试，或联系管理员确认账户状态。</p>}
    <button disabled={busy||!subject.trim()||!password}>{busy?'正在验证…':'登录'}</button>
    <p className="form-hint">连续失败可能触发短时登录保护。</p>
+   <div className="auth-links"><Link href="/register">创建账户</Link><Link href="/password-reset">忘记密码</Link></div>
+   {oauthProviders.length>0&&<div className="oauth-options" aria-label="第三方登录">{oauthProviders.includes('github')&&<a href={oauthStartURL('github')}>使用 GitHub 登录</a>}{oauthProviders.includes('google')&&<a href={oauthStartURL('google')}>使用 Google 登录</a>}</div>}
   </form>
  </section>
 }

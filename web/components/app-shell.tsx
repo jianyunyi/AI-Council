@@ -8,7 +8,7 @@ function Header(){
  const canManage=auth.can('admin:users')||auth.can('admin:roles')
  return <header className="app-shell__header">
   <Link className="app-shell__brand" href="/" aria-label="AI Council 首页"><strong>AI Council</strong><span>多模型协商与受控执行</span></Link>
-  <nav aria-label="主导航">
+  <nav aria-label="控制台索引">
    <Link href="/tasks/new">任务</Link>
    <Link href="/providers">模型</Link>
    <Link href="/workspaces">工作区</Link>

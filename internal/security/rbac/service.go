@@ -79,6 +79,9 @@ func (s *Service) Login(ctx context.Context, subject, password string, ttl time.
 	if user.Disabled || user.PasswordHash == nil || VerifyPassword(*user.PasswordHash, password) != nil {
 		return "", Identity{}, ErrUnauthorized
 	}
+	if user.Email != nil && user.EmailVerifiedAt == nil {
+		return "", Identity{}, ErrUnauthorized
+	}
 	token, record, err := s.issueTokenForUser(ctx, user, ttl)
 	if err != nil {
 		return "", Identity{}, err

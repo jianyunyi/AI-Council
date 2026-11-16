@@ -1,27 +1,32 @@
 package main
 
 import (
+	"io"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
+type responseRoundTripper int
+
+func (status responseRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: int(status),
+		Status:     http.StatusText(int(status)),
+		Body:       io.NopCloser(strings.NewReader("")),
+		Header:     make(http.Header),
+	}, nil
+}
+
 func TestProbeAcceptsOnlySuccessfulResponses(t *testing.T) {
-	client := &http.Client{Timeout: time.Second}
-	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer ok.Close()
-	if err := probe(client, ok.URL); err != nil {
+	client := &http.Client{Timeout: time.Second, Transport: responseRoundTripper(http.StatusNoContent)}
+	if err := probe(client, "http://example.test/healthz"); err != nil {
 		t.Fatalf("probe successful response: %v", err)
 	}
 
-	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer failing.Close()
-	if err := probe(client, failing.URL); err == nil {
+	client.Transport = responseRoundTripper(http.StatusServiceUnavailable)
+	if err := probe(client, "http://example.test/healthz"); err == nil {
 		t.Fatal("probe accepted an unavailable response")
 	}
 }
