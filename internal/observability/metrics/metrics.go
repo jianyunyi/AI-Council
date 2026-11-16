@@ -193,7 +193,7 @@ func (m *Metrics) Handler(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "aicouncil_provider_retries_total %d\n", m.ProviderRetries.Load())
 	fmt.Fprintf(w, "aicouncil_provider_estimated_cost_micros_total %d\n", m.ProviderEstimatedCostMicros.Load())
 	for i := range m.providers {
-		provider := m.providers[i]
+		provider := &m.providers[i]
 		name := providerName(i)
 		fmt.Fprintf(w, "aicouncil_provider_calls_by_provider_total{provider=\"%s\"} %d\n", name, provider.calls.Load())
 		fmt.Fprintf(w, "aicouncil_provider_errors_by_provider_total{provider=\"%s\"} %d\n", name, provider.errors.Load())
