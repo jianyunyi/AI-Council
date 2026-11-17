@@ -34,7 +34,7 @@ func TestAdaptersNormalizeResponses(t *testing.T) {
 	}{
 		{"openai", func(base string, c *http.Client) provider.ModelProvider {
 			return openai.New(openai.Config{APIKey: "test", BaseURL: base, Model: "gpt-test", HTTPClient: c})
-		}, `{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"{\"ok\":true}"}]}],"usage":{"input_tokens":3,"output_tokens":5}}`},
+		}, `{"id":"resp_1","choices":[{"message":{"content":"{\"ok\":true}"}}],"usage":{"prompt_tokens":3,"completion_tokens":5}}`},
 		{"anthropic", func(base string, c *http.Client) provider.ModelProvider {
 			return anthropic.New(anthropic.Config{APIKey: "test", BaseURL: base, Model: "claude-test", HTTPClient: c})
 		}, `{"id":"msg_1","content":[{"type":"text","text":"{\"ok\":true}"}],"usage":{"input_tokens":3,"output_tokens":5}}`},

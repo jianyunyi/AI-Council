@@ -37,6 +37,7 @@ type ProviderProfileRecord struct {
 	OwnerUserID      string `gorm:"size:64;index"`
 	Provider         string `gorm:"not null;size:32"`
 	Model            string `gorm:"not null;size:128"`
+	BaseURL          string `gorm:"size:512"`
 	APIKeyCiphertext []byte
 	ParametersJSON   []byte
 	CreatedAt        time.Time

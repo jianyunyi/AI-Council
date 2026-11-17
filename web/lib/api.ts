@@ -32,9 +32,9 @@ export function requestPasswordReset(email:string){return request<{status:string
 export function confirmPasswordReset(input:{token:string;password:string}){return request<{status:string}>('/auth/password-reset/confirm',{method:'POST',body:JSON.stringify(input)})}
 export function oauthStartURL(provider:'github'|'google'){return `${apiBase()}/auth/oauth/${provider}/start`}
 export function listOAuthProviders(){return request<{providers:string[]}>('/auth/oauth/providers')}
-export type ProviderKeyProfile={id:string;provider:'openai'|'deepseek'|'anthropic';model:string;masked_key:string;has_key:boolean;created_at:string}
+export type ProviderKeyProfile={id:string;provider:'openai'|'deepseek'|'anthropic';model:string;base_url?:string;masked_key:string;has_key:boolean;created_at:string}
 export function listProviderKeys(){return request<ProviderKeyProfile[]>('/providers/keys')}
-export function createProviderKey(input:{provider:ProviderKeyProfile['provider'];model:string;api_key:string}){return request<ProviderKeyProfile>('/providers/keys',{method:'POST',body:JSON.stringify(input)})}
+export function createProviderKey(input:{provider:ProviderKeyProfile['provider'];model:string;api_key:string;base_url?:string}){return request<ProviderKeyProfile>('/providers/keys',{method:'POST',body:JSON.stringify(input)})}
 export function deleteProviderKey(id:string){return request<void>(`/providers/keys/${encodeURIComponent(id)}`,{method:'DELETE'})}
 export function me(){return request<Identity>('/auth/me')}
 export function logout(){return request<void>('/auth/logout',{method:'POST'})}

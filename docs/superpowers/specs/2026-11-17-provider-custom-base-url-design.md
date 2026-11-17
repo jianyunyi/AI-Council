@@ -19,7 +19,7 @@
 - Base URL 输入在 API 边界和服务层均校验；无效地址拒绝保存。
 - URL 不允许 HTTP、userinfo 或 fragment，降低 API Key 泄漏和意外路由风险。
 - 仅接受 OpenAI 兼容 Provider 的自定义 URL；不允许用户通过其他 Provider 类型更改请求端点。
-- URL 路径可以包含服务前缀，适配器继续在其后追加 `responses` 路径。
+- URL 路径可以包含服务前缀；配置自定义 Base URL 时，OpenAI 兼容适配器追加 `chat/completions` 路径，未配置时保留 OpenAI 默认 `responses` 路径。
 - 迁移需兼容已有 SQLite Provider 资料；空字段代表使用当前默认端点。
 
 ## 测试与验收

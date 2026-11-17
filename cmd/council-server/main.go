@@ -102,7 +102,7 @@ func main() {
 				if err != nil {
 					return nil, err
 				}
-				credentials[profile.Provider] = modelCredential{Key: secret, Model: profile.Model}
+				credentials[profile.Provider] = modelCredential{Key: secret, Model: profile.Model, BaseURL: profile.BaseURL}
 			}
 			if len(credentials) == 0 {
 				return configuredWorkflow(api.Metrics()), nil
@@ -265,8 +265,9 @@ func configuredWorkflow(collector *metrics.Metrics) *councilengine.Workflow {
 }
 
 type modelCredential struct {
-	Key   string
-	Model string
+	Key     string
+	Model   string
+	BaseURL string
 }
 
 func configuredWorkflowFor(credentials map[string]modelCredential, collector *metrics.Metrics) *councilengine.Workflow {
@@ -280,7 +281,7 @@ func configuredWorkflowFor(credentials map[string]modelCredential, collector *me
 		model := credential.Model
 		switch name {
 		case "openai":
-			items = append(items, provider.WithCostMeter(openai.New(openai.Config{APIKey: credential.Key, Model: model}), collector))
+			items = append(items, provider.WithCostMeter(openai.New(openai.Config{APIKey: credential.Key, BaseURL: credential.BaseURL, Model: model}), collector))
 		case "deepseek":
 			items = append(items, provider.WithCostMeter(deepseek.New(deepseek.Config{APIKey: credential.Key, Model: model}), collector))
 		case "anthropic":

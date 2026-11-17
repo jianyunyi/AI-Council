@@ -13,6 +13,7 @@ type createProviderKeyRequest struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	APIKey   string `json:"api_key"`
+	BaseURL  string `json:"base_url"`
 }
 
 func (a *API) ProviderKeyRoutes() []rest.Route {
@@ -48,10 +49,10 @@ func (a *API) createProviderKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid_provider_key", "provider, model and api_key are required")
 		return
 	}
-	profile, err := a.providerKeys.Create(r.Context(), requestOwnerID(r), in.Provider, in.Model, in.APIKey)
+	profile, err := a.providerKeys.Create(r.Context(), requestOwnerID(r), in.Provider, in.Model, in.APIKey, in.BaseURL)
 	if err != nil {
 		if err == providerkeysvc.ErrInvalidProfile {
-			writeErr(w, http.StatusBadRequest, "invalid_provider_key", "provider, model or api_key is invalid")
+			writeErr(w, http.StatusBadRequest, "invalid_provider_key", "provider, model, api_key or base_url is invalid")
 			return
 		}
 		writeInternal(w)

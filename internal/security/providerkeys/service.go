@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -29,6 +30,7 @@ type Profile struct {
 	ID        string    `json:"id"`
 	Provider  string    `json:"provider"`
 	Model     string    `json:"model"`
+	BaseURL   string    `json:"base_url,omitempty"`
 	MaskedKey string    `json:"masked_key"`
 	HasKey    bool      `json:"has_key"`
 	CreatedAt time.Time `json:"created_at"`
@@ -54,9 +56,26 @@ func New(db *gorm.DB, masterKey []byte) (*Service, error) {
 	return &Service{db: db, aead: aead}, nil
 }
 
-func (s *Service) Create(ctx context.Context, ownerID, provider, model, apiKey string) (Profile, error) {
+func (s *Service) Create(ctx context.Context, ownerID, provider, model, apiKey string, baseURLs ...string) (Profile, error) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	model = strings.TrimSpace(model)
+	baseURL := ""
+	if len(baseURLs) > 1 {
+		return Profile{}, ErrInvalidProfile
+	}
+	if len(baseURLs) == 1 {
+		baseURL = strings.TrimSpace(baseURLs[0])
+	}
+	if baseURL != "" {
+		var err error
+		if provider != "openai" {
+			return Profile{}, ErrInvalidProfile
+		}
+		baseURL, err = normalizeBaseURL(baseURL)
+		if err != nil {
+			return Profile{}, ErrInvalidProfile
+		}
+	}
 	if ownerID == "" || !supportedProvider(provider) || model == "" || len(model) > 128 || strings.TrimSpace(apiKey) == "" || len(apiKey) > 4096 || !utf8.ValidString(apiKey) {
 		return Profile{}, ErrInvalidProfile
 	}
@@ -74,7 +93,7 @@ func (s *Service) Create(ctx context.Context, ownerID, provider, model, apiKey s
 	}
 	ciphertext := append([]byte(ciphertextVersion), nonce...)
 	ciphertext = s.aead.Seal(ciphertext, nonce, []byte(apiKey), metadata)
-	record := sqlite.ProviderProfileRecord{ID: id, OwnerUserID: ownerID, Provider: provider, Model: model, APIKeyCiphertext: ciphertext, CreatedAt: time.Now().UTC()}
+	record := sqlite.ProviderProfileRecord{ID: id, OwnerUserID: ownerID, Provider: provider, Model: model, BaseURL: baseURL, APIKeyCiphertext: ciphertext, CreatedAt: time.Now().UTC()}
 	if err := s.db.WithContext(ctx).Create(&record).Error; err != nil {
 		return Profile{}, fmt.Errorf("save provider profile: %w", err)
 	}
@@ -151,8 +170,22 @@ func supportedProvider(provider string) bool {
 	}
 }
 
+func normalizeBaseURL(raw string) (string, error) {
+	if len(raw) > 512 {
+		return "", ErrInvalidProfile
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" {
+		return "", ErrInvalidProfile
+	}
+	u.Host = strings.ToLower(u.Host)
+	u.Path = strings.TrimRight(u.Path, "/")
+	u.RawPath = ""
+	return strings.TrimRight(u.String(), "/"), nil
+}
+
 func publicProfile(record sqlite.ProviderProfileRecord, key string) Profile {
-	return Profile{ID: record.ID, Provider: record.Provider, Model: record.Model, MaskedKey: mask(key), HasKey: len(record.APIKeyCiphertext) > 0, CreatedAt: record.CreatedAt}
+	return Profile{ID: record.ID, Provider: record.Provider, Model: record.Model, BaseURL: record.BaseURL, MaskedKey: mask(key), HasKey: len(record.APIKeyCiphertext) > 0, CreatedAt: record.CreatedAt}
 }
 
 func mask(key string) string {
