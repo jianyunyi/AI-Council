@@ -75,6 +75,7 @@ export function AuthProvider({children}:{children:React.ReactNode}){
 }
 
 export function useAuth(){const value=useContext(AuthContext);if(!value)throw new Error('useAuth must be used within AuthProvider');return value}
+export function useOptionalAuth(){return useContext(AuthContext)}
 
 export function RequirePermission({permission,allowDesktop=false,children}:{permission:string;allowDesktop?:boolean;children:React.ReactNode}){
  const auth=useAuth()
