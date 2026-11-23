@@ -52,7 +52,24 @@ func TestMigrateRunnerWorkspacesRegistersLegacyPathsAndFailsClosedOutsideRoot(t 
 	require.ErrorContains(t, migrateRunnerWorkspaces(context.Background(), db, runner, root), `legacy workspace "unsafe" is outside Runner root`)
 	require.Len(t, runner.requests, 1)
 	require.NoError(t, db.Delete(&sqlite.WorkspaceRecord{}, "id = ?", "unsafe").Error)
+
+	// A transient Runner failure for one workspace must be skipped, not fatal:
+	// Council keeps starting and the workspace stays NotFound until re-registered.
 	runner.err = errors.New("runner unavailable")
-	// A stored relative path is retried at every Council start so Runner's registry can be recovered.
-	require.ErrorContains(t, migrateRunnerWorkspaces(context.Background(), db, runner, root), "register workspace")
+	require.NoError(t, migrateRunnerWorkspaces(context.Background(), db, runner, root))
+}
+
+// A workspace whose directory has been deleted is skipped so Council still starts.
+func TestMigrateRunnerWorkspacesSkipsMissingDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspace")
+	require.NoError(t, os.MkdirAll(root, 0o700))
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "council.db"))
+	require.NoError(t, err)
+	pool, err := db.DB()
+	require.NoError(t, err)
+	defer pool.Close()
+	// RunnerPath set, but the directory does not exist and the runner rejects it.
+	require.NoError(t, db.Create(&sqlite.WorkspaceRecord{ID: "gone", CanonicalRoot: filepath.Join(root, "gone"), RunnerPath: "gone"}).Error)
+	runner := &workspaceMigrationRunner{root: root, err: errors.New("workspace registration rejected")}
+	require.NoError(t, migrateRunnerWorkspaces(context.Background(), db, runner, root))
 }

@@ -10,5 +10,6 @@ FROM gcr.io/distroless/static-debian12
 COPY --from=build /out/council /council
 COPY --from=build /out/aicouncil-admin /aicouncil-admin
 COPY --from=build /out/healthcheck /healthcheck
+WORKDIR /app
 EXPOSE 8080
 ENTRYPOINT ["/council","-listen","0.0.0.0:8080","-db","/app/.data/council.db"]

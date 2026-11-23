@@ -59,6 +59,13 @@ func (r *WorkspaceRegistry) Register(id, relativePath string) (string, error) {
 		}
 		return "", ErrWorkspacePathOutsideRoot
 	}
+	// A workspace must be a named subdirectory, never the shared root itself.
+	if clean := filepath.Clean(relativePath); clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		if existingErr == nil {
+			return "", ErrWorkspaceIDRebound
+		}
+		return "", ErrWorkspacePathOutsideRoot
+	}
 	candidate := filepath.Join(r.root, filepath.Clean(relativePath))
 	resolved, err := filepath.EvalSymlinks(candidate)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aicouncil/aicouncil/internal/approval"
 	"github.com/aicouncil/aicouncil/internal/council"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	"github.com/aicouncil/aicouncil/internal/provider"
@@ -48,6 +49,9 @@ func TestProductionLifecycle(t *testing.T) {
 
 	runner, err := runnergrpc.NewServiceWithDB(root, runnerDB)
 	require.NoError(t, err)
+	signer, err := approval.NewSigner(make([]byte, 32))
+	require.NoError(t, err)
+	runner = runner.WithSigner(signer)
 	runnerConn, stopRunner := startProductionRunner(t, runner, "runner-e2e-token")
 
 	before := sha256.Sum256([]byte("before\n"))
@@ -98,6 +102,7 @@ func TestProductionLifecycle(t *testing.T) {
 	api := transport.NewPersistentAPI(councilDB).
 		WithRunnerClient(runnerv1.NewWorkspaceRunnerClient(runnerConn)).
 		WithCouncil(workflow).
+		WithApprovalSigner(signer).
 		WithArtifactRoot(filepath.Join(root, "artifacts"))
 
 	createdWorkspace := e2eCallAs(t, api, auth, "owner-e2e-token", http.MethodPost, "/api/v1/workspaces", e2eJSON(t, map[string]string{"root": "workspace"}))

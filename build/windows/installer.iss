@@ -1,5 +1,8 @@
 #define MyAppName "AI Council"
-#define MyAppVersion "0.1.0"
+; MyAppVersion is injected by CI from build/version.json via ISCC /DMyAppVersion=...
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0-dev"
+#endif
 #define MyAppPublisher "AI Council"
 #define MyAppExeName "AI-Council.exe"
 

@@ -29,7 +29,14 @@ type manifest struct {
 	Entries []entry `json:"entries"`
 }
 
+// Create backs up the council database and artifacts. Retained for compatibility.
 func Create(dbPath, artifacts, output string, key []byte) error {
+	return CreateWithRunner(dbPath, "", artifacts, output, key)
+}
+
+// CreateWithRunner additionally snapshots the Runner database when runnerDBPath
+// is non-empty, so a restore recovers idempotency/workspace-registry state too.
+func CreateWithRunner(dbPath, runnerDBPath, artifacts, output string, key []byte) error {
 	if len(key) != 32 {
 		return errors.New("backup key must be 32 bytes")
 	}
@@ -98,6 +105,22 @@ func Create(dbPath, artifacts, output string, key []byte) error {
 		return nil
 	}
 	if err = add("council.db", snapshot); err == nil {
+		if runnerDBPath != "" {
+			runnerSnapshot := snapshot + ".runner"
+			defer os.Remove(runnerSnapshot)
+			rdb, rerr := openSQLite(runnerDBPath)
+			if rerr != nil {
+				return rerr
+			}
+			_, rerr = rdb.Exec("VACUUM INTO '" + strings.ReplaceAll(runnerSnapshot, "'", "''") + "'")
+			rdb.Close()
+			if rerr != nil {
+				return fmt.Errorf("sqlite runner snapshot: %w", rerr)
+			}
+			if err = add("runner.db", runnerSnapshot); err != nil {
+				return err
+			}
+		}
 		err = filepath.WalkDir(artifacts, func(p string, d os.DirEntry, e error) error {
 			if e != nil {
 				return e
@@ -275,6 +298,19 @@ func Restore(archive, destination string, key []byte) error {
 	db.Close()
 	if e != nil || integrity != "ok" {
 		return errors.New("restored database integrity check failed")
+	}
+	// runner.db is optional for backward compatibility with older archives.
+	if _, ok := files["runner.db"]; ok {
+		rdb, re := openSQLite(filepath.Join(destination, "runner.db"))
+		if re != nil {
+			return re
+		}
+		var runnerIntegrity string
+		re = rdb.QueryRow("PRAGMA integrity_check").Scan(&runnerIntegrity)
+		rdb.Close()
+		if re != nil || runnerIntegrity != "ok" {
+			return errors.New("restored runner database integrity check failed")
+		}
 	}
 	success = true
 	return nil

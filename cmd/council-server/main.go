@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	appTask "github.com/aicouncil/aicouncil/internal/app/task"
+	"github.com/aicouncil/aicouncil/internal/approval"
 	councilengine "github.com/aicouncil/aicouncil/internal/council"
 	"github.com/aicouncil/aicouncil/internal/observability/metrics"
 	"github.com/aicouncil/aicouncil/internal/provider"
@@ -47,9 +49,25 @@ func main() {
 	runnerTLS := flag.Bool("runner-tls", false, "Use TLS for Runner gRPC")
 	runnerTLSServerName := flag.String("runner-tls-server-name", "", "TLS server name for Runner gRPC")
 	runnerToken := flag.String("runner-token", "", "Runner gRPC bearer token")
+	insecureDev := flag.Bool("insecure-dev", false, "DANGER: run with no authentication (local development only)")
 	flag.Parse()
+	// Prefer tokens from the environment so they never appear in argv / ps / docker inspect.
+	if *token == "" {
+		*token = os.Getenv("COUNCIL_TOKEN")
+	}
+	if *runnerToken == "" {
+		*runnerToken = os.Getenv("RUNNER_TOKEN")
+	}
 	if err := auth.validate(); err != nil {
 		panic(err)
+	}
+	// Fail closed: refuse to serve with no auth unless RBAC is enabled, a static
+	// bearer token is set, or the operator explicitly opts into insecure dev mode.
+	if !auth.enabled() && *token == "" {
+		if !*insecureDev && os.Getenv("AICOUNCIL_INSECURE_DEV") != "1" {
+			panic("refusing to start without authentication: enable --rbac, set --token, or pass --insecure-dev for local development")
+		}
+		fmt.Fprintln(os.Stderr, "WARNING: council-server is running with NO AUTHENTICATION (insecure-dev). Never use this in production.")
 	}
 
 	host, port, err := splitListenAddress(*listen)
@@ -68,6 +86,27 @@ func main() {
 		panic(err)
 	}
 	api := transport.NewPersistentAPI(db)
+	// Pin the artifact root beside the database (same data volume) so verification
+	// artifacts survive container recreation and the backup tool can find them.
+	// Default: <dir of --db>/artifacts. Override with AICOUNCIL_ARTIFACT_ROOT.
+	artifactRoot := os.Getenv("AICOUNCIL_ARTIFACT_ROOT")
+	if artifactRoot == "" {
+		artifactRoot = filepath.Join(filepath.Dir(*dbPath), "artifacts")
+	}
+	api = api.WithArtifactRoot(artifactRoot)
+	// Shared HMAC key for Runner approval signatures (fail-closed if absent:
+	// approvals then return 503 and the Runner refuses unsigned executions).
+	if rawKey := os.Getenv("AICOUNCIL_APPROVAL_SIGNING_KEY"); rawKey != "" {
+		key, decodeErr := hex.DecodeString(rawKey)
+		if decodeErr != nil || len(key) != 32 {
+			panic("AICOUNCIL_APPROVAL_SIGNING_KEY must be exactly 64 hexadecimal characters")
+		}
+		signer, signerErr := approval.NewSigner(key)
+		if signerErr != nil {
+			panic(signerErr)
+		}
+		api = api.WithApprovalSigner(signer)
+	}
 	var providerKeyService *providerkeysvc.Service
 	if rawKey := os.Getenv("PROVIDER_KEY_ENCRYPTION_KEY"); rawKey != "" {
 		masterKey, decodeErr := hex.DecodeString(rawKey)
@@ -208,11 +247,18 @@ func migrateRunnerWorkspaces(ctx context.Context, db *gorm.DB, runner workspaceR
 	for _, item := range migrations {
 		record, relative := item.record, item.relative
 		registered, registerErr := runner.RegisterWorkspace(ctx, &runnerv1.RegisterWorkspaceRequest{WorkspaceId: record.ID, RelativePath: relative})
-		if registerErr != nil {
-			return fmt.Errorf("register workspace %q with Runner: %w", record.ID, registerErr)
-		}
-		if registered == nil {
-			return fmt.Errorf("register workspace %q with Runner returned no response", record.ID)
+		if registerErr != nil || registered == nil {
+			// A missing directory, an ID rebind, or a transient Runner error must
+			// not crash-loop Council on startup. Skip this one workspace and keep
+			// going: Runner will report it NotFound (fail-closed) until the user
+			// re-registers it. Data-unsafe records were already rejected above.
+			reason := "no response"
+			if registerErr != nil {
+				reason = registerErr.Error()
+			}
+			slog.Warn("skipping unresolved workspace during startup migration",
+				"workspace_id", record.ID, "reason", reason)
+			continue
 		}
 		if err := db.WithContext(ctx).Model(&storage.WorkspaceRecord{}).Where("id = ?", record.ID).Updates(map[string]any{
 			"runner_path": relative, "canonical_root": registered.Root, "is_git": registered.IsGit, "dirty": registered.Dirty,

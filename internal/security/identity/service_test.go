@@ -44,6 +44,9 @@ func TestRegisterVerifyEmailAndPasswordResetRevokeSessions(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, account.Roles, "member")
 	require.Contains(t, account.Permissions, "task:read")
+	require.Contains(t, account.Permissions, "task:write")
+	require.NotContains(t, account.Permissions, "task:approve")
+	require.NotContains(t, account.Permissions, "task:execute")
 	require.NotContains(t, account.Permissions, "admin:users")
 }
 

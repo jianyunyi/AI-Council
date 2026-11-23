@@ -11,6 +11,7 @@ var (
 	ErrOutsideWorkspace = errors.New("path outside workspace")
 	ErrSensitivePath    = errors.New("sensitive path")
 	ErrFileTooLarge     = errors.New("file too large")
+	ErrGitInternalPath  = errors.New("refusing to write inside .git")
 )
 
 type Guard struct {
@@ -63,6 +64,9 @@ func (g *Guard) ResolveWrite(relative string) (string, error) {
 		return "", ErrOutsideWorkspace
 	}
 	candidate := filepath.Join(g.root, filepath.Clean(relative))
+	if hasGitComponent(g.root, candidate) {
+		return "", ErrGitInternalPath
+	}
 	if err := g.checkInside(candidate); err != nil {
 		return "", err
 	}
@@ -96,4 +100,21 @@ func isSensitive(path string) bool {
 		return true
 	}
 	return strings.HasSuffix(strings.ToLower(path), ".db") || strings.HasSuffix(strings.ToLower(path), ".sqlite")
+}
+
+// hasGitComponent reports whether the candidate path lies within a .git
+// directory relative to the workspace root. Writing there (e.g. .git/config
+// core.fsmonitor or hooks) would let an approved patch run arbitrary code the
+// next time git is invoked, bypassing the argv-only command boundary.
+func hasGitComponent(root, candidate string) bool {
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false
+	}
+	for _, part := range strings.FieldsFunc(rel, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if strings.EqualFold(part, ".git") {
+			return true
+		}
+	}
+	return false
 }

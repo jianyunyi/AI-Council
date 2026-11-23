@@ -2,7 +2,10 @@ package council
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -38,6 +41,7 @@ type API struct {
 	council         appTask.CouncilPort
 	councilFactory  func(context.Context, string) (appTask.CouncilPort, error)
 	providerKeys    *providerkeysvc.Service
+	signer          *approval.Signer
 	workspaceAccess *workspaceaccess.Service
 	metrics         *metrics.Metrics
 	readinessChecks []func(context.Context) error
@@ -72,6 +76,9 @@ type task struct {
 	Acceptance             []string                              `json:"acceptance"`
 	PlanVersion            int                                   `json:"plan_version"`
 	ApprovalHash           string                                `json:"approval_hash,omitempty"`
+	ApprovalSignature      string                                `json:"-"`
+	ApprovalExpiresAt      int64                                 `json:"approval_expires_at,omitempty"`
+	ApprovalNonce          string                                `json:"-"`
 	Approved               bool                                  `json:"approved"`
 	Plan                   schema.ExecutionPlan                  `json:"plan,omitempty"`
 	Verification           *runnerv1.ExecuteApprovedPlanResponse `json:"verification,omitempty"`
@@ -126,9 +133,15 @@ func NewPersistentAPI(db *gorm.DB) *API {
 	a.approvalRepo = sqlite.NewApprovalRepository(db)
 	a.artifactRepo = sqlite.NewArtifactRepository(db, ".data/artifacts")
 	var rows []sqlite.TaskRecord
-	_ = db.Find(&rows).Error
+	if err := db.Find(&rows).Error; err != nil {
+		// Fail closed at startup rather than serving with an empty in-memory
+		// view of a database we could not read.
+		panic(fmt.Sprintf("load tasks on startup: %v", err))
+	}
 	var workspaceRows []sqlite.WorkspaceRecord
-	_ = db.Find(&workspaceRows).Error
+	if err := db.Find(&workspaceRows).Error; err != nil {
+		panic(fmt.Sprintf("load workspaces on startup: %v", err))
+	}
 	for _, r := range workspaceRows {
 		a.workspaces[r.ID] = workspace{ID: r.ID, Root: r.CanonicalRoot, IsGit: r.IsGit, Dirty: r.Dirty, OwnerUserID: r.OwnerUserID, RunnerPath: r.RunnerPath}
 	}
@@ -187,6 +200,17 @@ func (a *API) WithCouncilFactory(factory func(context.Context, string) (appTask.
 func (a *API) WithProviderKeys(service *providerkeysvc.Service) *API {
 	a.providerKeys = service
 	return a
+}
+
+// WithApprovalSigner installs the shared HMAC key used to sign Runner approvals.
+func (a *API) WithApprovalSigner(signer *approval.Signer) *API { a.signer = signer; return a }
+
+func newApprovalNonce() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 func (a *API) Routes() []rest.Route {
 	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
@@ -265,7 +289,12 @@ func validRunnerRelativePath(value string) bool {
 		return false
 	}
 	clean := filepath.Clean(value)
-	return clean == "." || (clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator)))
+	// Reject the workspace root itself (".") so no single user can claim the
+	// entire shared /workspace tree; a workspace must be a named subdirectory.
+	if clean == "." {
+		return false
+	}
+	return clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator))
 }
 func (a *API) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	owner := requestOwnerID(r)
@@ -305,9 +334,19 @@ func (a *API) createTask(w http.ResponseWriter, r *http.Request) {
 	a.metrics.TasksCreated.Add(1)
 	if a.db != nil {
 		raw, _ := json.Marshal(in.Acceptance)
-		_ = a.db.Save(&sqlite.TaskRecord{ID: id, OwnerUserID: owner, WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, AcceptanceJSON: raw, State: t.State, PlanVersion: t.PlanVersion}).Error
+		if err := a.db.Save(&sqlite.TaskRecord{ID: id, OwnerUserID: owner, WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, AcceptanceJSON: raw, State: t.State, PlanVersion: t.PlanVersion}).Error; err != nil {
+			delete(a.tasks, id)
+			a.nextID--
+			a.mu.Unlock()
+			writeErr(w, http.StatusInternalServerError, "task_persistence_failed", "task could not be saved")
+			return
+		}
 	}
-	a.append(t, "task.created", t)
+	if err := a.append(t, "task.created", t); err != nil {
+		a.mu.Unlock()
+		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
+		return
+	}
 	a.mu.Unlock()
 	writeData(w, http.StatusCreated, t)
 }
@@ -463,6 +502,28 @@ func (a *API) approveTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.ApprovalHash = in.ApprovalHash
+	// The client-facing approval_hash binds the UI confirmation to the immutable
+	// plan and keys the Council-side approval record, so it stays as-is. The
+	// Runner-facing credential is separate: a keyed HMAC over the plan with a
+	// short expiry and a one-time nonce, generated here at approval time.
+	if a.signer == nil {
+		writeErr(w, http.StatusServiceUnavailable, "signing_unavailable", "approval signing key is not configured")
+		return
+	}
+	nonce, nonceErr := newApprovalNonce()
+	if nonceErr != nil {
+		writeErr(w, http.StatusInternalServerError, "signing_failed", "could not generate approval nonce")
+		return
+	}
+	expiresAt := time.Now().Add(10 * time.Minute).Unix()
+	signature, signErr := a.signer.Sign(t.ID, t.WorkspaceID, t.PlanVersion, t.Plan, expiresAt, nonce)
+	if signErr != nil {
+		writeErr(w, http.StatusInternalServerError, "signing_failed", "could not sign approval")
+		return
+	}
+	t.ApprovalSignature = signature
+	t.ApprovalExpiresAt = expiresAt
+	t.ApprovalNonce = nonce
 	if a.approvalRepo != nil {
 		if err := a.approvalRepo.Invalidate(r.Context(), t.ID); err != nil {
 			writeErr(w, http.StatusInternalServerError, "approval_persistence_failed", err.Error())
@@ -493,10 +554,18 @@ func (a *API) rejectTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
+	prevState, prevApproved := t.State, t.Approved
 	t.State = "CANCELLED"
 	t.Approved = false
-	a.persistTask(t)
-	a.append(t, "approval.rejected", map[string]string{"state": t.State})
+	if err := a.persistTask(t); err != nil {
+		t.State, t.Approved = prevState, prevApproved
+		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
+		return
+	}
+	if err := a.append(t, "approval.rejected", map[string]string{"state": t.State}); err != nil {
+		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
+		return
+	}
 	a.metrics.ApprovalsRejected.Add(1)
 	writeData(w, 200, t)
 }
@@ -522,36 +591,42 @@ func (a *API) getArtifact(w http.ResponseWriter, r *http.Request) {
 }
 func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	t := a.tasks[taskID(r)]
 	if t == nil || !a.canEditWorkspace(r.Context(), t.WorkspaceID, requestOwnerID(r)) {
+		a.mu.Unlock()
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
 	resuming := t.State == "EXECUTING"
 	if t.State != "AWAITING_APPROVAL" && !resuming {
 		if !t.Approved {
+			a.mu.Unlock()
 			writeErr(w, 403, "approval_required", "manual approval required")
 			return
 		}
+		a.mu.Unlock()
 		writeErr(w, http.StatusConflict, "invalid_state", "task is not awaiting approval")
 		return
 	}
 	if !t.Approved && !resuming {
+		a.mu.Unlock()
 		writeErr(w, 403, "approval_required", "manual approval required")
 		return
 	}
 	if a.runnerClient == nil {
+		a.mu.Unlock()
 		writeErr(w, http.StatusServiceUnavailable, "runner_unavailable", "runner client is not configured")
 		return
 	}
 	if a.approvalRepo != nil && !resuming {
 		consumed, err := a.approvalRepo.ConsumeAndMarkExecuting(r.Context(), t.ID, t.PlanVersion, t.ApprovalHash)
 		if err != nil {
+			a.mu.Unlock()
 			writeErr(w, http.StatusInternalServerError, "approval_persistence_failed", err.Error())
 			return
 		}
 		if !consumed {
+			a.mu.Unlock()
 			writeErr(w, http.StatusConflict, "approval_consumed", "matching approval is no longer active")
 			return
 		}
@@ -559,11 +634,12 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	if !resuming {
 		t.State = "EXECUTING"
 		if err := a.append(t, "state.changed", map[string]string{"state": t.State}); err != nil {
+			a.mu.Unlock()
 			writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
 			return
 		}
 	}
-	req := &runnerv1.ExecuteApprovedPlanRequest{RequestId: t.ID + ":" + strconv.Itoa(t.PlanVersion), RunId: t.ID, WorkspaceId: t.WorkspaceID, PlanVersion: int32(t.PlanVersion), ApprovalHash: t.ApprovalHash, Acceptance: append([]string(nil), t.Plan.Acceptance...)}
+	req := &runnerv1.ExecuteApprovedPlanRequest{RequestId: t.ID + ":" + strconv.Itoa(t.PlanVersion), RunId: t.ID, WorkspaceId: t.WorkspaceID, PlanVersion: int32(t.PlanVersion), ApprovalHash: t.ApprovalSignature, ExpiresAt: t.ApprovalExpiresAt, Nonce: t.ApprovalNonce, Acceptance: append([]string(nil), t.Plan.Acceptance...)}
 	for _, p := range t.Plan.Patches {
 		req.Patches = append(req.Patches, &runnerv1.ApprovedPatch{Path: p.Path, UnifiedDiff: p.UnifiedDiff, BeforeHash: p.BeforeHash})
 	}
@@ -573,8 +649,14 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	for _, c := range t.Plan.VerificationCommands {
 		req.VerificationCommands = append(req.VerificationCommands, &runnerv1.ApprovedCommand{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, TimeoutSeconds: int32(c.TimeoutSeconds), Purpose: c.Purpose})
 	}
+	// The request is fully snapshotted above; release the lock so the
+	// potentially multi-minute synchronous Runner call does not block every
+	// other API request. State write-back below re-acquires it.
+	a.mu.Unlock()
 	runnerStarted := time.Now()
 	resp, err := a.runnerClient.ExecuteApprovedPlan(r.Context(), req)
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if err != nil {
 		a.metrics.RecordRunnerExecution(false, time.Since(runnerStarted))
 		writeErr(w, http.StatusBadGateway, "runner_unavailable", err.Error())
@@ -646,10 +728,24 @@ func (a *API) cancelTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
+	// A synchronous Runner execution has no cancel RPC; refuse rather than mark
+	// the task CANCELLED while the Runner keeps running (state/reality mismatch).
+	if t.State == "EXECUTING" {
+		writeErr(w, http.StatusConflict, "execution_in_progress", "task is executing and cannot be cancelled")
+		return
+	}
+	prevState, prevApproved := t.State, t.Approved
 	t.State = "CANCELLED"
 	t.Approved = false
-	a.persistTask(t)
-	a.append(t, "state.changed", map[string]string{"state": t.State})
+	if err := a.persistTask(t); err != nil {
+		t.State, t.Approved = prevState, prevApproved
+		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
+		return
+	}
+	if err := a.append(t, "state.changed", map[string]string{"state": t.State}); err != nil {
+		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
+		return
+	}
 	writeData(w, 200, t)
 }
 func (a *API) append(t *task, typ string, data any) error {

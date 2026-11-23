@@ -87,10 +87,17 @@ func (c *Collector) Collect(ctx context.Context, root string) (Snapshot, error) 
 			}
 			return nil
 		}
+		if entry.IsDir() && skippedDir(name) {
+			return filepath.SkipDir
+		}
 		if entry.IsDir() {
 			return nil
 		}
-		if !entry.Type().IsRegular() || refusedName(name) {
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		if !entry.Type().IsRegular() || refusedName(name) || refusedRelPath(rel) {
 			return nil
 		}
 		info, err := entry.Info()
@@ -113,10 +120,6 @@ func (c *Collector) Collect(ctx context.Context, root string) (Snapshot, error) 
 		}
 		if content == nil || strings.IndexByte(string(content), 0) >= 0 || !utf8.Valid(content) {
 			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
 		}
 		files = append(files, File{Path: filepath.ToSlash(rel), Content: string(content)})
 		total += int64(len(content))
@@ -150,13 +153,39 @@ func refusedName(name string) bool {
 	lower := strings.ToLower(name)
 	if strings.HasPrefix(lower, ".env") ||
 		lower == ".netrc" || lower == "_netrc" || lower == ".npmrc" ||
-		lower == "id_rsa" || lower == "id_dsa" || lower == "id_ecdsa" || lower == "id_ed25519" {
+		lower == "id_rsa" || lower == "id_dsa" || lower == "id_ecdsa" || lower == "id_ed25519" ||
+		lower == ".git-credentials" || lower == ".pypirc" || lower == ".pgpass" ||
+		lower == "kubeconfig" || lower == "credentials.json" || lower == ".dockercfg" {
 		return true
 	}
 	switch filepath.Ext(lower) {
-	case ".key", ".pem", ".p12", ".pfx", ".crt", ".cer", ".der", ".csr", ".jks", ".keystore":
+	case ".key", ".pem", ".p12", ".pfx", ".crt", ".cer", ".der", ".csr", ".jks", ".keystore", ".tfstate", ".kubeconfig":
 		return true
 	default:
 		return false
 	}
+}
+
+// skippedDir drops large or generated directories that would otherwise consume
+// the file/byte budget without adding useful review context.
+func skippedDir(name string) bool {
+	switch strings.ToLower(name) {
+	case "node_modules", "vendor", "dist", "build", "target", ".next", ".venv", "venv", "__pycache__", ".idea", ".vscode", ".terraform":
+		return true
+	default:
+		return false
+	}
+}
+
+// refusedRelPath rejects files living under sensitive credential directories
+// (e.g. .aws/credentials, .ssh/id_rsa, .kube/config), aligning the snapshot
+// filter with the Runner's write-side sensitivity rules.
+func refusedRelPath(rel string) bool {
+	for _, part := range strings.FieldsFunc(rel, func(r rune) bool { return r == '/' || r == '\\' }) {
+		switch strings.ToLower(part) {
+		case ".aws", ".ssh", ".kube", ".gnupg", ".docker":
+			return true
+		}
+	}
+	return false
 }

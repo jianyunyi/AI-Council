@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	appTask "github.com/aicouncil/aicouncil/internal/app/task"
+	"github.com/aicouncil/aicouncil/internal/approval"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
 	storage "github.com/aicouncil/aicouncil/internal/storage/sqlite"
@@ -235,8 +236,15 @@ func TestPersistentAPIRestoresSequenceAcrossRestart(t *testing.T) {
 	require.Equal(t, "task-2", second)
 }
 
+func testApprovalSigner(t *testing.T) *approval.Signer {
+	t.Helper()
+	signer, err := approval.NewSigner(make([]byte, 32))
+	require.NoError(t, err)
+	return signer
+}
+
 func TestTaskLifecycleRequiresApproval(t *testing.T) {
-	a := NewAPI().WithRunnerClient(&routeRunner{})
+	a := NewAPI().WithRunnerClient(&routeRunner{}).WithApprovalSigner(testApprovalSigner(t))
 	registerWorkspace(a, "ws-1")
 	routes := a.Routes()
 	find := func(method, path string) func(http.ResponseWriter, *http.Request) {
@@ -289,7 +297,7 @@ func TestPersistentAPIExecutesCouncilPlanThroughRunner(t *testing.T) {
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	council := &routeCouncil{}
 	runner := &routeRunner{}
-	a := NewPersistentAPI(db).WithCouncil(council).WithRunnerClient(runner)
+	a := NewPersistentAPI(db).WithCouncil(council).WithRunnerClient(runner).WithApprovalSigner(testApprovalSigner(t))
 	registerWorkspace(a, "ws")
 	find := func(method, path string) func(http.ResponseWriter, *http.Request) {
 		for _, x := range a.Routes() {
@@ -510,4 +518,22 @@ func TestPersistentAPIResumesPersistedExecutingTaskWithStableRequestID(t *testin
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "task-1:1", runner.req.RequestId)
 	require.Equal(t, "SUCCEEDED", a.tasks["task-1"].State)
+}
+// Cancelling a task that is mid-execution is refused with a conflict rather than
+// silently marking it CANCELLED while the Runner keeps going.
+func TestCancelRefusedWhileExecuting(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	a := NewPersistentAPI(db)
+	registerWorkspace(a, "ws")
+	a.tasks["task-1"] = &task{ID: "task-1", State: "EXECUTING", WorkspaceID: "ws", PlanVersion: 1}
+	require.NoError(t, db.Create(&storage.TaskRecord{ID: "task-1", WorkspaceID: "ws", State: "EXECUTING", PlanVersion: 1}).Error)
+
+	cancel := routeHandler(t, a.Routes(), http.MethodPost, "/api/v1/tasks/:id/cancel")
+	rec := httptest.NewRecorder()
+	cancel(rec, pathvar.WithVars(httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/cancel", nil), map[string]string{"id": "task-1"}))
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.Equal(t, "EXECUTING", a.tasks["task-1"].State)
 }

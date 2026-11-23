@@ -554,16 +554,20 @@ func (x *ApprovedCommand) GetPurpose() string {
 }
 
 type ExecuteApprovedPlanRequest struct {
-	state                protoimpl.MessageState `protogen:"open.v1"`
-	RequestId            string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	RunId                string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	WorkspaceId          string                 `protobuf:"bytes,3,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
-	PlanVersion          int32                  `protobuf:"varint,4,opt,name=plan_version,json=planVersion,proto3" json:"plan_version,omitempty"`
-	Patches              []*ApprovedPatch       `protobuf:"bytes,5,rep,name=patches,proto3" json:"patches,omitempty"`
-	Commands             []*ApprovedCommand     `protobuf:"bytes,6,rep,name=commands,proto3" json:"commands,omitempty"`
-	Acceptance           []string               `protobuf:"bytes,7,rep,name=acceptance,proto3" json:"acceptance,omitempty"`
-	ApprovalHash         string                 `protobuf:"bytes,8,opt,name=approval_hash,json=approvalHash,proto3" json:"approval_hash,omitempty"`
-	VerificationCommands []*ApprovedCommand     `protobuf:"bytes,9,rep,name=verification_commands,json=verificationCommands,proto3" json:"verification_commands,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	RequestId   string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	RunId       string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	WorkspaceId string                 `protobuf:"bytes,3,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
+	PlanVersion int32                  `protobuf:"varint,4,opt,name=plan_version,json=planVersion,proto3" json:"plan_version,omitempty"`
+	Patches     []*ApprovedPatch       `protobuf:"bytes,5,rep,name=patches,proto3" json:"patches,omitempty"`
+	Commands    []*ApprovedCommand     `protobuf:"bytes,6,rep,name=commands,proto3" json:"commands,omitempty"`
+	Acceptance  []string               `protobuf:"bytes,7,rep,name=acceptance,proto3" json:"acceptance,omitempty"`
+	// approval_hash now carries the HMAC-SHA256 signature (hex) over the plan plus
+	// expires_at and nonce. The field name is retained for source compatibility.
+	ApprovalHash         string             `protobuf:"bytes,8,opt,name=approval_hash,json=approvalHash,proto3" json:"approval_hash,omitempty"`
+	VerificationCommands []*ApprovedCommand `protobuf:"bytes,9,rep,name=verification_commands,json=verificationCommands,proto3" json:"verification_commands,omitempty"`
+	ExpiresAt            int64              `protobuf:"varint,10,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	Nonce                string             `protobuf:"bytes,11,opt,name=nonce,proto3" json:"nonce,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -659,6 +663,20 @@ func (x *ExecuteApprovedPlanRequest) GetVerificationCommands() []*ApprovedComman
 		return x.VerificationCommands
 	}
 	return nil
+}
+
+func (x *ExecuteApprovedPlanRequest) GetExpiresAt() int64 {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return 0
+}
+
+func (x *ExecuteApprovedPlanRequest) GetNonce() string {
+	if x != nil {
+		return x.Nonce
+	}
+	return ""
 }
 
 type StepResult struct {
@@ -915,7 +933,7 @@ const file_proto_runner_v1_runner_proto_rawDesc = "" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x12\x19\n" +
 	"\bwork_dir\x18\x03 \x01(\tR\aworkDir\x12'\n" +
 	"\x0ftimeout_seconds\x18\x04 \x01(\x05R\x0etimeoutSeconds\x12\x18\n" +
-	"\apurpose\x18\x05 \x01(\tR\apurpose\"\xb8\x03\n" +
+	"\apurpose\x18\x05 \x01(\tR\apurpose\"\xed\x03\n" +
 	"\x1aExecuteApprovedPlanRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x15\n" +
@@ -928,7 +946,11 @@ const file_proto_runner_v1_runner_proto_rawDesc = "" +
 	"acceptance\x18\a \x03(\tR\n" +
 	"acceptance\x12#\n" +
 	"\rapproval_hash\x18\b \x01(\tR\fapprovalHash\x12Y\n" +
-	"\x15verification_commands\x18\t \x03(\v2$.aicouncil.runner.v1.ApprovedCommandR\x14verificationCommands\"\xba\x01\n" +
+	"\x15verification_commands\x18\t \x03(\v2$.aicouncil.runner.v1.ApprovedCommandR\x14verificationCommands\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\n" +
+	" \x01(\x03R\texpiresAt\x12\x14\n" +
+	"\x05nonce\x18\v \x01(\tR\x05nonce\"\xba\x01\n" +
 	"\n" +
 	"StepResult\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x12\n" +

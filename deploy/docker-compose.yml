@@ -60,8 +60,6 @@ services:
       - ${COUNCIL_BOOTSTRAP_SUBJECT:?set COUNCIL_BOOTSTRAP_SUBJECT}
       - --runner
       - runner:9091
-      - --runner-token
-      - ${RUNNER_TOKEN:?set RUNNER_TOKEN}
     restart: unless-stopped
     logging: *json_log
     depends_on:
@@ -70,6 +68,8 @@ services:
     environment:
       COUNCIL_BOOTSTRAP_PASSWORD: ${COUNCIL_BOOTSTRAP_PASSWORD:?set COUNCIL_BOOTSTRAP_PASSWORD}
       AICOUNCIL_BACKUP_KEY: ${AICOUNCIL_BACKUP_KEY:?set AICOUNCIL_BACKUP_KEY}
+      AICOUNCIL_APPROVAL_SIGNING_KEY: ${AICOUNCIL_APPROVAL_SIGNING_KEY:?set AICOUNCIL_APPROVAL_SIGNING_KEY}
+      RUNNER_TOKEN: ${RUNNER_TOKEN:?set RUNNER_TOKEN}
       PROVIDER_KEY_ENCRYPTION_KEY: ${PROVIDER_KEY_ENCRYPTION_KEY:-}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-}
@@ -106,9 +106,18 @@ services:
       dockerfile: deploy/Dockerfile.runner
       args:
         GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    user: "1001:1001"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/runner
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    pids_limit: 512
+    cpus: 2.0
     command:
-      - --token
-      - ${RUNNER_TOKEN:?set RUNNER_TOKEN}
       - --grpc-listen
       - 0.0.0.0:9091
       - --workspace-root
@@ -121,6 +130,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    environment:
+      AICOUNCIL_APPROVAL_SIGNING_KEY: ${AICOUNCIL_APPROVAL_SIGNING_KEY:?set AICOUNCIL_APPROVAL_SIGNING_KEY}
+      RUNNER_TOKEN: ${RUNNER_TOKEN:?set RUNNER_TOKEN}
     volumes:
       - runner-data:/app/.data
       - ${WORKSPACE_DIRECTORY:-../workspaces}:/workspace

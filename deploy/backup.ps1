@@ -18,8 +18,14 @@ $name = "aicouncil-$stamp.aicb"
 $containerArchive = "/app/.data/backups/$name"
 $hostArchive = Join-Path $BackupDirectory $name
 $composeArgs = @('--env-file', $EnvFile, '-f', $ComposeFile)
-& docker compose @composeArgs exec -T council /aicouncil-admin backup --db /app/.data/council.db --artifacts /app/.data/artifacts --out $containerArchive
+# Pull the Runner database into the council volume so a single archive captures
+# idempotency and workspace-registry state alongside council.db.
+$runnerCopy = "/app/.data/backups/runner-$stamp.db"
+& docker compose @composeArgs cp "runner:/app/.data/runner.db" "council:$runnerCopy"
+if ($LASTEXITCODE -ne 0) { throw "Copying runner database into council volume failed with exit code $LASTEXITCODE" }
+& docker compose @composeArgs exec -T council /aicouncil-admin backup --db /app/.data/council.db --runner-db $runnerCopy --artifacts /app/.data/artifacts --out $containerArchive
 if ($LASTEXITCODE -ne 0) { throw "Backup creation in council volume failed with exit code $LASTEXITCODE" }
+& docker compose @composeArgs exec -T council rm -f $runnerCopy
 & docker compose @composeArgs cp "council:$containerArchive" $hostArchive
 if ($LASTEXITCODE -ne 0) { throw "Copying backup archive from council volume failed with exit code $LASTEXITCODE" }
 Write-Output "Encrypted backup created from Compose volume: $hostArchive"

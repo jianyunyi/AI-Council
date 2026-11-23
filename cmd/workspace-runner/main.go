@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/aicouncil/aicouncil/internal/approval"
 	runnergrpc "github.com/aicouncil/aicouncil/internal/runner/grpc"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
 	"github.com/aicouncil/aicouncil/internal/security/tlsconfig"
@@ -28,7 +31,17 @@ func main() {
 	token := flag.String("token", "", "gRPC bearer token")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file for gRPC (hot reloaded)")
 	tlsKey := flag.String("tls-key", "", "TLS private key file for gRPC (hot reloaded)")
+	insecureDev := flag.Bool("insecure-dev", false, "DANGER: run gRPC with no token (local development only)")
 	flag.Parse()
+	if *token == "" {
+		*token = os.Getenv("RUNNER_TOKEN")
+	}
+	if *token == "" && !*insecureDev && os.Getenv("AICOUNCIL_INSECURE_DEV") != "1" {
+		panic("refusing to start Runner gRPC without --token; pass --insecure-dev for local development only")
+	}
+	if *token == "" {
+		fmt.Fprintln(os.Stderr, "WARNING: workspace-runner gRPC is running with NO TOKEN (insecure-dev). Never use this in production.")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -44,6 +57,17 @@ func main() {
 	rpcService, err := runnergrpc.NewServiceWithDB(*workspaceRoot, db)
 	if err != nil {
 		panic(err)
+	}
+	if rawKey := os.Getenv("AICOUNCIL_APPROVAL_SIGNING_KEY"); rawKey != "" {
+		key, decodeErr := hex.DecodeString(rawKey)
+		if decodeErr != nil || len(key) != 32 {
+			panic("AICOUNCIL_APPROVAL_SIGNING_KEY must be exactly 64 hexadecimal characters")
+		}
+		signer, signerErr := approval.NewSigner(key)
+		if signerErr != nil {
+			panic(signerErr)
+		}
+		rpcService = rpcService.WithSigner(signer)
 	}
 	grpcOptions := []grpc.ServerOption{runnergrpc.UnaryAuthInterceptor(*token)}
 	if (*tlsCert == "") != (*tlsKey == "") {
