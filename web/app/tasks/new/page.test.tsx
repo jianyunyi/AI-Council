@@ -7,12 +7,14 @@ const api=vi.hoisted(()=>({
   createWorkspace:vi.fn(),
   listWorkspaces:vi.fn(),
   startTask:vi.fn(),
+  getTask:vi.fn(async()=>{throw new Error('not found')}),
+  onUnauthorized:()=>()=>{},
 }))
 const push=vi.hoisted(()=>vi.fn())
 const desktop=vi.hoisted(()=>({desktopBridge:vi.fn()}))
 
 vi.mock('@/lib/api',()=>api)
-vi.mock('next/navigation',()=>({useRouter:()=>({push})}))
+vi.mock('next/navigation',()=>({useRouter:()=>({push}),usePathname:()=>'/'}))
 vi.mock('@/lib/desktop',()=>({getDesktopRuntime:()=>undefined}))
 vi.mock('@/lib/desktop-bridge',()=>desktop)
 vi.mock('@/components/auth-session',()=>({
@@ -27,6 +29,7 @@ describe('NewTask',()=>{
   afterEach(()=>cleanup())
 
   beforeEach(()=>{
+    window.localStorage.clear()
     api.listWorkspaces.mockResolvedValue([{id:'workspace-1',root:'C:/Projects/demo',is_git:true,dirty:false}])
     api.createTask.mockResolvedValue({id:'task-1',state:'DRAFT'})
     api.startTask.mockResolvedValue({id:'task-1',state:'PLANNING'})
@@ -49,8 +52,9 @@ describe('NewTask',()=>{
     const workspace=await screen.findByLabelText('工作区')
     fireEvent.change(workspace,{target:{value:'workspace-1'}})
     fireEvent.change(screen.getByLabelText('需求'),{target:{value:'交付工作区流程'}})
-    fireEvent.change(screen.getByLabelText('验收标准'),{target:{value:'测试通过'}})
-    fireEvent.submit(screen.getByRole('button',{name:'开始协作分析'}).closest('form')!)
+    fireEvent.change(screen.getByLabelText('新增验收标准'),{target:{value:'测试通过'}})
+    fireEvent.click(screen.getByRole('button',{name:'添加'}))
+    fireEvent.submit(screen.getByRole('button',{name:'开始协商'}).closest('form')!)
     await waitFor(()=>expect(api.createTask).toHaveBeenCalledWith({workspaceId:'workspace-1',requirement:'交付工作区流程',acceptance:['测试通过']}))
     expect(push).toHaveBeenCalledWith('/tasks/task-1')
   })

@@ -24,6 +24,7 @@ describe('Provider keys page',()=>{
   api.deleteProviderKey.mockResolvedValue(undefined)
   render(<Providers/>)
   fireEvent.click(await screen.findByRole('button',{name:'删除'}))
+  fireEvent.click(await screen.findByRole('button',{name:'删除密钥'}))
   await waitFor(()=>expect(api.deleteProviderKey).toHaveBeenCalledWith('k1'))
   await waitFor(()=>expect(screen.queryByText(/deepseek-chat/)).toBeNull())
  })

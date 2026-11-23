@@ -25,6 +25,7 @@ describe('Workspaces page',()=>{
   await waitFor(()=>expect(api.putWorkspaceShare).toHaveBeenCalledWith('ws1','editor@example.test','editor'))
   expect(await screen.findByText(/editor@example.test/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button',{name:'撤销 editor@example.test'}))
+  fireEvent.click(await screen.findByRole('button',{name:'撤销共享'}))
   await waitFor(()=>expect(api.deleteWorkspaceShare).toHaveBeenCalledWith('ws1','editor@example.test'))
  })
 
