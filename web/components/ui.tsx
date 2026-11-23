@@ -32,14 +32,14 @@ export type ConfirmState = {
    trap, role or aria-modal is added. `autofocus` sits on Cancel.
    Where the platform lacks dialog methods (older engines, jsdom), we fall
    back to the `open` attribute plus a synthetic close event. */
-function openDialog(dialog: HTMLDialogElement) {
+export function openDialog(dialog: HTMLDialogElement) {
   if (typeof dialog.showModal === 'function') {
     try { dialog.showModal(); return } catch { /* fall through */ }
   }
   dialog.setAttribute('open', '')
 }
 
-function closeDialog(dialog: HTMLDialogElement, value: string) {
+export function closeDialog(dialog: HTMLDialogElement, value: string) {
   if (typeof dialog.close === 'function') {
     try { dialog.close(value); return } catch { /* fall through */ }
   }

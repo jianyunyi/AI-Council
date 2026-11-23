@@ -625,3 +625,10 @@ table.management-table tbody tr:hover { background: var(--page-s3); }
 .radio-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .radio-row button { min-height: 40px; }
 .settings-note { color: var(--txt-2); font-size: 13px; }
+.auth-intro { max-width: 560px; }
+.auth-intro h1 { font-size: 30px; margin: 0 0 8px; }
+.auth-intro p { color: var(--txt-2); }
+.auth-links { display: flex; gap: 16px; flex-wrap: wrap; }
+.form-hint { color: var(--txt-2); font-size: 13px; }
+.oauth-options { display: grid; gap: 8px; }
+.trust-note { color: var(--txt-2); font-size: 12.5px; border-top: 1px solid var(--line); padding-top: 10px; }
