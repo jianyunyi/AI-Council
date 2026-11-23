@@ -595,3 +595,33 @@ table.management-table tbody tr:hover { background: var(--page-s3); }
 .share-controls { display: grid; gap: 10px; border-top: 1px solid var(--page-line); padding-top: 12px; margin-top: 12px; }
 .share-controls ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .account-page { min-width: 0; }
+
+/* ---------- account / admin / settings support ---------- */
+.page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.page-heading h1 { font-size: 28px; margin: 0 0 4px; }
+.page-heading p { color: var(--txt-2); margin: 0; }
+.identity-band { display: flex; gap: 32px; flex-wrap: wrap; background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px 20px; }
+.identity-band span { display: block; color: var(--txt-2); font-size: 12px; }
+.identity-band strong { font-size: 18px; }
+.account-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.detail-section { background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 18px 20px; }
+.detail-section h2 { font-size: 17px; margin: 0 0 6px; }
+.detail-section p { color: var(--txt-2); }
+.tag-list, .permission-list { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.tag-list li { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; background: var(--bg-2); }
+.permission-list li code { background: var(--bg-2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
+.session-expiry { color: var(--txt-2); }
+.empty-copy { color: var(--txt-2); }
+.section-heading p { color: var(--txt-2); margin: 2px 0 0; }
+.role-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.role-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px; }
+.role-list li div { display: grid; gap: 2px; }
+.role-list li span { color: var(--txt-2); font-size: 12.5px; word-break: break-all; }
+.permission-fieldset { border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px; margin: 0; }
+.permission-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 14px; }
+.permission-grid label { display: flex; gap: 8px; align-items: center; min-height: 32px; font-weight: 400; }
+.switch-row { display: flex; gap: 10px; align-items: center; min-height: 44px; }
+.table-tags { word-break: break-all; }
+.radio-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.radio-row button { min-height: 40px; }
+.settings-note { color: var(--txt-2); font-size: 13px; }
