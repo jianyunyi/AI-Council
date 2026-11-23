@@ -12,15 +12,27 @@ AI Council 是一个“多模型协同 + 人工批准执行”的本地优先开
 
 ## 当前实现
 
-- Go 核心状态机：`Draft → Analyzing → Proposing → Reviewing → Judging → RedTeam → AwaitingApproval → Executing → Verifying`。
-- Provider 适配器：OpenAI Responses、Anthropic Messages、DeepSeek Chat Completions；429/鉴权错误统一归一化。
-- GORM + SQLite：运行审计、版本化制品、模型调用用量；制品写入临时文件后原子替换并校验 SHA-256。
-- Council：并发独立提案、确定性匿名别名、盲审、自审过滤、预算 meter、Judge/Red-team/执行计划。
-- Runner 安全基础：一次性配对码、路径越界/敏感文件/大小限制、无 shell 的 argv 执行器、gRPC protobuf 契约。
-- Next.js 控制台骨架：Provider、Workspace、Task 创建入口与类型化 API/SSE 客户端。
-- REST 持久化生命周期：任务启动会调用可配置的 Council Workflow，生成计划/审批哈希并持久化；批准后通过真实 Runner gRPC 下发完整 patch、command 和 acceptance。
-- Runner 生产能力：SQLite 幂等记录支持跨进程恢复和 running 抢占；gRPC Bearer Token interceptor；Workspace Git 状态探测；可选 TLS 证书热加载。
-- 生产观测与权限：业务 Prometheus 指标、Grafana dashboard、SQLite 用户/角色/RBAC 中间件、Provider 重试和模型价格表成本估算。
+- **核心状态机（Go）**：`Draft → Analyzing → Proposing → Reviewing → Judging → RedTeam → AwaitingApproval → Executing → Verifying`，另有 Replanning、Failed、Cancelled 分支。
+- **Provider 适配器**：OpenAI Responses、Anthropic Messages、DeepSeek Chat Completions；限流和鉴权错误统一归一化；支持重试，按模型价格表估算成本。
+- **存储**：GORM + 纯 Go SQLite（WAL、`busy_timeout`，启动时执行 `integrity_check`）。保存运行审计、版本化制品（写临时文件后原子替换并校验 SHA-256）和模型调用用量。
+- **Council**：并发独立提案、确定性匿名别名、盲审、过滤自评、预算 meter、Judge 和 Red-team，最后生成执行计划。
+- **审批与执行**：执行计划绑定审批哈希，只能使用一次；批准后通过 gRPC 把 patch、命令和验收条件交给 Runner。执行失败不会自动重试。
+- **Workspace Runner**：
+  - 路径越界、敏感文件和大小限制；不经过 shell 的 argv 执行器；有边界、经过过滤的上下文快照。
+  - gRPC Bearer Token 认证，可选 TLS 证书热加载。
+  - 持久化的工作区注册表：只接受 Runner 根目录内的相对路径，未知工作区 ID 一律拒绝。
+  - SQLite 幂等记录。
+- **账户与权限**：
+  - SQLite 用户、角色和权限（RBAC），支持密码登录和账户禁用。
+  - HttpOnly Cookie 会话；邮箱注册、验证和密码重置（需要配置 SMTP）；可选 GitHub / Google OAuth。
+- **资源隔离**：工作区、任务、制品和 Provider 配置都按所有者授权。工作区可以以 viewer 或 editor 身份共享，撤销后立即失效。Provider API Key 用 AES-GCM 加密存储，接口只返回掩码。
+- **Web 控制台（Next.js）**：共 13 个页面，覆盖首页指挥中心、登录、注册、邮箱验证、密码重置（申请和确认）、账户、用户与角色管理、Provider、工作区（含共享管理）、新建任务、任务详情和任务查看。附带类型化 REST/SSE 客户端、Vitest 单测和 Playwright E2E。
+- **生产与观测**：
+  - Docker Compose 栈（Caddy、Web、Council、Runner、Prometheus），配套预检、部署、回滚、备份恢复和冒烟测试脚本。
+  - `X-Request-ID` 与脱敏日志，关键接口限流，`/readyz` 就绪检查。
+  - Prometheus 业务指标，Grafana 面板 JSON 需要手动导入。
+- **Windows 桌面版**：Wails 壳 + 安装包，可以启停本地服务、选择工作区，并导出脱敏诊断包。
+- **已知限制**：Runner 进程中断后，处于执行中的记录不会自动转为失败；Runner 容器还没有加只读根文件系统和资源限制；Grafana 不包含在 Compose 栈里。
 
 ## 本地运行
 
@@ -104,6 +116,5 @@ http://localhost:8088 {
 ## 注意
 
 Playwright 测试已纳入项目，但 Windows 当前环境可能无法启动 Chromium（`spawn UNKNOWN`）；请在 CI/Linux 或可用浏览器运行时执行完整浏览器 E2E。由于环境关闭 CGO，SQLite 使用纯 Go 的 `glebarez/go-sqlite` 驱动；`go test -race` 需在启用 CGO 的机器上运行。
-# Deployment
 
-See [the single-host operations guide](docs/operations/single-host.md) for production setup and lifecycle procedures.
+生产部署与生命周期操作见 [单机运维指南](docs/operations/single-host.md)。
