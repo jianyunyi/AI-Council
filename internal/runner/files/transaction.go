@@ -47,10 +47,12 @@ func (t *Transaction) Apply(ctx context.Context, patches []schema.Patch) ([]Snap
 		if err != nil {
 			return nil, err
 		}
-		old, err := os.ReadFile(path)
-		existed := err == nil
+		// Read the current contents without following a symlink, so a planted
+		// link cannot be used (via before_hash / diff match) to probe files
+		// outside the workspace. Writes themselves are already safe (temp+rename).
+		old, existed, err := readFileNoFollow(path)
 		mode := fs.FileMode(0o600)
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil {
 			return nil, err
 		}
 		if info, e := os.Stat(path); e == nil {
