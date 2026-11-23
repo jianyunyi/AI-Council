@@ -109,8 +109,10 @@ func NewServerWithAPIAndAuthFlows(conf rest.RestConf, api *API, service *rbac.Se
 	conf.Middlewares.Recover = true
 	server := rest.MustNewServer(conf)
 	server.Use(RequestLoggerWithMetrics(slog.Default(), api.metrics))
-	server.Use(RBACAuthWithMetrics(service, role, options, api.metrics))
+	// Rate limit before RBAC so unauthenticated brute-force against the public
+	// login/register endpoints is throttled before the heavier auth path runs.
 	server.Use(api.rateLimitMiddleware())
+	server.Use(RBACAuthWithMetrics(service, role, options, api.metrics))
 	registerRBACServerRoutes(server, api, NewRBACAPIWithAuthFlows(service, options, identity, mailer, oauth))
 	return server
 }
@@ -144,8 +146,10 @@ func NewTLSServerWithAPIAndAuthFlows(conf rest.RestConf, api *API, service *rbac
 		return nil, err
 	}
 	server.Use(RequestLoggerWithMetrics(slog.Default(), api.metrics))
-	server.Use(RBACAuthWithMetrics(service, role, options, api.metrics))
+	// Rate limit before RBAC so unauthenticated brute-force against the public
+	// login/register endpoints is throttled before the heavier auth path runs.
 	server.Use(api.rateLimitMiddleware())
+	server.Use(RBACAuthWithMetrics(service, role, options, api.metrics))
 	registerRBACServerRoutes(server, api, NewRBACAPIWithAuthFlows(service, options, identity, mailer, oauth))
 	return server, nil
 }

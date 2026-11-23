@@ -57,3 +57,41 @@ func TestMaxKeysBoundsStorage(t *testing.T) {
 		t.Fatal("key overflow was admitted")
 	}
 }
+func TestClientIPHonorsTrustedProxyXFF(t *testing.T) {
+	// Direct peer is an internal proxy -> trust XFF last hop.
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+	r.RemoteAddr = "172.18.0.5:5000" // compose app network
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+	if got := clientIP(r); got != "ip:203.0.113.9" {
+		t.Fatalf("trusted XFF ip = %q, want ip:203.0.113.9", got)
+	}
+	// Untrusted direct peer -> ignore spoofed XFF.
+	r2 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+	r2.RemoteAddr = "203.0.113.9:5000"
+	r2.Header.Set("X-Forwarded-For", "10.0.0.1")
+	if got := clientIP(r2); got != "ip:203.0.113.9" {
+		t.Fatalf("untrusted XFF should be ignored, got %q", got)
+	}
+}
+
+func TestLoginBucketsPerClientIPNotGlobal(t *testing.T) {
+	l := New(time.Minute, 1, 100)
+	h := l.MiddlewareWithReject(func(*http.Request) string { return "" }, LimitedAPIRoute, func() {})(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	call := func(peer string) int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+		req.RemoteAddr = "172.18.0.5:5000"
+		req.Header.Set("X-Forwarded-For", peer)
+		h(rec, req)
+		return rec.Code
+	}
+	if call("203.0.113.1") != http.StatusNoContent {
+		t.Fatal("first client first attempt should pass")
+	}
+	if call("203.0.113.1") != http.StatusTooManyRequests {
+		t.Fatal("same client second attempt should be limited")
+	}
+	if call("203.0.113.2") != http.StatusNoContent {
+		t.Fatal("a different client must not share the first client's bucket")
+	}
+}
