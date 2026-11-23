@@ -9,6 +9,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# WebRequestSession lives in the Utility commands assembly, which a clean
+# non-interactive pwsh session (e.g. a CI runner) may not have loaded yet;
+# referencing the type before loading it fails with "Unable to find type".
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 $base = $BaseUrl.TrimEnd('/')
 $session = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
 $webArgs = @{ WebSession=$session; TimeoutSec=15 }
