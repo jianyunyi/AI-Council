@@ -566,36 +566,42 @@ func (a *API) getArtifact(w http.ResponseWriter, r *http.Request) {
 }
 func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	t := a.tasks[taskID(r)]
 	if t == nil || !a.canEditWorkspace(r.Context(), t.WorkspaceID, requestOwnerID(r)) {
+		a.mu.Unlock()
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
 	resuming := t.State == "EXECUTING"
 	if t.State != "AWAITING_APPROVAL" && !resuming {
 		if !t.Approved {
+			a.mu.Unlock()
 			writeErr(w, 403, "approval_required", "manual approval required")
 			return
 		}
+		a.mu.Unlock()
 		writeErr(w, http.StatusConflict, "invalid_state", "task is not awaiting approval")
 		return
 	}
 	if !t.Approved && !resuming {
+		a.mu.Unlock()
 		writeErr(w, 403, "approval_required", "manual approval required")
 		return
 	}
 	if a.runnerClient == nil {
+		a.mu.Unlock()
 		writeErr(w, http.StatusServiceUnavailable, "runner_unavailable", "runner client is not configured")
 		return
 	}
 	if a.approvalRepo != nil && !resuming {
 		consumed, err := a.approvalRepo.ConsumeAndMarkExecuting(r.Context(), t.ID, t.PlanVersion, t.ApprovalHash)
 		if err != nil {
+			a.mu.Unlock()
 			writeErr(w, http.StatusInternalServerError, "approval_persistence_failed", err.Error())
 			return
 		}
 		if !consumed {
+			a.mu.Unlock()
 			writeErr(w, http.StatusConflict, "approval_consumed", "matching approval is no longer active")
 			return
 		}
@@ -603,6 +609,7 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	if !resuming {
 		t.State = "EXECUTING"
 		if err := a.append(t, "state.changed", map[string]string{"state": t.State}); err != nil {
+			a.mu.Unlock()
 			writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
 			return
 		}
@@ -617,8 +624,14 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	for _, c := range t.Plan.VerificationCommands {
 		req.VerificationCommands = append(req.VerificationCommands, &runnerv1.ApprovedCommand{Executable: c.Executable, Args: c.Args, WorkDir: c.WorkDir, TimeoutSeconds: int32(c.TimeoutSeconds), Purpose: c.Purpose})
 	}
+	// The request is fully snapshotted above; release the lock so the
+	// potentially multi-minute synchronous Runner call does not block every
+	// other API request. State write-back below re-acquires it.
+	a.mu.Unlock()
 	runnerStarted := time.Now()
 	resp, err := a.runnerClient.ExecuteApprovedPlan(r.Context(), req)
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if err != nil {
 		a.metrics.RecordRunnerExecution(false, time.Since(runnerStarted))
 		writeErr(w, http.StatusBadGateway, "runner_unavailable", err.Error())
