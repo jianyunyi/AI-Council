@@ -5,8 +5,31 @@ ENV GOPROXY=$GOPROXY
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/runner ./cmd/workspace-runner
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/healthcheck ./cmd/healthcheck
-FROM gcr.io/distroless/static-debian12
-COPY --from=build /out/runner /runner
+
+# Verification commands need a real toolchain, so the runtime image is a slim
+# Debian with git plus the Go and Node toolchains copied from official images.
+# This is deliberately larger than distroless/static: without a toolchain the
+# Runner can only apply patch-only plans and every verification command fails.
+FROM node:22-bookworm-slim AS node
+FROM golang:1.26-bookworm AS gotoolchain
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 1001 runner \
+    && useradd --system --uid 1001 --gid runner --home /home/runner --create-home runner \
+    && mkdir -p /app/.data /workspace && chown -R runner:runner /app /workspace
+# Go toolchain
+COPY --from=gotoolchain /usr/local/go /usr/local/go
+# Node toolchain
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+ENV PATH="/usr/local/go/bin:${PATH}"
+COPY --from=build /out/runner /usr/local/bin/runner
 COPY --from=build /out/healthcheck /healthcheck
+USER runner
+WORKDIR /app
 EXPOSE 8081 9091
-ENTRYPOINT ["/runner","-listen","0.0.0.0:8081","-grpc-listen","0.0.0.0:9091","-workspace-root","/workspace","-db","/app/.data/runner.db"]
+ENTRYPOINT ["/usr/local/bin/runner","-listen","0.0.0.0:8081","-grpc-listen","0.0.0.0:9091","-workspace-root","/workspace","-db","/app/.data/runner.db"]

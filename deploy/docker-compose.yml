@@ -106,6 +106,17 @@ services:
       dockerfile: deploy/Dockerfile.runner
       args:
         GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    user: "1001:1001"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/runner
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    pids_limit: 512
+    cpus: 2.0
     command:
       - --grpc-listen
       - 0.0.0.0:9091

@@ -82,7 +82,8 @@ func safeEnvironment() []string {
 	out := make([]string, 0, 5)
 	// Keep only process-discovery and temporary-directory variables. This is
 	// enough for argv execution on Windows while avoiding arbitrary secret env.
-	for _, key := range []string{"PATH", "PATHEXT", "SystemRoot", "ComSpec", "TEMP", "TMP"} {
+	// HOME is required by Linux toolchains (go/npm caches); still no secrets.
+	for _, key := range []string{"PATH", "PATHEXT", "SystemRoot", "ComSpec", "TEMP", "TMP", "HOME", "GOCACHE", "GOPATH", "GOMODCACHE"} {
 		if value, ok := os.LookupEnv(key); ok {
 			out = append(out, key+"="+value)
 		}
