@@ -158,3 +158,21 @@ func TestCollectorReturnsFilesInSortedOrder(t *testing.T) {
 		{Path: "z.txt", Content: "z"},
 	}, snapshot.Files)
 }
+func TestCollectorExcludesCredentialDirsAndSkipsNodeModules(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".aws"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".aws", "credentials"), []byte("[default]\naws_secret_access_key=x\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".git-credentials"), []byte("https://u:p@host\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "state.tfstate"), []byte("{}"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "node_modules", "pkg", "index.js"), []byte("module.exports={}\n"), 0o600))
+
+	snapshot, err := NewCollector(Limits{}).Collect(context.Background(), root)
+	require.NoError(t, err)
+	paths := make([]string, 0, len(snapshot.Files))
+	for _, f := range snapshot.Files {
+		paths = append(paths, f.Path)
+	}
+	require.Equal(t, []string{"main.go"}, paths)
+}
