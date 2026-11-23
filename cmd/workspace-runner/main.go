@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/aicouncil/aicouncil/internal/approval"
 	runnergrpc "github.com/aicouncil/aicouncil/internal/runner/grpc"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
 	"github.com/aicouncil/aicouncil/internal/security/tlsconfig"
@@ -44,6 +47,17 @@ func main() {
 	rpcService, err := runnergrpc.NewServiceWithDB(*workspaceRoot, db)
 	if err != nil {
 		panic(err)
+	}
+	if rawKey := os.Getenv("AICOUNCIL_APPROVAL_SIGNING_KEY"); rawKey != "" {
+		key, decodeErr := hex.DecodeString(rawKey)
+		if decodeErr != nil || len(key) != 32 {
+			panic("AICOUNCIL_APPROVAL_SIGNING_KEY must be exactly 64 hexadecimal characters")
+		}
+		signer, signerErr := approval.NewSigner(key)
+		if signerErr != nil {
+			panic(signerErr)
+		}
+		rpcService = rpcService.WithSigner(signer)
 	}
 	grpcOptions := []grpc.ServerOption{runnergrpc.UnaryAuthInterceptor(*token)}
 	if (*tlsCert == "") != (*tlsKey == "") {

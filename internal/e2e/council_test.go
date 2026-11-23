@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zeromicro/go-zero/rest/pathvar"
 	"google.golang.org/grpc"
@@ -31,13 +32,25 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-type runnerPort struct{ s *runnergrpc.Service }
+type runnerPort struct {
+	s      *runnergrpc.Service
+	signer *approval.Signer
+}
 
 func (r runnerPort) Describe(context.Context, string) (task.WorkspaceDescription, error) {
 	return task.WorkspaceDescription{}, nil
 }
 func (r runnerPort) Execute(ctx context.Context, in task.ApprovedExecution) (schema.VerificationReport, error) {
-	resp, err := r.s.ExecuteApprovedPlan(ctx, &runnerv1.ExecuteApprovedPlanRequest{RequestId: in.RequestID, RunId: in.RunID, WorkspaceId: in.WorkspaceID, PlanVersion: int32(in.Plan.Version), ApprovalHash: in.ApprovalHash, Acceptance: in.Plan.Acceptance})
+	// The app/task service keeps its own plain-hash approval bookkeeping; the
+	// Runner requires a keyed HMAC, so this adapter signs the exact projection
+	// it forwards (version + acceptance only) with a one-time nonce.
+	projection := schema.ExecutionPlan{Version: in.Plan.Version, Acceptance: in.Plan.Acceptance}
+	expires := time.Now().Add(10 * time.Minute).Unix()
+	sig, err := r.signer.Sign(in.RunID, in.WorkspaceID, in.Plan.Version, projection, expires, in.RequestID)
+	if err != nil {
+		return schema.VerificationReport{}, err
+	}
+	resp, err := r.s.ExecuteApprovedPlan(ctx, &runnerv1.ExecuteApprovedPlanRequest{RequestId: in.RequestID, RunId: in.RunID, WorkspaceId: in.WorkspaceID, PlanVersion: int32(in.Plan.Version), ApprovalHash: sig, ExpiresAt: expires, Nonce: in.RequestID, Acceptance: in.Plan.Acceptance})
 	if err != nil {
 		return schema.VerificationReport{}, err
 	}
@@ -55,9 +68,12 @@ func TestCouncilApprovalRunnerVerificationFlow(t *testing.T) {
 	approvalRepo := sqlite.NewApprovalRepository(db)
 	runner, err := runnergrpc.NewService(root)
 	require.NoError(t, err)
+	signer, err := approval.NewSigner(make([]byte, 32))
+	require.NoError(t, err)
+	runner = runner.WithSigner(signer)
 	_, err = runner.RegisterWorkspace(context.Background(), &runnerv1.RegisterWorkspaceRequest{WorkspaceId: "ws-1", RelativePath: "repo"})
 	require.NoError(t, err)
-	svc := task.NewService(runRepo, approvalRepo, nil, nil, runnerPort{runner}, 1)
+	svc := task.NewService(runRepo, approvalRepo, nil, nil, runnerPort{s: runner, signer: signer}, 1)
 	ctx := context.Background()
 	created, err := svc.Create(ctx, "ws-1", "verify", []string{"tests pass"})
 	require.NoError(t, err)
@@ -83,6 +99,9 @@ func TestCouncilApprovalExecutionVerificationLifecycle(t *testing.T) {
 
 	runner, err := runnergrpc.NewService(root)
 	require.NoError(t, err)
+	signer, err := approval.NewSigner(make([]byte, 32))
+	require.NoError(t, err)
+	runner = runner.WithSigner(signer)
 	listener := bufconn.Listen(1 << 20)
 	server := grpc.NewServer()
 	runnerv1.RegisterWorkspaceRunnerServer(server, runner)
@@ -109,7 +128,7 @@ func TestCouncilApprovalExecutionVerificationLifecycle(t *testing.T) {
 	auth := rbac.New(db)
 	require.NoError(t, auth.BootstrapLegacyAdmin(context.Background(), "owner", "owner-token", "admin"))
 	require.NoError(t, auth.BootstrapLegacyAdmin(context.Background(), "editor", "editor-token", "admin"))
-	api := transport.NewPersistentAPI(db).WithRunnerClient(runnerv1.NewWorkspaceRunnerClient(connection)).WithCouncil(workflow)
+	api := transport.NewPersistentAPI(db).WithRunnerClient(runnerv1.NewWorkspaceRunnerClient(connection)).WithCouncil(workflow).WithApprovalSigner(signer)
 	workspace := e2eCallAs(t, api, auth, "owner-token", http.MethodPost, "/api/v1/workspaces", e2eJSON(t, map[string]any{"root": "repo"}))
 	require.Equal(t, http.StatusCreated, workspace.Code)
 	workspaceID := e2eData(t, workspace)["id"].(string)

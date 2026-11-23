@@ -42,16 +42,38 @@ func TestRegisterRejectsWorkspaceRoot(t *testing.T) {
 	require.Error(t, err)
 }
 
+func testApprovalSigner(t *testing.T) *approval.Signer {
+	t.Helper()
+	signer, err := approval.NewSigner(make([]byte, 32))
+	require.NoError(t, err)
+	return signer
+}
+
+// signExecuteRequest fills req with a valid HMAC approval over plan. The
+// request ID doubles as the one-time nonce: unique per test execution, and an
+// idempotent retry with the same request ID short-circuits before the nonce
+// would be consumed twice.
+func signExecuteRequest(t *testing.T, signer *approval.Signer, req *runnerv1.ExecuteApprovedPlanRequest, plan schema.ExecutionPlan) {
+	t.Helper()
+	expires := time.Now().Add(10 * time.Minute).Unix()
+	sig, err := signer.Sign(req.RunId, req.WorkspaceId, int(req.PlanVersion), plan, expires, req.RequestId)
+	require.NoError(t, err)
+	req.ApprovalHash = sig
+	req.ExpiresAt = expires
+	req.Nonce = req.RequestId
+}
+
 func TestExecuteApprovedPlanAppliesPatchAndIsIdempotent(t *testing.T) {
 	root := t.TempDir()
 	svc := newRegisteredService(t, root, "ws-1")
+	signer := testApprovalSigner(t)
+	svc = svc.WithSigner(signer)
 	path := filepath.Join(root, "ws-1", "main.go")
 	require.NoError(t, os.WriteFile(path, []byte("old\n"), 0o600))
 	h := sha256.Sum256([]byte("old\n"))
 	plan := schema.ExecutionPlan{Version: 1, Patches: []schema.Patch{{Path: "main.go", UnifiedDiff: "@@ -1 +1 @@\n-old\n+new\n", BeforeHash: hex.EncodeToString(h[:])}}}
-	hash, err := approval.Hash("run-1", "ws-1", plan)
-	require.NoError(t, err)
-	req := &runnerv1.ExecuteApprovedPlanRequest{RequestId: "req-1", RunId: "run-1", WorkspaceId: "ws-1", PlanVersion: 1, ApprovalHash: hash, Patches: []*runnerv1.ApprovedPatch{{Path: "main.go", UnifiedDiff: plan.Patches[0].UnifiedDiff, BeforeHash: plan.Patches[0].BeforeHash}}}
+	req := &runnerv1.ExecuteApprovedPlanRequest{RequestId: "req-1", RunId: "run-1", WorkspaceId: "ws-1", PlanVersion: 1, Patches: []*runnerv1.ApprovedPatch{{Path: "main.go", UnifiedDiff: plan.Patches[0].UnifiedDiff, BeforeHash: plan.Patches[0].BeforeHash}}}
+	signExecuteRequest(t, signer, req, plan)
 	first, err := svc.ExecuteApprovedPlan(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, "SUCCEEDED", first.Status)
@@ -114,6 +136,8 @@ func TestRunnerRejectsUnknownWorkspaceForContextAndExecution(t *testing.T) {
 func TestExecuteApprovedPlanRestoresPatchWhenVerificationFails(t *testing.T) {
 	root := t.TempDir()
 	svc := newRegisteredService(t, root, "ws-verify")
+	signer := testApprovalSigner(t)
+	svc = svc.WithSigner(signer)
 	path := filepath.Join(root, "ws-verify", "main.go")
 	require.NoError(t, os.WriteFile(path, []byte("old\n"), 0o600))
 	h := sha256.Sum256([]byte("old\n"))
@@ -122,13 +146,12 @@ func TestExecuteApprovedPlanRestoresPatchWhenVerificationFails(t *testing.T) {
 		Patches:              []schema.Patch{{Path: "main.go", UnifiedDiff: "@@ -1 +1 @@\n-old\n+new\n", BeforeHash: hex.EncodeToString(h[:])}},
 		VerificationCommands: []schema.Command{{Executable: "go", Args: []string{"tool", "not-a-real-tool"}, TimeoutSeconds: 5}},
 	}
-	hash, err := approval.Hash("run-verify", "ws-verify", plan)
-	require.NoError(t, err)
 	req := &runnerv1.ExecuteApprovedPlanRequest{
-		RequestId: "req-verify", RunId: "run-verify", WorkspaceId: "ws-verify", PlanVersion: 1, ApprovalHash: hash,
+		RequestId: "req-verify", RunId: "run-verify", WorkspaceId: "ws-verify", PlanVersion: 1,
 		Patches:              []*runnerv1.ApprovedPatch{{Path: "main.go", UnifiedDiff: plan.Patches[0].UnifiedDiff, BeforeHash: plan.Patches[0].BeforeHash}},
 		VerificationCommands: []*runnerv1.ApprovedCommand{{Executable: "go", Args: []string{"tool", "not-a-real-tool"}, TimeoutSeconds: 5}},
 	}
+	signExecuteRequest(t, signer, req, plan)
 
 	response, err := svc.ExecuteApprovedPlan(context.Background(), req)
 	require.NoError(t, err)
@@ -144,20 +167,22 @@ func TestExecuteApprovedPlanRestoresPatchWhenVerificationFails(t *testing.T) {
 
 func TestExecuteApprovedPlanStopsAfterCommandFailure(t *testing.T) {
 	svc := newRegisteredService(t, t.TempDir(), "ws-command-failure")
+	signer := testApprovalSigner(t)
+	svc = svc.WithSigner(signer)
 
 	plan := schema.ExecutionPlan{
 		Version:              1,
 		Commands:             []schema.Command{{Executable: "go", Args: []string{"tool", "not-a-real-tool"}, TimeoutSeconds: 5}},
 		VerificationCommands: []schema.Command{{Executable: "go", Args: []string{"version"}, TimeoutSeconds: 5}},
 	}
-	hash, err := approval.Hash("run-command-failure", "ws-command-failure", plan)
-	require.NoError(t, err)
-
-	response, err := svc.ExecuteApprovedPlan(context.Background(), &runnerv1.ExecuteApprovedPlanRequest{
-		RequestId: "req-command-failure", RunId: "run-command-failure", WorkspaceId: "ws-command-failure", PlanVersion: 1, ApprovalHash: hash,
+	req := &runnerv1.ExecuteApprovedPlanRequest{
+		RequestId: "req-command-failure", RunId: "run-command-failure", WorkspaceId: "ws-command-failure", PlanVersion: 1,
 		Commands:             []*runnerv1.ApprovedCommand{{Executable: "go", Args: []string{"tool", "not-a-real-tool"}, TimeoutSeconds: 5}},
 		VerificationCommands: []*runnerv1.ApprovedCommand{{Executable: "go", Args: []string{"version"}, TimeoutSeconds: 5}},
-	})
+	}
+	signExecuteRequest(t, signer, req, plan)
+
+	response, err := svc.ExecuteApprovedPlan(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, "FAILED", response.Status)
 	require.Equal(t, "command_failed:go", response.ErrorCode)
@@ -176,20 +201,22 @@ func TestExecuteApprovedPlanReportsRollbackFailure(t *testing.T) {
 	// runtime (with its injectable transaction factory) serves them.
 	require.NoError(t, svc.registry.db.Create(&sqlite.RunnerWorkspaceRecord{WorkspaceID: "ws-rollback-failure", CanonicalRoot: root, CreatedAt: time.Now()}).Error)
 	svc.newTransaction = func() transaction { return restoreFailingTransaction{} }
+	signer := testApprovalSigner(t)
+	svc = svc.WithSigner(signer)
 
 	plan := schema.ExecutionPlan{
 		Version:  1,
 		Patches:  []schema.Patch{{Path: "main.go", UnifiedDiff: "ignored by test transaction"}},
 		Commands: []schema.Command{{Executable: "go", Args: []string{"tool", "not-a-real-tool"}, TimeoutSeconds: 5}},
 	}
-	hash, err := approval.Hash("run-rollback-failure", "ws-rollback-failure", plan)
-	require.NoError(t, err)
-
-	response, err := svc.ExecuteApprovedPlan(context.Background(), &runnerv1.ExecuteApprovedPlanRequest{
-		RequestId: "req-rollback-failure", RunId: "run-rollback-failure", WorkspaceId: "ws-rollback-failure", PlanVersion: 1, ApprovalHash: hash,
+	req := &runnerv1.ExecuteApprovedPlanRequest{
+		RequestId: "req-rollback-failure", RunId: "run-rollback-failure", WorkspaceId: "ws-rollback-failure", PlanVersion: 1,
 		Patches:  []*runnerv1.ApprovedPatch{{Path: "main.go", UnifiedDiff: "ignored by test transaction"}},
 		Commands: []*runnerv1.ApprovedCommand{{Executable: "go", Args: []string{"tool", "not-a-real-tool"}, TimeoutSeconds: 5}},
-	})
+	}
+	signExecuteRequest(t, signer, req, plan)
+
+	response, err := svc.ExecuteApprovedPlan(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, "FAILED", response.Status)
 	require.Equal(t, "rollback_failed:command_failed:go", response.ErrorCode)
@@ -208,21 +235,24 @@ func (restoreFailingTransaction) Restore() error { return errors.New("restore fa
 
 func TestExecuteApprovedPlanRejectsTamperedApproval(t *testing.T) {
 	svc := newRegisteredService(t, t.TempDir(), "ws-1")
-	_, err := svc.ExecuteApprovedPlan(context.Background(), &runnerv1.ExecuteApprovedPlanRequest{RequestId: "req-1", RunId: "run-1", WorkspaceId: "ws-1", PlanVersion: 1, ApprovalHash: "tampered"})
-	require.Error(t, err)
+	svc = svc.WithSigner(testApprovalSigner(t))
+	_, err := svc.ExecuteApprovedPlan(context.Background(), &runnerv1.ExecuteApprovedPlanRequest{RequestId: "req-1", RunId: "run-1", WorkspaceId: "ws-1", PlanVersion: 1, ApprovalHash: "tampered", ExpiresAt: time.Now().Add(time.Minute).Unix(), Nonce: "nonce-tampered"})
+	require.Equal(t, codes.PermissionDenied, status.Code(err))
 }
 
 func TestExecuteApprovedPlanRejectsTamperedRequest(t *testing.T) {
 	svc := newRegisteredService(t, t.TempDir(), "ws-tampered")
+	signer := testApprovalSigner(t)
+	svc = svc.WithSigner(signer)
 
 	plan := schema.ExecutionPlan{Version: 1, Commands: []schema.Command{{Executable: "echo", Args: []string{"approved"}}}}
-	hash, err := approval.Hash("run-tampered", "ws-tampered", plan)
-	require.NoError(t, err)
-
-	_, err = svc.ExecuteApprovedPlan(context.Background(), &runnerv1.ExecuteApprovedPlanRequest{
-		RequestId: "req-tampered", RunId: "run-tampered", WorkspaceId: "ws-tampered", PlanVersion: 1, ApprovalHash: hash,
+	req := &runnerv1.ExecuteApprovedPlanRequest{
+		RequestId: "req-tampered", RunId: "run-tampered", WorkspaceId: "ws-tampered", PlanVersion: 1,
 		Commands: []*runnerv1.ApprovedCommand{{Executable: "echo", Args: []string{"tampered"}}},
-	})
+	}
+	signExecuteRequest(t, signer, req, plan)
+
+	_, err := svc.ExecuteApprovedPlan(context.Background(), req)
 	require.Equal(t, codes.PermissionDenied, status.Code(err))
 }
 
@@ -270,4 +300,47 @@ func TestReadWorkspaceContextMapsExpiredContextToDeadlineExceeded(t *testing.T) 
 
 	_, err := svc.ReadWorkspaceContext(ctx, &runnerv1.ReadWorkspaceContextRequest{WorkspaceId: "ws-deadline"})
 	require.Equal(t, codes.DeadlineExceeded, status.Code(err))
+}
+// A signed, approved plan executes once; replaying the same nonce with a new
+// request_id is rejected as a consumed approval.
+func TestExecuteApprovedPlanRejectsReplayedNonce(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "ws"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "ws", "main.go"), []byte("old\n"), 0o600))
+	db, err := sqlite.Open(filepath.Join(root, "runner.db"))
+	require.NoError(t, err)
+	pool, _ := db.DB()
+	t.Cleanup(func() { _ = pool.Close() })
+	svc, err := NewServiceWithDB(root, db)
+	require.NoError(t, err)
+	key := make([]byte, 32)
+	signer, err := approval.NewSigner(key)
+	require.NoError(t, err)
+	svc = svc.WithSigner(signer)
+	_, err = svc.RegisterWorkspace(context.Background(), &runnerv1.RegisterWorkspaceRequest{WorkspaceId: "ws", RelativePath: "ws"})
+	require.NoError(t, err)
+
+	h := sha256.Sum256([]byte("old\n"))
+	plan := schema.ExecutionPlan{Version: 1, Patches: []schema.Patch{{Path: "main.go", UnifiedDiff: "@@ -1 +1 @@\n-old\n+new\n", BeforeHash: hex.EncodeToString(h[:])}}}
+	expires := time.Now().Add(time.Minute).Unix()
+	sig, err := signer.Sign("run", "ws", 1, plan, expires, "nonce-1")
+	require.NoError(t, err)
+	mk := func(requestID string) *runnerv1.ExecuteApprovedPlanRequest {
+		return &runnerv1.ExecuteApprovedPlanRequest{RequestId: requestID, RunId: "run", WorkspaceId: "ws", PlanVersion: 1, ApprovalHash: sig, ExpiresAt: expires, Nonce: "nonce-1",
+			Patches: []*runnerv1.ApprovedPatch{{Path: "main.go", UnifiedDiff: plan.Patches[0].UnifiedDiff, BeforeHash: plan.Patches[0].BeforeHash}}}
+	}
+	first, err := svc.ExecuteApprovedPlan(context.Background(), mk("req-1"))
+	require.NoError(t, err)
+	require.Equal(t, "SUCCEEDED", first.Status)
+	// Same nonce, new request_id => replay, must be denied.
+	_, err = svc.ExecuteApprovedPlan(context.Background(), mk("req-2"))
+	require.Equal(t, codes.PermissionDenied, status.Code(err))
+}
+
+func TestExecuteApprovedPlanFailsClosedWithoutSigner(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "ws"), 0o700))
+	svc := newRegisteredService(t, root, "ws")
+	_, err := svc.ExecuteApprovedPlan(context.Background(), &runnerv1.ExecuteApprovedPlanRequest{RequestId: "r", RunId: "run", WorkspaceId: "ws", PlanVersion: 1, ApprovalHash: "x", ExpiresAt: time.Now().Add(time.Minute).Unix(), Nonce: "n"})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 }

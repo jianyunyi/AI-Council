@@ -2,6 +2,8 @@ package council
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
@@ -38,6 +40,7 @@ type API struct {
 	council         appTask.CouncilPort
 	councilFactory  func(context.Context, string) (appTask.CouncilPort, error)
 	providerKeys    *providerkeysvc.Service
+	signer          *approval.Signer
 	workspaceAccess *workspaceaccess.Service
 	metrics         *metrics.Metrics
 	readinessChecks []func(context.Context) error
@@ -72,6 +75,9 @@ type task struct {
 	Acceptance             []string                              `json:"acceptance"`
 	PlanVersion            int                                   `json:"plan_version"`
 	ApprovalHash           string                                `json:"approval_hash,omitempty"`
+	ApprovalSignature      string                                `json:"-"`
+	ApprovalExpiresAt      int64                                 `json:"approval_expires_at,omitempty"`
+	ApprovalNonce          string                                `json:"-"`
 	Approved               bool                                  `json:"approved"`
 	Plan                   schema.ExecutionPlan                  `json:"plan,omitempty"`
 	Verification           *runnerv1.ExecuteApprovedPlanResponse `json:"verification,omitempty"`
@@ -187,6 +193,17 @@ func (a *API) WithCouncilFactory(factory func(context.Context, string) (appTask.
 func (a *API) WithProviderKeys(service *providerkeysvc.Service) *API {
 	a.providerKeys = service
 	return a
+}
+
+// WithApprovalSigner installs the shared HMAC key used to sign Runner approvals.
+func (a *API) WithApprovalSigner(signer *approval.Signer) *API { a.signer = signer; return a }
+
+func newApprovalNonce() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 func (a *API) Routes() []rest.Route {
 	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
@@ -468,6 +485,28 @@ func (a *API) approveTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.ApprovalHash = in.ApprovalHash
+	// The client-facing approval_hash binds the UI confirmation to the immutable
+	// plan and keys the Council-side approval record, so it stays as-is. The
+	// Runner-facing credential is separate: a keyed HMAC over the plan with a
+	// short expiry and a one-time nonce, generated here at approval time.
+	if a.signer == nil {
+		writeErr(w, http.StatusServiceUnavailable, "signing_unavailable", "approval signing key is not configured")
+		return
+	}
+	nonce, nonceErr := newApprovalNonce()
+	if nonceErr != nil {
+		writeErr(w, http.StatusInternalServerError, "signing_failed", "could not generate approval nonce")
+		return
+	}
+	expiresAt := time.Now().Add(10 * time.Minute).Unix()
+	signature, signErr := a.signer.Sign(t.ID, t.WorkspaceID, t.PlanVersion, t.Plan, expiresAt, nonce)
+	if signErr != nil {
+		writeErr(w, http.StatusInternalServerError, "signing_failed", "could not sign approval")
+		return
+	}
+	t.ApprovalSignature = signature
+	t.ApprovalExpiresAt = expiresAt
+	t.ApprovalNonce = nonce
 	if a.approvalRepo != nil {
 		if err := a.approvalRepo.Invalidate(r.Context(), t.ID); err != nil {
 			writeErr(w, http.StatusInternalServerError, "approval_persistence_failed", err.Error())
@@ -568,7 +607,7 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	req := &runnerv1.ExecuteApprovedPlanRequest{RequestId: t.ID + ":" + strconv.Itoa(t.PlanVersion), RunId: t.ID, WorkspaceId: t.WorkspaceID, PlanVersion: int32(t.PlanVersion), ApprovalHash: t.ApprovalHash, Acceptance: append([]string(nil), t.Plan.Acceptance...)}
+	req := &runnerv1.ExecuteApprovedPlanRequest{RequestId: t.ID + ":" + strconv.Itoa(t.PlanVersion), RunId: t.ID, WorkspaceId: t.WorkspaceID, PlanVersion: int32(t.PlanVersion), ApprovalHash: t.ApprovalSignature, ExpiresAt: t.ApprovalExpiresAt, Nonce: t.ApprovalNonce, Acceptance: append([]string(nil), t.Plan.Acceptance...)}
 	for _, p := range t.Plan.Patches {
 		req.Patches = append(req.Patches, &runnerv1.ApprovedPatch{Path: p.Path, UnifiedDiff: p.UnifiedDiff, BeforeHash: p.BeforeHash})
 	}

@@ -171,3 +171,11 @@ type AccessTokenRecord struct {
 	RevokedAt *time.Time
 	CreatedAt time.Time
 }
+
+// ApprovalNonceRecord records each one-time approval nonce the Runner has
+// consumed, so a signed execution request cannot be replayed with a new
+// request_id. The unique primary key is the fail-closed replay guard.
+type ApprovalNonceRecord struct {
+	Nonce      string    `gorm:"primaryKey;size:128"`
+	ConsumedAt time.Time `gorm:"not null"`
+}

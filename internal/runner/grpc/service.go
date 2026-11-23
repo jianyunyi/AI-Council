@@ -28,6 +28,8 @@ type Service struct {
 	runnerv1.UnimplementedWorkspaceRunnerServer
 	root           string
 	guard          *pathguard.Guard
+	signer         *approval.Signer
+	db             *gorm.DB
 	executor       *command.Executor
 	idem           *idempotency.Store
 	collector      *runnercontext.Collector
@@ -68,8 +70,12 @@ func NewServiceWithDB(root string, db *gorm.DB) (*Service, error) {
 	if db != nil {
 		idem = idempotency.NewWithDB(db)
 	}
-	return &Service{root: guard.Root(), guard: guard, executor: command.NewExecutor(guard), idem: idem, collector: runnercontext.NewCollector(runnercontext.Limits{}), newTransaction: func() transaction { return files.NewTransaction(guard) }, registry: registry}, nil
+	return &Service{root: guard.Root(), guard: guard, db: db, executor: command.NewExecutor(guard), idem: idem, collector: runnercontext.NewCollector(runnercontext.Limits{}), newTransaction: func() transaction { return files.NewTransaction(guard) }, registry: registry}, nil
 }
+
+// WithSigner installs the shared approval signing key. When nil, ExecuteApprovedPlan
+// fails closed: an unsigned deployment must not execute approved plans.
+func (s *Service) WithSigner(signer *approval.Signer) *Service { s.signer = signer; return s }
 
 func (s *Service) RegisterWorkspace(ctx context.Context, req *runnerv1.RegisterWorkspaceRequest) (*runnerv1.RegisterWorkspaceResponse, error) {
 	root, err := s.registry.Register(req.GetWorkspaceId(), req.GetRelativePath())
@@ -200,8 +206,23 @@ func (s *Service) ExecuteApprovedPlan(ctx context.Context, req *runnerv1.Execute
 	if plan.Commands == nil {
 		plan.Commands = []schema.Command{}
 	}
-	if err := approval.Verify(req.ApprovalHash, req.RunId, req.WorkspaceId, plan); err != nil {
-		return nil, status.Error(codes.PermissionDenied, "approval mismatch")
+	if s.signer == nil {
+		return nil, status.Error(codes.FailedPrecondition, "approval signing key is not configured")
+	}
+	if req.ExpiresAt <= 0 || time.Now().Unix() > req.ExpiresAt {
+		return nil, status.Error(codes.PermissionDenied, "approval expired")
+	}
+	if strings.TrimSpace(req.Nonce) == "" {
+		return nil, status.Error(codes.PermissionDenied, "approval nonce required")
+	}
+	if err := s.signer.Verify(req.ApprovalHash, req.RunId, req.WorkspaceId, int(req.PlanVersion), plan, req.ExpiresAt, req.Nonce); err != nil {
+		return nil, status.Error(codes.PermissionDenied, "approval signature invalid")
+	}
+	// Consume the one-time nonce atomically; a duplicate insert means replay.
+	if s.db != nil {
+		if err := s.db.WithContext(ctx).Create(&sqlite.ApprovalNonceRecord{Nonce: req.Nonce, ConsumedAt: time.Now().UTC()}).Error; err != nil {
+			return nil, status.Error(codes.PermissionDenied, "approval nonce already used")
+		}
 	}
 	response := &runnerv1.ExecuteApprovedPlanResponse{RequestId: req.RequestId, Status: "SUCCEEDED"}
 	transaction := runtime.newTransaction()

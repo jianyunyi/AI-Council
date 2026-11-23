@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	appTask "github.com/aicouncil/aicouncil/internal/app/task"
+	"github.com/aicouncil/aicouncil/internal/approval"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
 	storage "github.com/aicouncil/aicouncil/internal/storage/sqlite"
@@ -235,8 +236,15 @@ func TestPersistentAPIRestoresSequenceAcrossRestart(t *testing.T) {
 	require.Equal(t, "task-2", second)
 }
 
+func testApprovalSigner(t *testing.T) *approval.Signer {
+	t.Helper()
+	signer, err := approval.NewSigner(make([]byte, 32))
+	require.NoError(t, err)
+	return signer
+}
+
 func TestTaskLifecycleRequiresApproval(t *testing.T) {
-	a := NewAPI().WithRunnerClient(&routeRunner{})
+	a := NewAPI().WithRunnerClient(&routeRunner{}).WithApprovalSigner(testApprovalSigner(t))
 	registerWorkspace(a, "ws-1")
 	routes := a.Routes()
 	find := func(method, path string) func(http.ResponseWriter, *http.Request) {
@@ -289,7 +297,7 @@ func TestPersistentAPIExecutesCouncilPlanThroughRunner(t *testing.T) {
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	council := &routeCouncil{}
 	runner := &routeRunner{}
-	a := NewPersistentAPI(db).WithCouncil(council).WithRunnerClient(runner)
+	a := NewPersistentAPI(db).WithCouncil(council).WithRunnerClient(runner).WithApprovalSigner(testApprovalSigner(t))
 	registerWorkspace(a, "ws")
 	find := func(method, path string) func(http.ResponseWriter, *http.Request) {
 		for _, x := range a.Routes() {

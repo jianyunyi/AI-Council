@@ -17,6 +17,7 @@ import (
 	"time"
 
 	appTask "github.com/aicouncil/aicouncil/internal/app/task"
+	"github.com/aicouncil/aicouncil/internal/approval"
 	councilengine "github.com/aicouncil/aicouncil/internal/council"
 	"github.com/aicouncil/aicouncil/internal/observability/metrics"
 	"github.com/aicouncil/aicouncil/internal/provider"
@@ -77,6 +78,19 @@ func main() {
 		artifactRoot = filepath.Join(filepath.Dir(*dbPath), "artifacts")
 	}
 	api = api.WithArtifactRoot(artifactRoot)
+	// Shared HMAC key for Runner approval signatures (fail-closed if absent:
+	// approvals then return 503 and the Runner refuses unsigned executions).
+	if rawKey := os.Getenv("AICOUNCIL_APPROVAL_SIGNING_KEY"); rawKey != "" {
+		key, decodeErr := hex.DecodeString(rawKey)
+		if decodeErr != nil || len(key) != 32 {
+			panic("AICOUNCIL_APPROVAL_SIGNING_KEY must be exactly 64 hexadecimal characters")
+		}
+		signer, signerErr := approval.NewSigner(key)
+		if signerErr != nil {
+			panic(signerErr)
+		}
+		api = api.WithApprovalSigner(signer)
+	}
 	var providerKeyService *providerkeysvc.Service
 	if rawKey := os.Getenv("PROVIDER_KEY_ENCRYPTION_KEY"); rawKey != "" {
 		masterKey, decodeErr := hex.DecodeString(rawKey)

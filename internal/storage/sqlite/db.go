@@ -71,7 +71,7 @@ func Open(path string) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := db.AutoMigrate(&RunRecord{}, &AuditRecord{}, &ArtifactRecord{}, &ProviderProfileRecord{}, &WorkspaceRecord{}, &WorkspaceShareRecord{}, &RunnerWorkspaceRecord{}, &TaskRecord{}, &SeatRecord{}, &ModelInvocationRecord{}, &EventRecord{}, &ApprovalRecord{}, &ExecutionRecord{}, &UserRecord{}, &IdentityTokenRecord{}, &OAuthFlowRecord{}, &OAuthIdentityRecord{}, &RoleRecord{}, &UserRoleRecord{}, &PermissionRecord{}, &RolePermissionRecord{}, &AccessTokenRecord{}); err != nil {
+	if err := db.AutoMigrate(&RunRecord{}, &AuditRecord{}, &ArtifactRecord{}, &ProviderProfileRecord{}, &WorkspaceRecord{}, &WorkspaceShareRecord{}, &RunnerWorkspaceRecord{}, &TaskRecord{}, &SeatRecord{}, &ModelInvocationRecord{}, &EventRecord{}, &ApprovalRecord{}, &ExecutionRecord{}, &UserRecord{}, &IdentityTokenRecord{}, &OAuthFlowRecord{}, &OAuthIdentityRecord{}, &RoleRecord{}, &UserRoleRecord{}, &PermissionRecord{}, &RolePermissionRecord{}, &AccessTokenRecord{}, &ApprovalNonceRecord{}); err != nil {
 		return nil, err
 	}
 	ready = true
