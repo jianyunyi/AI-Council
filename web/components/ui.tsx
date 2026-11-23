@@ -29,7 +29,24 @@ export type ConfirmState = {
 
 /* Native <dialog> + showModal (§3.4 / §4.3). The browser provides focus
    containment, inert background, Esc handling and focus return; no focus
-   trap, role or aria-modal is added. `autofocus` sits on Cancel. */
+   trap, role or aria-modal is added. `autofocus` sits on Cancel.
+   Where the platform lacks dialog methods (older engines, jsdom), we fall
+   back to the `open` attribute plus a synthetic close event. */
+function openDialog(dialog: HTMLDialogElement) {
+  if (typeof dialog.showModal === 'function') {
+    try { dialog.showModal(); return } catch { /* fall through */ }
+  }
+  dialog.setAttribute('open', '')
+}
+
+function closeDialog(dialog: HTMLDialogElement, value: string) {
+  if (typeof dialog.close === 'function') {
+    try { dialog.close(value); return } catch { /* fall through */ }
+  }
+  dialog.returnValue = value
+  dialog.removeAttribute('open')
+  dialog.dispatchEvent(new Event('close'))
+}
 export function ConfirmDialog({request, onResolve}: {
   request: ConfirmState | null
   onResolve: (confirmed: boolean, text: string) => void
@@ -45,9 +62,9 @@ export function ConfirmDialog({request, onResolve}: {
     if (request && !dialog.open) {
       setText('')
       pending.current = true
-      try { dialog.showModal() } catch { dialog.setAttribute('open', '') }
+      openDialog(dialog)
     }
-    if (!request && dialog.open) dialog.close('cancel')
+    if (!request && dialog.open) closeDialog(dialog, 'cancel')
   }, [request])
 
   const typeNameOk = !request?.typeName || text === request.typeName
@@ -68,7 +85,7 @@ export function ConfirmDialog({request, onResolve}: {
     event.preventDefault()
     if (!canConfirm) return
     if (formRef.current && !formRef.current.reportValidity()) return
-    dialogRef.current?.close('confirm')
+    if (dialogRef.current) closeDialog(dialogRef.current, 'confirm')
   }
 
   return (
@@ -88,7 +105,7 @@ export function ConfirmDialog({request, onResolve}: {
           </label>
         )}
         <div className="dlg-actions">
-          <button type="button" className="secondary" autoFocus onClick={() => dialogRef.current?.close('cancel')}>取消</button>
+          <button type="button" className="secondary" autoFocus onClick={() => { if (dialogRef.current) closeDialog(dialogRef.current, 'cancel') }}>取消</button>
           <button type="submit" className="danger" disabled={!canConfirm}>{request.confirmLabel}</button>
         </div>
       </form>}
