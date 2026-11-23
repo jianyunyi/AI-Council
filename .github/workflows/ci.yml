@@ -81,6 +81,7 @@ jobs:
       COUNCIL_BOOTSTRAP_SUBJECT: ci-validation
       COUNCIL_BOOTSTRAP_PASSWORD: validation-only-password
       AICOUNCIL_BACKUP_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      AICOUNCIL_APPROVAL_SIGNING_KEY: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       RUNNER_TOKEN: validation-only-runner-token
       TLS_CERT: /certs/validation.crt
       TLS_KEY: /certs/validation.key
