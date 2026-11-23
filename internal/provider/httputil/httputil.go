@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +16,31 @@ import (
 )
 
 const maxErrorBody = 2048
+
+// defaultMaxResponseBytes bounds a *successful* provider response body. The
+// council only ever sends a bounded workspace snapshot, so a generated plan is
+// far smaller than this; the ceiling exists to stop a pathological or hostile
+// response from exhausting memory. Override with AICOUNCIL_MAX_RESPONSE_BYTES.
+const defaultMaxResponseBytes int64 = 32 << 20
+
+// ErrResponseTooLarge is returned when a successful response exceeds the
+// configured success ceiling. It is deliberately explicit rather than a silent
+// truncation that would later fail to decode.
+var errResponseTooLarge = func(providerName string, limit int64) error {
+	return fmt.Errorf("%s: response exceeds %d bytes", providerName, limit)
+}
+
+func maxResponseBytes() int64 {
+	raw := strings.TrimSpace(os.Getenv("AICOUNCIL_MAX_RESPONSE_BYTES"))
+	if raw == "" {
+		return defaultMaxResponseBytes
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		return defaultMaxResponseBytes
+	}
+	return value
+}
 
 func Endpoint(base, path string) string {
 	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(path, "/")
@@ -38,8 +65,10 @@ func DoJSONWithHeaders(ctx context.Context, client *http.Client, method, url str
 			req.Header.Set(key, value)
 		}
 	}
+	successLimit := maxResponseBytes()
 	var resp *http.Response
 	var data []byte
+	var tooLarge bool
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 && req.GetBody != nil {
 			req.Body, _ = req.GetBody()
@@ -48,7 +77,15 @@ func DoJSONWithHeaders(ctx context.Context, client *http.Client, method, url str
 		if err != nil {
 			return fmt.Errorf("%s: request failed: %w", providerName, err)
 		}
-		data, err = io.ReadAll(io.LimitReader(resp.Body, maxErrorBody+1))
+		// Non-2xx responses are read with the small error ceiling (and later
+		// sanitized). A successful body is read up to the success ceiling so
+		// large-but-valid plans are not silently truncated into decode errors.
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			data, err = io.ReadAll(io.LimitReader(resp.Body, maxErrorBody+1))
+		} else {
+			data, err = io.ReadAll(io.LimitReader(resp.Body, successLimit+1))
+			tooLarge = err == nil && int64(len(data)) > successLimit
+		}
 		resp.Body.Close()
 		if err != nil {
 			return fmt.Errorf("%s: read response: %w", providerName, err)
@@ -81,6 +118,9 @@ func DoJSONWithHeaders(ctx context.Context, client *http.Client, method, url str
 			msg = http.StatusText(resp.StatusCode)
 		}
 		return &provider.APIError{Provider: providerName, Status: resp.StatusCode, Kind: kind, Message: msg}
+	}
+	if tooLarge {
+		return errResponseTooLarge(providerName, successLimit)
 	}
 	if out == nil {
 		return nil
