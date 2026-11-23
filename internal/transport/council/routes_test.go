@@ -519,3 +519,21 @@ func TestPersistentAPIResumesPersistedExecutingTaskWithStableRequestID(t *testin
 	require.Equal(t, "task-1:1", runner.req.RequestId)
 	require.Equal(t, "SUCCEEDED", a.tasks["task-1"].State)
 }
+// Cancelling a task that is mid-execution is refused with a conflict rather than
+// silently marking it CANCELLED while the Runner keeps going.
+func TestCancelRefusedWhileExecuting(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	require.NoError(t, err)
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	a := NewPersistentAPI(db)
+	registerWorkspace(a, "ws")
+	a.tasks["task-1"] = &task{ID: "task-1", State: "EXECUTING", WorkspaceID: "ws", PlanVersion: 1}
+	require.NoError(t, db.Create(&storage.TaskRecord{ID: "task-1", WorkspaceID: "ws", State: "EXECUTING", PlanVersion: 1}).Error)
+
+	cancel := routeHandler(t, a.Routes(), http.MethodPost, "/api/v1/tasks/:id/cancel")
+	rec := httptest.NewRecorder()
+	cancel(rec, pathvar.WithVars(httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-1/cancel", nil), map[string]string{"id": "task-1"}))
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.Equal(t, "EXECUTING", a.tasks["task-1"].State)
+}

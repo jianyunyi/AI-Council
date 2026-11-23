@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -132,9 +133,15 @@ func NewPersistentAPI(db *gorm.DB) *API {
 	a.approvalRepo = sqlite.NewApprovalRepository(db)
 	a.artifactRepo = sqlite.NewArtifactRepository(db, ".data/artifacts")
 	var rows []sqlite.TaskRecord
-	_ = db.Find(&rows).Error
+	if err := db.Find(&rows).Error; err != nil {
+		// Fail closed at startup rather than serving with an empty in-memory
+		// view of a database we could not read.
+		panic(fmt.Sprintf("load tasks on startup: %v", err))
+	}
 	var workspaceRows []sqlite.WorkspaceRecord
-	_ = db.Find(&workspaceRows).Error
+	if err := db.Find(&workspaceRows).Error; err != nil {
+		panic(fmt.Sprintf("load workspaces on startup: %v", err))
+	}
 	for _, r := range workspaceRows {
 		a.workspaces[r.ID] = workspace{ID: r.ID, Root: r.CanonicalRoot, IsGit: r.IsGit, Dirty: r.Dirty, OwnerUserID: r.OwnerUserID, RunnerPath: r.RunnerPath}
 	}
@@ -327,9 +334,19 @@ func (a *API) createTask(w http.ResponseWriter, r *http.Request) {
 	a.metrics.TasksCreated.Add(1)
 	if a.db != nil {
 		raw, _ := json.Marshal(in.Acceptance)
-		_ = a.db.Save(&sqlite.TaskRecord{ID: id, OwnerUserID: owner, WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, AcceptanceJSON: raw, State: t.State, PlanVersion: t.PlanVersion}).Error
+		if err := a.db.Save(&sqlite.TaskRecord{ID: id, OwnerUserID: owner, WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, AcceptanceJSON: raw, State: t.State, PlanVersion: t.PlanVersion}).Error; err != nil {
+			delete(a.tasks, id)
+			a.nextID--
+			a.mu.Unlock()
+			writeErr(w, http.StatusInternalServerError, "task_persistence_failed", "task could not be saved")
+			return
+		}
 	}
-	a.append(t, "task.created", t)
+	if err := a.append(t, "task.created", t); err != nil {
+		a.mu.Unlock()
+		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
+		return
+	}
 	a.mu.Unlock()
 	writeData(w, http.StatusCreated, t)
 }
@@ -537,10 +554,18 @@ func (a *API) rejectTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
+	prevState, prevApproved := t.State, t.Approved
 	t.State = "CANCELLED"
 	t.Approved = false
-	a.persistTask(t)
-	a.append(t, "approval.rejected", map[string]string{"state": t.State})
+	if err := a.persistTask(t); err != nil {
+		t.State, t.Approved = prevState, prevApproved
+		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
+		return
+	}
+	if err := a.append(t, "approval.rejected", map[string]string{"state": t.State}); err != nil {
+		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
+		return
+	}
 	a.metrics.ApprovalsRejected.Add(1)
 	writeData(w, 200, t)
 }
@@ -703,10 +728,24 @@ func (a *API) cancelTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
+	// A synchronous Runner execution has no cancel RPC; refuse rather than mark
+	// the task CANCELLED while the Runner keeps running (state/reality mismatch).
+	if t.State == "EXECUTING" {
+		writeErr(w, http.StatusConflict, "execution_in_progress", "task is executing and cannot be cancelled")
+		return
+	}
+	prevState, prevApproved := t.State, t.Approved
 	t.State = "CANCELLED"
 	t.Approved = false
-	a.persistTask(t)
-	a.append(t, "state.changed", map[string]string{"state": t.State})
+	if err := a.persistTask(t); err != nil {
+		t.State, t.Approved = prevState, prevApproved
+		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
+		return
+	}
+	if err := a.append(t, "state.changed", map[string]string{"state": t.State}); err != nil {
+		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
+		return
+	}
 	writeData(w, 200, t)
 }
 func (a *API) append(t *task, typ string, data any) error {
