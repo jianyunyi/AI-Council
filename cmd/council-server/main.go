@@ -49,9 +49,25 @@ func main() {
 	runnerTLS := flag.Bool("runner-tls", false, "Use TLS for Runner gRPC")
 	runnerTLSServerName := flag.String("runner-tls-server-name", "", "TLS server name for Runner gRPC")
 	runnerToken := flag.String("runner-token", "", "Runner gRPC bearer token")
+	insecureDev := flag.Bool("insecure-dev", false, "DANGER: run with no authentication (local development only)")
 	flag.Parse()
+	// Prefer tokens from the environment so they never appear in argv / ps / docker inspect.
+	if *token == "" {
+		*token = os.Getenv("COUNCIL_TOKEN")
+	}
+	if *runnerToken == "" {
+		*runnerToken = os.Getenv("RUNNER_TOKEN")
+	}
 	if err := auth.validate(); err != nil {
 		panic(err)
+	}
+	// Fail closed: refuse to serve with no auth unless RBAC is enabled, a static
+	// bearer token is set, or the operator explicitly opts into insecure dev mode.
+	if !auth.enabled() && *token == "" {
+		if !*insecureDev && os.Getenv("AICOUNCIL_INSECURE_DEV") != "1" {
+			panic("refusing to start without authentication: enable --rbac, set --token, or pass --insecure-dev for local development")
+		}
+		fmt.Fprintln(os.Stderr, "WARNING: council-server is running with NO AUTHENTICATION (insecure-dev). Never use this in production.")
 	}
 
 	host, port, err := splitListenAddress(*listen)

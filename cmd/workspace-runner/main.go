@@ -31,7 +31,17 @@ func main() {
 	token := flag.String("token", "", "gRPC bearer token")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file for gRPC (hot reloaded)")
 	tlsKey := flag.String("tls-key", "", "TLS private key file for gRPC (hot reloaded)")
+	insecureDev := flag.Bool("insecure-dev", false, "DANGER: run gRPC with no token (local development only)")
 	flag.Parse()
+	if *token == "" {
+		*token = os.Getenv("RUNNER_TOKEN")
+	}
+	if *token == "" && !*insecureDev && os.Getenv("AICOUNCIL_INSECURE_DEV") != "1" {
+		panic("refusing to start Runner gRPC without --token; pass --insecure-dev for local development only")
+	}
+	if *token == "" {
+		fmt.Fprintln(os.Stderr, "WARNING: workspace-runner gRPC is running with NO TOKEN (insecure-dev). Never use this in production.")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
