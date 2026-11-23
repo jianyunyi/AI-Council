@@ -1,7 +1,10 @@
 export type Command = { executable:string; args:string[]; work_dir?:string; timeout_seconds?:number; purpose?:string }
 export type Patch = { path:string; unified_diff:string; before_hash?:string }
-export type ExecutionPlan = { version:number; patches:Patch[]; commands:Command[]; acceptance:string[]; recovery:string[] }
-export type Task = { id:string; state:string; workspace_id?:string; requirement:string; acceptance?:string[]; plan_version?:number; approval_hash?:string; approved?:boolean; plan?:ExecutionPlan }
+export type ExecutionPlan = { version:number; patches:Patch[]; commands:Command[]; verification_commands?:Command[]; acceptance:string[]; recovery:string[] }
+export type VerificationStep = { kind:string; name:string; exit_code:number; stdout?:string; stderr?:string; duration_ms?:number; status?:string }
+export type VerificationResult = { request_id?:string; status?:string; steps?:VerificationStep[]; actual_diff?:string; error_code?:string }
+export type Task = { id:string; state:string; workspace_id?:string; requirement:string; acceptance?:string[]; plan_version?:number; approval_hash?:string; approval_expires_at?:number; approved?:boolean; plan?:ExecutionPlan; verification?:VerificationResult; verification_artifact_id?:string }
+export type ArtifactEnvelope = { schema_version:string; type:string; id:string; parent_id?:string; content:unknown; content_hash:string }
 export type Workspace = { id:string; root:string; is_git:boolean; dirty:boolean; access?:'viewer'|'editor'; is_owner:boolean }
 export type WorkspaceShare = {user_id:string;subject:string;access:'viewer'|'editor';granted_by:string;created_at:string;updated_at:string}
 export type APIError = { code:string; message:string; fields?:Record<string,string> }
