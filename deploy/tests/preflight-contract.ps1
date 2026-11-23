@@ -11,7 +11,7 @@ try {
  $gateway=@{ports=@(@{published='80'},@{published='443'})}
  $global:ComposeJson=@{services=@{caddy=$gateway;runner=@{};council=@{volumes=@(@{target='/app/.data';type='volume';source='proj_council-data'})};web=@{};prometheus=@{}};volumes=@{'council-data'=@{name='proj_council-data'}}} | ConvertTo-Json -Depth 8
  $envFile=Join-Path $tmp 'valid.env'
- $valid=@{COUNCIL_BOOTSTRAP_PASSWORD=('GoodPass-'+('x'*20));RUNNER_TOKEN=('r'*40);AICOUNCIL_BACKUP_KEY=('a'*64);PUBLIC_BASE_URL='https://council.example.org';SMTP_HOST='smtp.example.org';SMTP_PORT='587';SMTP_FROM='robot@example.org';TLS_CERT='/certs/tls.crt';TLS_KEY='/certs/tls.key';TLS_CERT_DIRECTORY=$certs}
+ $valid=@{COUNCIL_BOOTSTRAP_PASSWORD=('GoodPass-'+('x'*20));RUNNER_TOKEN=('r'*40);AICOUNCIL_BACKUP_KEY=('a'*64);AICOUNCIL_APPROVAL_SIGNING_KEY=('b'*64);PUBLIC_BASE_URL='https://council.example.org';SMTP_HOST='smtp.example.org';SMTP_PORT='587';SMTP_FROM='robot@example.org';TLS_CERT='/certs/tls.crt';TLS_KEY='/certs/tls.key';TLS_CERT_DIRECTORY=$certs}
  function writeEnv($v){$v.GetEnumerator()|ForEach-Object{"$($_.Key)=$($_.Value)"}|Set-Content $envFile}
  writeEnv $valid
  & (Join-Path $deploy 'preflight.ps1') -EnvFile $envFile

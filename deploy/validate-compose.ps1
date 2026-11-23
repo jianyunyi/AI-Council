@@ -28,6 +28,7 @@ $validationValues = [ordered]@{
     COUNCIL_BOOTSTRAP_PASSWORD = 'validation-only-password'
     RUNNER_TOKEN               = 'validation-only-runner-token'
     AICOUNCIL_BACKUP_KEY       = ('a' * 64)
+    AICOUNCIL_APPROVAL_SIGNING_KEY = ('b' * 64)
     TLS_CERT                   = '/certs/validation.crt'
     TLS_KEY                    = '/certs/validation.key'
 }
