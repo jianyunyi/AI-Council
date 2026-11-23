@@ -6,6 +6,7 @@ $values = @{}
 foreach ($line in Get-Content -LiteralPath $EnvFile) { if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { $values[$Matches[1]] = $Matches[2].Trim().Trim('"').Trim("'") } }
 $composeOverrides = @(
     'COUNCIL_BOOTSTRAP_PASSWORD', 'RUNNER_TOKEN', 'AICOUNCIL_BACKUP_KEY',
+    'AICOUNCIL_APPROVAL_SIGNING_KEY',
     'PUBLIC_BASE_URL', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_FROM', 'SMTP_USERNAME',
     'SMTP_PASSWORD', 'GITHUB_OAUTH_CLIENT_ID', 'GITHUB_OAUTH_CLIENT_SECRET',
     'GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET', 'TLS_CERT', 'TLS_KEY',
@@ -20,6 +21,7 @@ $errors = [Collections.Generic.List[string]]::new()
 if (-not $values.COUNCIL_BOOTSTRAP_PASSWORD -or $values.COUNCIL_BOOTSTRAP_PASSWORD.Length -lt 16 -or $values.COUNCIL_BOOTSTRAP_PASSWORD -match '^(password|changeme|admin|validation-only-password)$') { $errors.Add('COUNCIL_BOOTSTRAP_PASSWORD') }
 if (-not $values.RUNNER_TOKEN -or $values.RUNNER_TOKEN.Length -lt 32) { $errors.Add('RUNNER_TOKEN') }
 if ($values.AICOUNCIL_BACKUP_KEY -notmatch '^[a-fA-F0-9]{64}$') { $errors.Add('AICOUNCIL_BACKUP_KEY') }
+if ($values.AICOUNCIL_APPROVAL_SIGNING_KEY -notmatch '^[a-fA-F0-9]{64}$') { $errors.Add('AICOUNCIL_APPROVAL_SIGNING_KEY') }
 try {
     $uri = [uri]$values.PUBLIC_BASE_URL
     if ($uri.Scheme -ne 'https' -or -not $uri.Host -or $uri.IsLoopback -or $uri.Host -notmatch '\.' -or $uri.AbsolutePath -ne '/' -or $uri.Query -or $uri.Fragment -or $uri.UserInfo) { throw 'bad' }
