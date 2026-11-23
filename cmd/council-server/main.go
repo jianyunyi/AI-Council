@@ -68,6 +68,14 @@ func main() {
 		panic(err)
 	}
 	api := transport.NewPersistentAPI(db)
+	// Pin the artifact root beside the database (same data volume) so verification
+	// artifacts survive container recreation and the backup tool can find them.
+	// Default: <dir of --db>/artifacts. Override with AICOUNCIL_ARTIFACT_ROOT.
+	artifactRoot := os.Getenv("AICOUNCIL_ARTIFACT_ROOT")
+	if artifactRoot == "" {
+		artifactRoot = filepath.Join(filepath.Dir(*dbPath), "artifacts")
+	}
+	api = api.WithArtifactRoot(artifactRoot)
 	var providerKeyService *providerkeysvc.Service
 	if rawKey := os.Getenv("PROVIDER_KEY_ENCRYPTION_KEY"); rawKey != "" {
 		masterKey, decodeErr := hex.DecodeString(rawKey)
