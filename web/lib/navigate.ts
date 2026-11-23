@@ -24,6 +24,12 @@ function waitForElement(selector: string, timeoutMs: number): Promise<HTMLElemen
   })
 }
 
+function setVTName(el: HTMLElement | null, name: string) {
+  if (!el) return
+  if (name) el.style.setProperty('view-transition-name', name)
+  else el.style.removeProperty('view-transition-name')
+}
+
 export function navigateWithTransition(push: Push, href: string, options?: {fromEl?: HTMLElement | null; toSelector?: string}) {
   const doc = document as Document & {startViewTransition?: (update: () => Promise<void> | void) => {finished: Promise<void>}}
   const reduce = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -32,18 +38,18 @@ export function navigateWithTransition(push: Push, href: string, options?: {from
     return
   }
   const from = options?.fromEl ?? null
-  if (from) from.style.viewTransitionName = 'task-title'
+  setVTName(from, 'task-title')
   let to: HTMLElement | null = null
   const transition = doc.startViewTransition(async () => {
-    if (from) from.style.viewTransitionName = ''
+    setVTName(from, '')
     push(href)
     if (options?.toSelector) {
       to = await waitForElement(options.toSelector, 400)
-      if (to) to.style.viewTransitionName = 'task-title'
+      setVTName(to, 'task-title')
     }
   })
   transition.finished.finally(() => {
-    if (from) from.style.viewTransitionName = ''
-    if (to) to.style.viewTransitionName = ''
+    setVTName(from, '')
+    setVTName(to, '')
   }).catch(() => {})
 }

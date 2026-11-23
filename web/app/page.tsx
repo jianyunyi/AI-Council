@@ -1,9 +1,118 @@
 'use client'
+
 import Link from 'next/link'
-import {useEffect,useState} from 'react'
-import {CouncilTower} from '@/components/council-tower'
-import {DesktopStatus,desktopBridge} from '@/lib/desktop-bridge'
+import {useWorkspace} from '@/components/app-shell'
+import {TaskLink} from '@/components/task-link'
+import {StatusBadge} from '@/components/ui'
+import {planScale, stageIndexOf, STAGES, uiStateOf} from '@/lib/task-state'
+import {useIndexedTasks} from '@/lib/use-tasks'
 
-const deliberationStages=['独立提案','匿名互审','裁判决策','人工批准','受控执行']
+export default function Home() {
+  const {tasks, loading} = useIndexedTasks()
+  const {workspaces} = useWorkspace()
+  const rootOf = (id?: string) => workspaces.find(workspace => workspace.id === id)?.root ?? (id ? id.slice(0, 8) : '—')
 
-export default function Home(){const bridge=desktopBridge();const [status,setStatus]=useState<DesktopStatus>();const [message,setMessage]=useState('');const [destination,setDestination]=useState('');const [busy,setBusy]=useState(false);const refresh=async()=>{if(!bridge)return;setStatus(await bridge.status())};useEffect(()=>{void refresh()},[]);async function toggle(){if(!bridge)return;setBusy(true);try{if(status?.state==='stopped')setStatus(await bridge.start());else{await bridge.stop();await refresh()}}catch(error){setMessage(error instanceof Error?error.message:'服务操作失败')}finally{setBusy(false)}}async function exportDiagnostics(){if(!bridge||!destination.trim())return;setBusy(true);try{const archive=await bridge.exportDiagnostics(destination);setMessage(`诊断包已导出：${archive}`)}catch(error){setMessage(error instanceof Error?error.message:'导出失败')}finally{setBusy(false)}}return <><section className="tower-hero" aria-labelledby="home-title"><div className="tower-hero__command"><h1 id="home-title">让多模型达成可执行共识</h1><p>让多个模型独立提案、匿名互审、裁判决策，并在人工批准后执行。</p><div className="hero-grid__actions"><Link href="/tasks/new">创建协商任务</Link><Link href="/workspaces">选择工作区</Link></div></div><CouncilTower /><ol className="tower-hero__rail" aria-label="协商阶段">{deliberationStages.map(stage=><li key={stage}>{stage}</li>)}</ol></section>{bridge&&<section className="service-panel card" aria-labelledby="service-title"><h2 id="service-title">本地服务控制</h2><p>状态：{status?.state??'正在读取'}{status?.workspace&&` · 工作区：${status.workspace}`}</p>{status?.last_error&&<p role="alert">{status.last_error}</p>}<button onClick={toggle} disabled={busy}>{status?.state==='stopped'?'启动服务':'安全停止服务'}</button><button className="secondary" onClick={()=>void refresh()} disabled={busy}>刷新状态</button><label>诊断导出目录<input value={destination} onChange={event=>setDestination(event.target.value)} placeholder="例如 C:\\Users\\you\\Downloads" /></label><button className="secondary" onClick={exportDiagnostics} disabled={busy||!destination.trim()}>导出脱敏诊断包</button>{message&&<p role="status">{message}</p>}</section>}</>}
+  const waiting = tasks.filter(task => task.state === 'AWAITING_APPROVAL')
+  const active = tasks.filter(task => ['delib', 'exec'].includes(uiStateOf(task.state)))
+  const done = tasks.filter(task => task.state === 'SUCCEEDED')
+  const failed = tasks.filter(task => task.state === 'FAILED')
+  const recent = tasks.slice(0, 6)
+
+  return (
+    <div className="page-stack">
+      <div className="page-head">
+        <div>
+          <h1>指挥中心</h1>
+          <p className="page-sub">待批准队列、进行中的协商与最近任务。</p>
+        </div>
+        <div className="page-actions">
+          <Link className="btn secondary" href="/tasks">全部任务</Link>
+          <Link className="btn primary" href="/tasks/new">＋ 新建任务</Link>
+        </div>
+      </div>
+
+      <section className="kpi-grid" aria-label="任务概览">
+        <Link className="kpi kpi--wait" href="/tasks">
+          <span className="kpi__num">{waiting.length}</span>
+          <span className="kpi__label">◆ 待批准</span>
+          <span className="kpi__hint">需要你逐项核对后放行</span>
+        </Link>
+        <div className="kpi">
+          <span className="kpi__num">{active.length}</span>
+          <span className="kpi__label">◐ 协商 / 执行中</span>
+          <span className="kpi__hint">多模型协商与受控执行进行中</span>
+        </div>
+        <div className="kpi">
+          <span className="kpi__num">{done.length}</span>
+          <span className="kpi__label">✓ 已完成</span>
+          <span className="kpi__hint">执行并通过验证的任务</span>
+        </div>
+        <div className="kpi">
+          <span className="kpi__num">{failed.length}</span>
+          <span className="kpi__label">✕ 失败待处理</span>
+          <span className="kpi__hint">执行或协商失败，需要复盘</span>
+        </div>
+      </section>
+
+      {loading && <p role="status">正在读取任务…</p>}
+      {!loading && tasks.length === 0 && (
+        <section className="card">
+          <h2>还没有任务</h2>
+          <p className="muted">新建一个任务，让多个模型独立提案、匿名互审、裁判决策，再由你批准后执行。本机任务索引保存在当前浏览器中；任务详情可通过任务 ID 直接打开。</p>
+          <p><Link className="btn primary" href="/tasks/new">＋ 新建任务</Link></p>
+        </section>
+      )}
+
+      <div className="home-grid">
+        <section className="card" aria-labelledby="queue-title">
+          <h2 id="queue-title">待批准队列</h2>
+          {waiting.length === 0 && <p className="empty">✓ 当前没有待批准的计划。</p>}
+          {waiting.map(task => (
+            <div className="queue-item" key={task.id}>
+              <div className="queue-item__main">
+                <TaskLink task={task} />
+                <div className="queue-item__meta">{rootOf(task.workspace_id)} · {planScale(task)} · 计划 v{task.plan_version ?? '—'}</div>
+              </div>
+              <StatusBadge state={task.state} size="md" />
+              <Link className="btn small primary" href={`/tasks/${encodeURIComponent(task.id)}`}>去批准</Link>
+            </div>
+          ))}
+        </section>
+
+        <section className="card" aria-labelledby="active-title">
+          <h2 id="active-title">进行中</h2>
+          {active.length === 0 && <p className="empty">当前没有协商或执行中的任务。</p>}
+          {active.map(task => {
+            const index = stageIndexOf(task.state)
+            const stage = STAGES[Math.min(Math.max(index, 0), STAGES.length - 1)]
+            return (
+              <div className="queue-item" key={task.id}>
+                <div className="queue-item__main">
+                  <TaskLink task={task} />
+                  <div className="queue-item__meta">当前阶段：{stage?.label ?? task.state}（第 {Math.max(index + 1, 1)} / {STAGES.length} 步）</div>
+                </div>
+                <StatusBadge state={task.state} size="md" />
+              </div>
+            )
+          })}
+        </section>
+      </div>
+
+      <section className="card" aria-labelledby="recent-title">
+        <h2 id="recent-title">最近任务</h2>
+        {recent.length === 0 && <p className="empty">暂无记录。</p>}
+        {recent.map(task => (
+          <div className="queue-item" key={task.id}>
+            <div className="queue-item__main">
+              <TaskLink task={task} />
+              <div className="queue-item__meta">{rootOf(task.workspace_id)} · {planScale(task)}</div>
+            </div>
+            <StatusBadge state={task.state} />
+            <Link className="btn small secondary" href={`/tasks/${encodeURIComponent(task.id)}`}>查看</Link>
+          </div>
+        ))}
+        {tasks.length > 0 && <p className="small muted">共 {tasks.length} 个任务保存在本机索引中。<Link href="/tasks">查看全部</Link></p>}
+      </section>
+    </div>
+  )
+}

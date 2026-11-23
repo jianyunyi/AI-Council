@@ -38,9 +38,9 @@ export function PrefsProvider({children}: {children: React.ReactNode}) {
   const [diffView, setDiffViewState] = useState<DiffView>('unified')
 
   useEffect(() => {
-    setThemeState(read('aicouncil.prefs.theme', ['dark', 'light', 'system'], 'dark'))
-    setDensityState(read('aicouncil.prefs.density', ['standard', 'compact'], 'standard'))
-    setDiffViewState(read('aicouncil.prefs.diffView', ['unified', 'side-by-side'], 'unified'))
+    setThemeState(read('aicouncil.prefs.theme', ['dark', 'light', 'system'] as const, 'dark'))
+    setDensityState(read('aicouncil.prefs.density', ['standard', 'compact'] as const, 'standard'))
+    setDiffViewState(read('aicouncil.prefs.diffView', ['unified', 'side-by-side'] as const, 'unified'))
   }, [])
 
   useEffect(() => {
