@@ -108,12 +108,20 @@ func TestRuntimeStartsLoopbackServicesWithIsolatedConfiguration(t *testing.T) {
 		}
 	}
 
-	token := flagValue(t, runner.Args, "--token")
-	if token == "" || token != flagValue(t, council.Args, "--token") {
-		t.Fatal("runner and council did not receive the same random session token")
+	// Tokens are no longer passed via argv; they travel through the child env.
+	token := runner.Env["RUNNER_TOKEN"]
+	if token == "" || token != council.Env["COUNCIL_TOKEN"] || token != council.Env["RUNNER_TOKEN"] {
+		t.Fatal("runner and council did not receive the same random session token via env")
+	}
+	if hasFlag(runner.Args, "--token") || hasFlag(council.Args, "--token") || hasFlag(council.Args, "--runner-token") {
+		t.Fatal("tokens must not appear in process arguments")
 	}
 	if token == "provider-secret" {
 		t.Fatal("session token reused a provider secret")
+	}
+	signingKey := runner.Env["AICOUNCIL_APPROVAL_SIGNING_KEY"]
+	if len(signingKey) != 64 || signingKey != council.Env["AICOUNCIL_APPROVAL_SIGNING_KEY"] {
+		t.Fatal("runner and council did not receive the same 64-hex approval signing key via env")
 	}
 	if got := flagValue(t, runner.Args, "--db"); got != filepath.Join(dataDir, "runner.db") {
 		t.Errorf("runner db = %q", got)
@@ -123,9 +131,6 @@ func TestRuntimeStartsLoopbackServicesWithIsolatedConfiguration(t *testing.T) {
 	}
 	if got := flagValue(t, council.Args, "--runner"); got != runnerGRPC {
 		t.Errorf("council runner address = %q, want %q", got, runnerGRPC)
-	}
-	if got := flagValue(t, council.Args, "--runner-token"); got != token {
-		t.Errorf("council runner token = %q, want shared session token", got)
 	}
 	if !hasFlag(council.Args, "--runner-tls") {
 		t.Errorf("council TLS runner flag missing from %v", council.Args)
@@ -325,4 +330,25 @@ func hasFlag(args []string, flag string) bool {
 		}
 	}
 	return false
+}
+
+// Tokens must never leak into argv.
+func TestRuntimeKeepsTokensOutOfArgv(t *testing.T) {
+	starter := &fakeStarter{}
+	runtime := NewRuntime(RuntimeOptions{
+		Config:  Config{DataDir: t.TempDir(), LogDir: t.TempDir(), CouncilBinary: "council", RunnerBinary: "runner"},
+		Starter: starter, HealthCheck: func(context.Context, string) error { return nil },
+	})
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Stop(context.Background()) })
+	specs, _ := starter.snapshot()
+	for _, spec := range specs {
+		for _, arg := range spec.Args {
+			if arg == "--token" || arg == "--runner-token" {
+				t.Fatalf("%s leaked a token flag into argv", spec.Name)
+			}
+		}
+	}
 }

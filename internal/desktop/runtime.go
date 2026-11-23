@@ -2,7 +2,9 @@ package desktop
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -158,6 +160,14 @@ func (r *Runtime) Start(ctx context.Context) error {
 	if err != nil {
 		return r.failStart("create session token")
 	}
+	// Per-start approval signing key shared by Council and Runner. Approvals do
+	// not survive a restart (their nonce/signature live in memory), so an
+	// ephemeral key per Start is consistent and never touches disk.
+	signingKeyBytes := make([]byte, 32)
+	if _, err := rand.Read(signingKeyBytes); err != nil {
+		return r.failStart("create approval signing key")
+	}
+	signingKey := hex.EncodeToString(signingKeyBytes)
 	runnerLog, err := newRotatingLogWriter(filepath.Join(r.options.Config.LogDir, "runner.log"), 0)
 	if err != nil {
 		return r.failStart("create runner log")
@@ -172,16 +182,13 @@ func (r *Runtime) Start(ctx context.Context) error {
 		"--grpc-listen", runnerGRPC,
 		"--workspace-root", r.options.WorkspaceRoot,
 		"--db", filepath.Join(r.options.Config.DataDir, "runner.db"),
-		"--token", token,
 		"--tls-cert", r.options.TLSCert,
 		"--tls-key", r.options.TLSKey,
 	}
 	councilArgs := []string{
 		"--listen", councilHTTP,
 		"--db", filepath.Join(r.options.Config.DataDir, "council.db"),
-		"--token", token,
 		"--runner", runnerGRPC,
-		"--runner-token", token,
 		"--tls-cert", r.options.TLSCert,
 		"--tls-key", r.options.TLSKey,
 		"--rbac-role", r.options.RBACRole,
@@ -196,12 +203,27 @@ func (r *Runtime) Start(ctx context.Context) error {
 
 	startContext := context.WithoutCancel(ctx)
 	councilEnvironment := cloneEnvironment(r.options.Environment)
+	if councilEnvironment == nil {
+		councilEnvironment = map[string]string{}
+	}
 	if r.options.WorkspaceRoot != "" {
 		councilEnvironment["RUNNER_WORKSPACE_ROOT"] = r.options.WorkspaceRoot
+	}
+	// Tokens and the approval signing key travel through the child environment,
+	// never argv, so they never appear in process listings. Council and Runner
+	// share one session token and one signing key. The RBAC bootstrap token
+	// stays a flag: it is a first-run-only credential, not a long-lived one.
+	councilEnvironment["COUNCIL_TOKEN"] = token
+	councilEnvironment["RUNNER_TOKEN"] = token
+	councilEnvironment["AICOUNCIL_APPROVAL_SIGNING_KEY"] = signingKey
+	runnerEnvironment := map[string]string{
+		"RUNNER_TOKEN":                   token,
+		"AICOUNCIL_APPROVAL_SIGNING_KEY": signingKey,
 	}
 	runner, err := r.startChild(startContext, "runner", ProcessSpec{
 		Name:   r.options.Config.RunnerBinary,
 		Args:   runnerArgs,
+		Env:    runnerEnvironment,
 		Stdout: runnerLog,
 		Stderr: runnerLog,
 	})
