@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -216,11 +217,18 @@ func migrateRunnerWorkspaces(ctx context.Context, db *gorm.DB, runner workspaceR
 	for _, item := range migrations {
 		record, relative := item.record, item.relative
 		registered, registerErr := runner.RegisterWorkspace(ctx, &runnerv1.RegisterWorkspaceRequest{WorkspaceId: record.ID, RelativePath: relative})
-		if registerErr != nil {
-			return fmt.Errorf("register workspace %q with Runner: %w", record.ID, registerErr)
-		}
-		if registered == nil {
-			return fmt.Errorf("register workspace %q with Runner returned no response", record.ID)
+		if registerErr != nil || registered == nil {
+			// A missing directory, an ID rebind, or a transient Runner error must
+			// not crash-loop Council on startup. Skip this one workspace and keep
+			// going: Runner will report it NotFound (fail-closed) until the user
+			// re-registers it. Data-unsafe records were already rejected above.
+			reason := "no response"
+			if registerErr != nil {
+				reason = registerErr.Error()
+			}
+			slog.Warn("skipping unresolved workspace during startup migration",
+				"workspace_id", record.ID, "reason", reason)
+			continue
 		}
 		if err := db.WithContext(ctx).Model(&storage.WorkspaceRecord{}).Where("id = ?", record.ID).Updates(map[string]any{
 			"runner_path": relative, "canonical_root": registered.Root, "is_git": registered.IsGit, "dirty": registered.Dirty,
