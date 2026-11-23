@@ -265,7 +265,12 @@ func validRunnerRelativePath(value string) bool {
 		return false
 	}
 	clean := filepath.Clean(value)
-	return clean == "." || (clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator)))
+	// Reject the workspace root itself (".") so no single user can claim the
+	// entire shared /workspace tree; a workspace must be a named subdirectory.
+	if clean == "." {
+		return false
+	}
+	return clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator))
 }
 func (a *API) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	owner := requestOwnerID(r)

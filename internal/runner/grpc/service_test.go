@@ -25,17 +25,28 @@ func newRegisteredService(t *testing.T, root string, ids ...string) *Service {
 	svc, err := NewService(root)
 	require.NoError(t, err)
 	for _, id := range ids {
-		_, err := svc.RegisterWorkspace(context.Background(), &runnerv1.RegisterWorkspaceRequest{WorkspaceId: id, RelativePath: "."})
+		// A workspace is now a named subdirectory beneath the root, never ".".
+		rel := id
+		require.NoError(t, os.MkdirAll(filepath.Join(root, rel), 0o700))
+		_, err := svc.RegisterWorkspace(context.Background(), &runnerv1.RegisterWorkspaceRequest{WorkspaceId: id, RelativePath: rel})
 		require.NoError(t, err)
 	}
 	return svc
 }
 
+// Rejecting "." keeps a single caller from claiming the entire shared root.
+func TestRegisterRejectsWorkspaceRoot(t *testing.T) {
+	svc, err := NewService(t.TempDir())
+	require.NoError(t, err)
+	_, err = svc.RegisterWorkspace(context.Background(), &runnerv1.RegisterWorkspaceRequest{WorkspaceId: "root", RelativePath: "."})
+	require.Error(t, err)
+}
+
 func TestExecuteApprovedPlanAppliesPatchAndIsIdempotent(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "main.go")
-	require.NoError(t, os.WriteFile(path, []byte("old\n"), 0o600))
 	svc := newRegisteredService(t, root, "ws-1")
+	path := filepath.Join(root, "ws-1", "main.go")
+	require.NoError(t, os.WriteFile(path, []byte("old\n"), 0o600))
 	h := sha256.Sum256([]byte("old\n"))
 	plan := schema.ExecutionPlan{Version: 1, Patches: []schema.Patch{{Path: "main.go", UnifiedDiff: "@@ -1 +1 @@\n-old\n+new\n", BeforeHash: hex.EncodeToString(h[:])}}}
 	hash, err := approval.Hash("run-1", "ws-1", plan)
@@ -102,9 +113,9 @@ func TestRunnerRejectsUnknownWorkspaceForContextAndExecution(t *testing.T) {
 
 func TestExecuteApprovedPlanRestoresPatchWhenVerificationFails(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "main.go")
-	require.NoError(t, os.WriteFile(path, []byte("old\n"), 0o600))
 	svc := newRegisteredService(t, root, "ws-verify")
+	path := filepath.Join(root, "ws-verify", "main.go")
+	require.NoError(t, os.WriteFile(path, []byte("old\n"), 0o600))
 	h := sha256.Sum256([]byte("old\n"))
 	plan := schema.ExecutionPlan{
 		Version:              1,
@@ -156,7 +167,14 @@ func TestExecuteApprovedPlanStopsAfterCommandFailure(t *testing.T) {
 }
 
 func TestExecuteApprovedPlanReportsRollbackFailure(t *testing.T) {
-	svc := newRegisteredService(t, t.TempDir(), "ws-rollback-failure")
+	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(root)
+	require.NoError(t, err)
+	svc := newRegisteredService(t, root)
+	// Legacy binding: workspaces registered before the "." ban could point at
+	// the runner root itself. Such records still resolve, and the shared
+	// runtime (with its injectable transaction factory) serves them.
+	require.NoError(t, svc.registry.db.Create(&sqlite.RunnerWorkspaceRecord{WorkspaceID: "ws-rollback-failure", CanonicalRoot: root, CreatedAt: time.Now()}).Error)
 	svc.newTransaction = func() transaction { return restoreFailingTransaction{} }
 
 	plan := schema.ExecutionPlan{
@@ -210,9 +228,9 @@ func TestExecuteApprovedPlanRejectsTamperedRequest(t *testing.T) {
 
 func TestDescribeWorkspaceDetectsGitAndStacks(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte("module sample\n"), 0o600))
 	svc := newRegisteredService(t, root, "ws-describe")
+	require.NoError(t, os.Mkdir(filepath.Join(root, "ws-describe", ".git"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "ws-describe", "go.mod"), []byte("module sample\n"), 0o600))
 	resp, err := svc.DescribeWorkspace(context.Background(), &runnerv1.DescribeWorkspaceRequest{WorkspaceId: "ws-describe"})
 	require.NoError(t, err)
 	require.True(t, resp.IsGit)
@@ -221,11 +239,10 @@ func TestDescribeWorkspaceDetectsGitAndStacks(t *testing.T) {
 
 func TestReadWorkspaceContextUsesConfiguredRootAndSafeFiles(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.Mkdir(filepath.Join(root, ".git"), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET=value\n"), 0o600))
-
 	svc := newRegisteredService(t, root, "ws-context")
+	require.NoError(t, os.Mkdir(filepath.Join(root, "ws-context", ".git"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "ws-context", "main.go"), []byte("package main\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "ws-context", ".env"), []byte("SECRET=value\n"), 0o600))
 	described, err := svc.DescribeWorkspace(context.Background(), &runnerv1.DescribeWorkspaceRequest{WorkspaceId: "ws-context"})
 	require.NoError(t, err)
 

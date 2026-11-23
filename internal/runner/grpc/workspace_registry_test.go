@@ -22,16 +22,17 @@ func TestWorkspaceRegistryPersistsAndRejectsRebindingOrAliasing(t *testing.T) {
 	defer pool.Close()
 	registry, err := NewWorkspaceRegistry(root, db)
 	require.NoError(t, err)
-	registered, err := registry.Register("ws-one", ".")
+	require.NoError(t, os.Mkdir(filepath.Join(root, "one"), 0o700))
+	registered, err := registry.Register("ws-one", "one")
 	require.NoError(t, err)
-	require.Equal(t, root, registered)
-	_, err = registry.Register("ws-two", ".")
+	require.Equal(t, filepath.Join(root, "one"), registered)
+	_, err = registry.Register("ws-two", "one")
 	require.ErrorIs(t, err, ErrWorkspacePathAlreadyRegistered)
 	_, err = registry.Register("ws-one", "../other")
 	require.ErrorIs(t, err, ErrWorkspaceIDRebound)
 	resolved, err := registry.Resolve("ws-one")
 	require.NoError(t, err)
-	require.Equal(t, root, resolved)
+	require.Equal(t, filepath.Join(root, "one"), resolved)
 	_, err = registry.Resolve("missing")
 	require.ErrorIs(t, err, ErrWorkspaceNotRegistered)
 
@@ -45,7 +46,7 @@ func TestWorkspaceRegistryPersistsAndRejectsRebindingOrAliasing(t *testing.T) {
 	require.NoError(t, err)
 	resolved, err = registry.Resolve("ws-one")
 	require.NoError(t, err)
-	require.Equal(t, root, resolved)
+	require.Equal(t, filepath.Join(root, "one"), resolved)
 }
 
 func TestWorkspaceRegistryRejectsUnsafePaths(t *testing.T) {
