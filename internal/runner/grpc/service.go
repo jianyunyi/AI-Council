@@ -69,6 +69,11 @@ func NewServiceWithDB(root string, db *gorm.DB) (*Service, error) {
 	idem := idempotency.New()
 	if db != nil {
 		idem = idempotency.NewWithDB(db)
+		// Clear any execution left "running" by a previous crashed process so the
+		// idempotency key returns runner_interrupted instead of blocking forever.
+		if err := idem.RecoverInterrupted(); err != nil {
+			return nil, err
+		}
 	}
 	return &Service{root: guard.Root(), guard: guard, db: db, executor: command.NewExecutor(guard), idem: idem, collector: runnercontext.NewCollector(runnercontext.Limits{}), newTransaction: func() transaction { return files.NewTransaction(guard) }, registry: registry}, nil
 }

@@ -74,3 +74,36 @@ func TestRestoreRejectsWrongKey(t *testing.T) {
 		t.Fatal("accepted wrong key")
 	}
 }
+func TestBackupIncludesRunnerDatabase(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "council.db")
+	cdb, e := sqlite.Open(dbPath)
+	if e != nil {
+		t.Fatal(e)
+	}
+	p, _ := cdb.DB()
+	p.Close()
+	runnerPath := filepath.Join(root, "runner.db")
+	rdb, e := sqlite.Open(runnerPath)
+	if e != nil {
+		t.Fatal(e)
+	}
+	rdb.Exec("CREATE TABLE probe(v TEXT)")
+	rdb.Exec("INSERT INTO probe VALUES('runner')")
+	rp, _ := rdb.DB()
+	rp.Close()
+	art := filepath.Join(root, "artifacts")
+	os.MkdirAll(art, 0o700)
+	key := make([]byte, 32)
+	archive := filepath.Join(root, "b.aicb")
+	if e = CreateWithRunner(dbPath, runnerPath, art, archive, key); e != nil {
+		t.Fatal(e)
+	}
+	dest := filepath.Join(root, "restore")
+	if e = Restore(archive, dest, key); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := os.Stat(filepath.Join(dest, "runner.db")); e != nil {
+		t.Fatalf("runner.db missing from restore: %v", e)
+	}
+}

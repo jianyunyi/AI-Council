@@ -105,6 +105,7 @@ type ExecutionRecord struct {
 	Status       string `gorm:"size:16;index"`
 	ResponseJSON []byte `gorm:"not null"`
 	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 type UserRecord struct {
 	ID              string  `gorm:"primaryKey;size:64"`

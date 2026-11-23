@@ -2,6 +2,8 @@ package idempotency
 
 import (
 	"errors"
+	"time"
+
 	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
 	"google.golang.org/protobuf/encoding/protojson"
 	"gorm.io/gorm"
@@ -23,6 +25,33 @@ func New() *Store {
 	return &Store{running: map[string]struct{}{}, done: map[string]*runnerv1.ExecuteApprovedPlanResponse{}}
 }
 func NewWithDB(db *gorm.DB) *Store { s := New(); s.db = db; return s }
+
+// RecoverInterrupted marks every persisted "running" execution as a terminal
+// failure with the runner_interrupted error code. A single-instance Runner that
+// is starting up implies the previous process is gone, so any leftover running
+// row is a crash mid-execution; the stable idempotency key then returns this
+// terminal state instead of blocking the task in EXECUTING forever.
+func (s *Store) RecoverInterrupted() error {
+	if s.db == nil {
+		return nil
+	}
+	var stale []sqlite.ExecutionRecord
+	if err := s.db.Where("status = ?", "running").Find(&stale).Error; err != nil {
+		return err
+	}
+	for _, rec := range stale {
+		response := &runnerv1.ExecuteApprovedPlanResponse{RequestId: rec.RequestID, Status: "FAILED", ErrorCode: "runner_interrupted"}
+		raw, err := protojson.Marshal(response)
+		if err != nil {
+			return err
+		}
+		if err := s.db.Model(&sqlite.ExecutionRecord{}).Where("request_id = ?", rec.RequestID).
+			Updates(map[string]any{"status": "complete", "response_json": raw, "updated_at": time.Now().UTC()}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
 func (s *Store) Get(id string) (*runnerv1.ExecuteApprovedPlanResponse, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

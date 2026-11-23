@@ -28,6 +28,7 @@ func run(args []string) error {
 	case "backup":
 		f := flag.NewFlagSet("backup", flag.ContinueOnError)
 		db := f.String("db", ".data/council.db", "SQLite database")
+		runnerDB := f.String("runner-db", "", "Runner SQLite database (optional)")
 		art := f.String("artifacts", ".data/artifacts", "artifact directory")
 		out := f.String("out", "", "new encrypted archive path")
 		if e = f.Parse(args[1:]); e != nil {
@@ -36,7 +37,7 @@ func run(args []string) error {
 		if *out == "" {
 			return errors.New("--out is required")
 		}
-		return backup.Create(*db, *art, *out, key)
+		return backup.CreateWithRunner(*db, *runnerDB, *art, *out, key)
 	case "restore":
 		f := flag.NewFlagSet("restore", flag.ContinueOnError)
 		in := f.String("in", "", "encrypted archive")
