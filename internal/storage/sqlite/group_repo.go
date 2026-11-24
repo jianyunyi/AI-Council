@@ -26,6 +26,12 @@ func groupUniqueViolation(err error) bool {
 }
 
 // Tx runs fn in a transaction with a repo bound to it.
+// DB exposes the handle so sibling repositories (RequirementRepo, P6) can
+// share this repository's transactions — the requirement pipeline writes
+// requirements, jobs, messages and events in ONE transaction (WIRING §1.2
+// of the P6 plan).
+func (r *GroupRepo) DB() *gorm.DB { return r.db }
+
 func (r *GroupRepo) Tx(ctx context.Context, fn func(tx *GroupRepo) error) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return fn(&GroupRepo{db: tx})
