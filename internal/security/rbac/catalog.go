@@ -14,6 +14,7 @@ var standardPermissions = []string{
 	"provider:read", "provider:write",
 	"council:read", "council:configure",
 	"ai_model:manage", "model_workspace:read",
+	"group:create", "group:read:any", "group:manage:any",
 	"task:read", "task:read:any", "task:write", "task:approve", "task:execute",
 	"admin:users", "admin:roles", "admin:permissions", "admin:*",
 }

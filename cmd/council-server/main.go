@@ -133,6 +133,9 @@ func main() {
 			slog.Warn("resume pending ai model provisioning", "error", err)
 		}
 	}
+	// Group chat (Part B P5): shared group workspaces, members (incl. AI
+	// members), messages, mentions and the group event stream.
+	transport.InstallGroups(api)
 	if providerKeyService != nil && rbacService != nil {
 		api.WithCouncilFactory(func(ctx context.Context, ownerID string, workspaceID string) (appTask.CouncilPort, error) {
 			resolver := roles.NewResolver(councilRolesRepo, func(ctx context.Context, owner string) ([]roles.ProfileInfo, error) {

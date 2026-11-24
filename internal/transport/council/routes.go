@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/aicouncil/aicouncil/internal/app/aimodel"
+	"github.com/aicouncil/aicouncil/internal/app/group"
 	appTask "github.com/aicouncil/aicouncil/internal/app/task"
 	"github.com/aicouncil/aicouncil/internal/app/wskind"
 	"github.com/aicouncil/aicouncil/internal/approval"
@@ -47,6 +48,7 @@ type API struct {
 	councilFactory  func(context.Context, string, string) (appTask.CouncilPort, error)
 	councilRoles    *sqlite.CouncilRolesRepository
 	aiModels        *aimodel.Service
+	groups          *group.Service
 	providerKeys    *providerkeysvc.Service
 	signer          *approval.Signer
 	workspaceAccess *workspaceaccess.Service
@@ -236,6 +238,13 @@ func (a *API) WithAIModelService(service *aimodel.Service) *API {
 	return a
 }
 
+// WithGroupService installs the group-chat service backing the
+// /api/v1/groups endpoints (Part B P5). A nil service disables the routes.
+func (a *API) WithGroupService(service *group.Service) *API {
+	a.groups = service
+	return a
+}
+
 // WithApprovalSigner installs the shared HMAC key used to sign Runner approvals.
 func (a *API) WithApprovalSigner(signer *approval.Signer) *API { a.signer = signer; return a }
 
@@ -261,7 +270,30 @@ func originOf(r sqlite.TaskRecord) string {
 }
 
 func (a *API) Routes() []rest.Route {
-	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks", Handler: a.listTasks}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/rejections", Handler: a.listTaskRejections}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}, {Method: http.MethodGet, Path: "/api/v1/council/roles", Handler: a.getCouncilRoles}, {Method: http.MethodPut, Path: "/api/v1/council/roles", Handler: a.putCouncilRoles}, {Method: http.MethodDelete, Path: "/api/v1/council/roles", Handler: a.deleteCouncilRoles}, {Method: http.MethodPost, Path: "/api/v1/council/roles/validate", Handler: a.validateCouncilRoles}, {Method: http.MethodGet, Path: "/api/v1/ai-models", Handler: a.listAIModels}, {Method: http.MethodPost, Path: "/api/v1/ai-models", Handler: a.createAIModel}, {Method: http.MethodGet, Path: "/api/v1/ai-models/:id", Handler: a.getAIModel}, {Method: http.MethodPatch, Path: "/api/v1/ai-models/:id", Handler: a.patchAIModel}, {Method: http.MethodDelete, Path: "/api/v1/ai-models/:id", Handler: a.deleteAIModel}, {Method: http.MethodGet, Path: "/api/v1/ai-models/:id/workspace", Handler: a.getAIModelWorkspace}, {Method: http.MethodPost, Path: "/api/v1/ai-models/:id/workspace/retry", Handler: a.retryAIModelWorkspace}}
+	routes := []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks", Handler: a.listTasks}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/rejections", Handler: a.listTaskRejections}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}, {Method: http.MethodGet, Path: "/api/v1/council/roles", Handler: a.getCouncilRoles}, {Method: http.MethodPut, Path: "/api/v1/council/roles", Handler: a.putCouncilRoles}, {Method: http.MethodDelete, Path: "/api/v1/council/roles", Handler: a.deleteCouncilRoles}, {Method: http.MethodPost, Path: "/api/v1/council/roles/validate", Handler: a.validateCouncilRoles}, {Method: http.MethodGet, Path: "/api/v1/ai-models", Handler: a.listAIModels}, {Method: http.MethodPost, Path: "/api/v1/ai-models", Handler: a.createAIModel}, {Method: http.MethodGet, Path: "/api/v1/ai-models/:id", Handler: a.getAIModel}, {Method: http.MethodPatch, Path: "/api/v1/ai-models/:id", Handler: a.patchAIModel}, {Method: http.MethodDelete, Path: "/api/v1/ai-models/:id", Handler: a.deleteAIModel}, {Method: http.MethodGet, Path: "/api/v1/ai-models/:id/workspace", Handler: a.getAIModelWorkspace}, {Method: http.MethodPost, Path: "/api/v1/ai-models/:id/workspace/retry", Handler: a.retryAIModelWorkspace}}
+	if a.groups != nil {
+		// Part B P5 group chat. The events route is registered the same way
+		// as /api/v1/tasks/:id/events; go-zero's timeout handler exempts
+		// requests carrying Accept: text/event-stream, which EventSource
+		// always sends.
+		routes = append(routes,
+			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups", Handler: a.listGroups},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups", Handler: a.createGroup},
+			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id", Handler: a.getGroup},
+			rest.Route{Method: http.MethodPatch, Path: "/api/v1/groups/:id", Handler: a.patchGroup},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/archive", Handler: a.archiveGroup},
+			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id/members", Handler: a.listGroupMembers},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/members", Handler: a.addGroupMember},
+			rest.Route{Method: http.MethodPatch, Path: "/api/v1/groups/:id/members/:memberId", Handler: a.patchGroupMember},
+			rest.Route{Method: http.MethodDelete, Path: "/api/v1/groups/:id/members/:memberId", Handler: a.removeGroupMember},
+			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id/messages", Handler: a.listGroupMessages},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/messages", Handler: a.postGroupMessage},
+			rest.Route{Method: http.MethodPatch, Path: "/api/v1/groups/:id/messages/:mid", Handler: a.patchGroupMessage},
+			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id/mentions/resolve", Handler: a.resolveGroupMentions},
+			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id/events", Handler: a.groupEvents},
+		)
+	}
+	return routes
 }
 
 func (a *API) getWorkspace(w http.ResponseWriter, r *http.Request) {
