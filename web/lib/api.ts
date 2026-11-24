@@ -1,4 +1,4 @@
-import {ArtifactEnvelope,CreateRoleInput,CreateUserInput,Envelope,Identity,ManagedRole,ManagedUser,Permission,Task,UpdateRoleInput,UpdateUserInput,Workspace,WorkspaceShare} from './types'
+import {ArtifactEnvelope,CreateRoleInput,CreateUserInput,Envelope,Identity,ManagedRole,ManagedUser,Permission,Task,TaskListPage,UpdateRoleInput,UpdateUserInput,Workspace,WorkspaceShare} from './types'
 import {apiBase,authorizationHeader} from './desktop'
 
 const unauthorizedListeners=new Set<()=>void>()
@@ -54,6 +54,20 @@ export function putWorkspaceShare(id:string,subject:string,access:WorkspaceShare
 export function deleteWorkspaceShare(id:string,subject:string){return request<void>(`/workspaces/${encodeURIComponent(id)}/shares/${encodeURIComponent(subject)}`,{method:'DELETE'})}
 export function createTask(input:{workspaceId:string;requirement:string;acceptance:string[]}){return request<Task>('/tasks',{method:'POST',body:JSON.stringify({workspace_id:input.workspaceId,requirement:input.requirement,acceptance:input.acceptance})})}
 export function getTask(id:string){return request<Task>(`/tasks/${encodeURIComponent(id)}`)}
+export type TaskListQuery={workspaceId?:string|string[];state?:string|string[];createdBy?:string;origin?:string|string[];q?:string;updatedAfter?:string;updatedBefore?:string;limit?:number;cursor?:string}
+export function listTasks(query:TaskListQuery={}){
+ const params=new URLSearchParams()
+ const add=(key:string,value?:string|string[])=>{if(value===undefined)return;for(const item of Array.isArray(value)?value:[value])params.append(key,item)}
+ add('workspace_id',query.workspaceId);add('state',query.state);add('origin',query.origin)
+ if(query.createdBy)params.set('created_by',query.createdBy)
+ if(query.q)params.set('q',query.q)
+ if(query.updatedAfter)params.set('updated_after',query.updatedAfter)
+ if(query.updatedBefore)params.set('updated_before',query.updatedBefore)
+ if(query.limit)params.set('limit',String(query.limit))
+ if(query.cursor)params.set('cursor',query.cursor)
+ const qs=params.toString()
+ return request<TaskListPage>(`/tasks${qs?`?${qs}`:''}`)
+}
 export function startTask(id:string){return request<Task>(`/tasks/${encodeURIComponent(id)}/start`,{method:'POST'})}
 export function approveTask(id:string,planVersion:number,approvalHash:string){return request<Task>(`/tasks/${encodeURIComponent(id)}/approve`,{method:'POST',body:JSON.stringify({plan_version:planVersion,approval_hash:approvalHash})})}
 export function executeTask(id:string){return request<Task>(`/tasks/${encodeURIComponent(id)}/execute`,{method:'POST'})}

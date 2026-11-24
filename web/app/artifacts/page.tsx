@@ -4,14 +4,14 @@ import Link from 'next/link'
 import {FormEvent, useState} from 'react'
 import {useRouter} from 'next/navigation'
 import {TaskLink} from '@/components/task-link'
-import {useIndexedTasks} from '@/lib/use-tasks'
+import {useTasks} from '@/lib/use-tasks'
 
 /* The artifact store is content-addressed and only reachable by ID through
    GET /tasks/:id/artifacts/:artifactId. The task payload exposes exactly one
    artifact ID (verification_artifact_id), so this page lists those, links to
    each task's plan tab, and offers a by-ID lookup for everything else. */
 export default function ArtifactsPage() {
-  const {tasks, loading} = useIndexedTasks()
+  const {tasks, loading} = useTasks()
   const router = useRouter()
   const [taskId, setTaskId] = useState('')
   const [artifactId, setArtifactId] = useState('')
@@ -60,14 +60,14 @@ export default function ArtifactsPage() {
           <table className="tbl">
             <thead><tr><th>任务</th><th>计划版本</th><th>操作</th></tr></thead>
             <tbody>
-              {tasks.filter(task => task.plan).map(task => (
+              {tasks.filter(task => task.state !== 'DRAFT').map(task => (
                 <tr key={task.id}>
                   <td><TaskLink task={task} /></td>
-                  <td>v{task.plan_version ?? task.plan!.version}</td>
+                  <td>v{task.plan_version}</td>
                   <td><Link className="btn small secondary" href={`/tasks/${encodeURIComponent(task.id)}`}>打开任务</Link></td>
                 </tr>
               ))}
-              {!loading && tasks.filter(task => task.plan).length === 0 && (
+              {!loading && tasks.filter(task => task.state !== 'DRAFT').length === 0 && (
                 <tr><td colSpan={3} className="empty-cell">暂无已生成计划的任务。</td></tr>
               )}
             </tbody>

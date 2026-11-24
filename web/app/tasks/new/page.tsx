@@ -6,7 +6,6 @@ import {useWorkspace} from '@/components/app-shell'
 import {createTask, createWorkspace, listWorkspaces, startTask} from '@/lib/api'
 import {getDesktopRuntime} from '@/lib/desktop'
 import {desktopBridge} from '@/lib/desktop-bridge'
-import {rememberTask} from '@/lib/task-index'
 import type {Workspace} from '@/lib/types'
 
 const DRAFT_KEY = 'aicouncil.draft.newTask'
@@ -91,7 +90,6 @@ export default function NewTask() {
     setError('')
     try {
       const task = await createTask({workspaceId: workspaceID, requirement, acceptance})
-      rememberTask(task.id)
       await startTask(task.id)
       try { window.localStorage.removeItem(DRAFT_KEY) } catch { /* ignore */ }
       router.push(getDesktopRuntime() ? `/tasks/view?id=${encodeURIComponent(task.id)}` : `/tasks/${task.id}`)

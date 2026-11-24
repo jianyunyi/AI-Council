@@ -72,6 +72,9 @@ type task struct {
 	ID                     string                                `json:"id"`
 	State                  string                                `json:"state"`
 	WorkspaceID            string                                `json:"workspace_id"`
+	Title                  string                                `json:"title,omitempty"`
+	CreatedBy              string                                `json:"created_by,omitempty"`
+	Origin                 string                                `json:"origin,omitempty"`
 	Requirement            string                                `json:"requirement"`
 	Acceptance             []string                              `json:"acceptance"`
 	PlanVersion            int                                   `json:"plan_version"`
@@ -85,6 +88,8 @@ type task struct {
 	VerificationArtifactID string                                `json:"verification_artifact_id,omitempty"`
 	Events                 []Event                               `json:"-"`
 	OwnerUserID            string                                `json:"-"`
+	CreatedAt              time.Time                             `json:"created_at,omitempty"`
+	UpdatedAt              time.Time                             `json:"updated_at,omitempty"`
 }
 type Event struct {
 	ID        int64     `json:"id"`
@@ -164,7 +169,7 @@ func NewPersistentAPI(db *gorm.DB) *API {
 		if v != nil {
 			verificationArtifactID = verificationArtifactIDFor(r.ID, r.PlanVersion)
 		}
-		a.tasks[r.ID] = &task{ID: r.ID, State: state, WorkspaceID: r.WorkspaceID, Requirement: r.Requirement, Acceptance: acceptance, PlanVersion: r.PlanVersion, ApprovalHash: r.ApprovalHash, Approved: r.ApprovalGranted, Plan: plan, Verification: v, VerificationArtifactID: verificationArtifactID, OwnerUserID: r.OwnerUserID}
+		a.tasks[r.ID] = &task{ID: r.ID, State: state, WorkspaceID: r.WorkspaceID, Title: r.Title, CreatedBy: createdByOf(r), Origin: originOf(r), Requirement: r.Requirement, Acceptance: acceptance, PlanVersion: r.PlanVersion, ApprovalHash: r.ApprovalHash, Approved: r.ApprovalGranted, Plan: plan, Verification: v, VerificationArtifactID: verificationArtifactID, OwnerUserID: r.OwnerUserID, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
 	}
 	for id := range a.tasks {
 		if n, err := strconv.ParseInt(strings.TrimPrefix(id, "task-"), 10, 64); err == nil && n > a.nextID {
@@ -212,8 +217,22 @@ func newApprovalNonce() (string, error) {
 	}
 	return hex.EncodeToString(b[:]), nil
 }
+func createdByOf(r sqlite.TaskRecord) string {
+	if r.CreatedBy != "" {
+		return r.CreatedBy
+	}
+	return r.OwnerUserID
+}
+
+func originOf(r sqlite.TaskRecord) string {
+	if r.Origin != "" {
+		return r.Origin
+	}
+	return "direct"
+}
+
 func (a *API) Routes() []rest.Route {
-	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
+	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks", Handler: a.listTasks}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
 }
 
 func (a *API) getWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -328,13 +347,14 @@ func (a *API) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	a.nextID++
 	id := "task-" + strconv.FormatInt(a.nextID, 10)
-	t := &task{ID: id, State: "DRAFT", WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, Acceptance: in.Acceptance, PlanVersion: 1, OwnerUserID: owner}
+	now := time.Now().UTC()
+	t := &task{ID: id, State: "DRAFT", WorkspaceID: in.WorkspaceID, Title: taskTitleOrFallback("", in.Requirement), CreatedBy: owner, Origin: "direct", Requirement: in.Requirement, Acceptance: in.Acceptance, PlanVersion: 1, OwnerUserID: owner, CreatedAt: now, UpdatedAt: now}
 	t.Plan.Version = t.PlanVersion
 	a.tasks[id] = t
 	a.metrics.TasksCreated.Add(1)
 	if a.db != nil {
 		raw, _ := json.Marshal(in.Acceptance)
-		if err := a.db.Save(&sqlite.TaskRecord{ID: id, OwnerUserID: owner, WorkspaceID: in.WorkspaceID, Requirement: in.Requirement, AcceptanceJSON: raw, State: t.State, PlanVersion: t.PlanVersion}).Error; err != nil {
+		if err := a.db.Save(&sqlite.TaskRecord{ID: id, OwnerUserID: owner, WorkspaceID: in.WorkspaceID, Title: t.Title, CreatedBy: owner, Origin: "direct", Requirement: in.Requirement, AcceptanceJSON: raw, State: t.State, PlanVersion: t.PlanVersion, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
 			delete(a.tasks, id)
 			a.nextID--
 			a.mu.Unlock()
@@ -762,13 +782,14 @@ func (a *API) append(t *task, typ string, data any) error {
 	return nil
 }
 func (a *API) persistTask(t *task) error {
+	t.UpdatedAt = time.Now().UTC()
 	if a.db == nil {
 		return nil
 	}
 	raw, _ := json.Marshal(t.Acceptance)
 	plan, _ := json.Marshal(t.Plan)
 	verification, _ := json.Marshal(t.Verification)
-	return a.db.Model(&sqlite.TaskRecord{}).Where("id = ?", t.ID).Updates(map[string]any{"state": t.State, "plan_version": t.PlanVersion, "approval_hash": t.ApprovalHash, "approval_granted": t.Approved, "acceptance_json": raw, "plan_json": plan, "verification_json": verification}).Error
+	return a.db.Model(&sqlite.TaskRecord{}).Where("id = ?", t.ID).Updates(map[string]any{"state": t.State, "plan_version": t.PlanVersion, "approval_hash": t.ApprovalHash, "approval_granted": t.Approved, "acceptance_json": raw, "plan_json": plan, "verification_json": verification, "updated_at": t.UpdatedAt}).Error
 }
 
 func (a *API) transitionTask(t *task, state string) error {

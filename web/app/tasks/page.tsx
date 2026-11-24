@@ -6,21 +6,20 @@ import {useWorkspace} from '@/components/app-shell'
 import {TaskLink} from '@/components/task-link'
 import {ConfirmDialog, ConfirmState, showToast, StatusBadge} from '@/components/ui'
 import {cancelTask} from '@/lib/api'
-import {forgetTask} from '@/lib/task-index'
-import {groupTasks, planScale, STATE_META, UiStateKey, uiStateOf} from '@/lib/task-state'
-import {useIndexedTasks} from '@/lib/use-tasks'
-import type {Task} from '@/lib/types'
+import {groupTasks, summaryScale, STATE_META, UiStateKey, uiStateOf} from '@/lib/task-state'
+import {useTasks} from '@/lib/use-tasks'
+import type {TaskSummary} from '@/lib/types'
 
 const CANCELLABLE = new Set(['DRAFT', 'ANALYZING', 'PROPOSING', 'REVIEWING', 'JUDGING', 'RED_TEAM', 'REPLANNING', 'AWAITING_APPROVAL'])
 
 export default function TaskListPage() {
-  const {tasks, loading, reload} = useIndexedTasks()
+  const {tasks, loading, reload} = useTasks()
   const {workspaces} = useWorkspace()
   const [query, setQuery] = useState('')
   const [stateFilter, setStateFilter] = useState<UiStateKey | 'all'>('all')
   const [grouped, setGrouped] = useState(true)
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
-  const [pendingCancel, setPendingCancel] = useState<Task | null>(null)
+  const [pendingCancel, setPendingCancel] = useState<TaskSummary | null>(null)
 
   const rootOf = (id?: string) => workspaces.find(workspace => workspace.id === id)?.root ?? (id ? id.slice(0, 8) : '—')
   const counts = useMemo(() => {
@@ -32,15 +31,15 @@ export default function TaskListPage() {
   const filtered = tasks.filter(task => {
     if (stateFilter !== 'all' && uiStateOf(task.state) !== stateFilter) return false
     const needle = query.trim().toLowerCase()
-    if (needle && !`${task.requirement} ${task.id}`.toLowerCase().includes(needle)) return false
+    if (needle && !`${task.title} ${task.requirement_excerpt} ${task.id}`.toLowerCase().includes(needle)) return false
     return true
   })
 
-  function askCancel(task: Task) {
+  function askCancel(task: TaskSummary) {
     setPendingCancel(task)
     setConfirm({
       title: '取消任务？',
-      description: <p>任务「{task.requirement.split('\n')[0]}」将被取消，协商与执行都会停止。此操作不可恢复。</p>,
+      description: <p>任务「{task.title}」将被取消，协商与执行都会停止。此操作不可恢复。</p>,
       confirmLabel: '取消任务',
     })
   }
@@ -59,7 +58,7 @@ export default function TaskListPage() {
     }
   }
 
-  function renderTable(rows: Task[]) {
+  function renderTable(rows: TaskSummary[]) {
     return (
       <div className="tw">
         <table className="tbl">
@@ -70,12 +69,11 @@ export default function TaskListPage() {
                 <td><TaskLink task={task} /><div className="small muted">{task.id}</div></td>
                 <td><StatusBadge state={task.state} /></td>
                 <td>{rootOf(task.workspace_id)}</td>
-                <td>{planScale(task)}</td>
+                <td>{summaryScale(task)}</td>
                 <td>
                   <div className="row-actions">
                     <Link className="btn small secondary" href={`/tasks/${encodeURIComponent(task.id)}`}>查看</Link>
                     {CANCELLABLE.has(task.state) && <button className="btn small danger" onClick={() => askCancel(task)}>取消</button>}
-                    <button className="btn small ghost" onClick={() => { forgetTask(task.id); reload() }}>从索引移除</button>
                   </div>
                 </td>
               </tr>
@@ -91,7 +89,7 @@ export default function TaskListPage() {
       <div className="page-head">
         <div>
           <h1>任务</h1>
-          <p className="page-sub">共 {tasks.length} 个任务（本机索引；服务端按任务 ID 查询）。</p>
+          <p className="page-sub">共 {tasks.length} 个任务（服务端列表，按更新时间倒序）。</p>
         </div>
         <div className="page-actions">
           <Link className="btn primary" href="/tasks/new">＋ 新建任务</Link>

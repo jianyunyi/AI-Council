@@ -8,7 +8,6 @@ import {taskTitle} from '@/components/task-link'
 import {ConfirmDialog, ConfirmState, showToast, StatusBadge} from '@/components/ui'
 import {approveTask, cancelTask, executeTask, getTask, rejectTask, startTask} from '@/lib/api'
 import {subscribe, CouncilEvent} from '@/lib/events'
-import {rememberTask} from '@/lib/task-index'
 import {STAGES, stageIndexOf, stateLabel, uiStateOf} from '@/lib/task-state'
 import type {Command, Task} from '@/lib/types'
 import {ApprovalPanel} from './approval-panel'
@@ -90,7 +89,7 @@ export function TaskWorkbench({id}: {id: string}) {
   const canApprove = !auth || auth.isDesktop || auth.can('task:approve')
 
   const load = useCallback(() => {
-    return getTask(id).then(result => { setTask(result); rememberTask(result.id) }).catch(err => setError(err instanceof Error ? err.message : '任务加载失败'))
+    return getTask(id).then(result => { setTask(result) }).catch(err => setError(err instanceof Error ? err.message : '任务加载失败'))
   }, [id])
 
   useEffect(() => {

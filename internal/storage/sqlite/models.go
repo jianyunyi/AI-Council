@@ -67,18 +67,21 @@ type RunnerWorkspaceRecord struct {
 type TaskRecord struct {
 	ID               string `gorm:"primaryKey;size:64"`
 	OwnerUserID      string `gorm:"size:64;index"`
-	WorkspaceID      string
+	WorkspaceID      string `gorm:"index:idx_tasks_workspace_updated,priority:1"`
+	Title            string `gorm:"size:255"`
+	CreatedBy        string `gorm:"size:64;index:idx_tasks_creator_updated,priority:1"`
+	Origin           string `gorm:"size:32;index;not null;default:direct"`
 	Requirement      string
 	ConstraintsJSON  []byte
 	AcceptanceJSON   []byte
-	State            string
+	State            string `gorm:"index:idx_tasks_state_updated,priority:1"`
 	PlanVersion      int
 	ApprovalHash     string
 	ApprovalGranted  bool
 	PlanJSON         []byte
 	VerificationJSON []byte
 	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	UpdatedAt        time.Time `gorm:"index:idx_tasks_workspace_updated,priority:2;index:idx_tasks_state_updated,priority:2;index:idx_tasks_creator_updated,priority:2"`
 }
 type SeatRecord struct {
 	ID                string `gorm:"primaryKey;size:64"`

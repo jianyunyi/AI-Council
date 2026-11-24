@@ -212,6 +212,8 @@ func rbacRoutePermission(method, path string) (string, bool) {
 		return "provider:write", true
 	case method == http.MethodPost && path == "/api/v1/tasks":
 		return "task:write", true
+	case method == http.MethodGet && path == "/api/v1/tasks":
+		return "task:read", true
 	case method == http.MethodGet && path == "/api/v1/admin/permissions":
 		return "admin:permissions", true
 	}

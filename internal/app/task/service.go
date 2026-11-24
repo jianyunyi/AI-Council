@@ -70,6 +70,7 @@ type Service struct {
 	events     EventPort
 	council    CouncilPort
 	runner     RunnerPort
+	store      TaskStore
 	maxReplans int
 	mu         sync.Mutex
 	tasks      map[string]*Task
