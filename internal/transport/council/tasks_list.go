@@ -17,21 +17,27 @@ import (
 // full requirement text so list pages stay cheap. patch/command counts let
 // the UI render an approximate plan scale without hydrating every task.
 type taskSummary struct {
-	ID                     string    `json:"id"`
-	Title                  string    `json:"title"`
-	RequirementExcerpt     string    `json:"requirement_excerpt"`
-	State                  string    `json:"state"`
-	WorkspaceID            string    `json:"workspace_id"`
-	CreatedBy              string    `json:"created_by"`
-	Origin                 string    `json:"origin"`
-	PlanVersion            int       `json:"plan_version"`
-	Approved               bool      `json:"approved"`
-	AcceptanceCount        int       `json:"acceptance_count"`
-	PatchCount             int       `json:"patch_count"`
-	CommandCount           int       `json:"command_count"`
-	VerificationArtifactID string    `json:"verification_artifact_id,omitempty"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	ID                     string            `json:"id"`
+	Title                  string            `json:"title"`
+	RequirementExcerpt     string            `json:"requirement_excerpt"`
+	State                  string            `json:"state"`
+	WorkspaceID            string            `json:"workspace_id"`
+	CreatedBy              string            `json:"created_by"`
+	Origin                 string            `json:"origin"`
+	PlanVersion            int               `json:"plan_version"`
+	Approved               bool              `json:"approved"`
+	AcceptanceCount        int               `json:"acceptance_count"`
+	PatchCount             int               `json:"patch_count"`
+	CommandCount           int               `json:"command_count"`
+	VerificationArtifactID string            `json:"verification_artifact_id,omitempty"`
+	LastRejection          *lastRejectionRef `json:"last_rejection,omitempty"`
+	CreatedAt              time.Time         `json:"created_at"`
+	UpdatedAt              time.Time         `json:"updated_at"`
+}
+
+type lastRejectionRef struct {
+	Category  string    `json:"category"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type taskListResponse struct {
@@ -235,6 +241,7 @@ func (a *API) listTasks(w http.ResponseWriter, r *http.Request) {
 		for _, record := range page.Tasks {
 			items = append(items, summaryFromRecord(record))
 		}
+		a.attachLastRejections(r.Context(), items)
 		writeData(w, http.StatusOK, taskListResponse{Items: items, NextCursor: page.NextCursor})
 		return
 	}
@@ -311,6 +318,7 @@ func (a *API) listTasksFromMemory(r *http.Request, params taskListParams, scopeU
 	if response.Items == nil {
 		response.Items = []taskSummary{}
 	}
+	a.attachLastRejections(r.Context(), response.Items)
 	return response
 }
 

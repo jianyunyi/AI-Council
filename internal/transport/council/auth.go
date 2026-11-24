@@ -277,6 +277,9 @@ func taskRoutePermission(method, path string) (string, bool) {
 		if method == http.MethodGet && parts[1] == "events" {
 			return "task:read", true
 		}
+		if method == http.MethodGet && parts[1] == "rejections" {
+			return "task:read", true
+		}
 		if method == http.MethodPost {
 			switch parts[1] {
 			case "start", "reject", "cancel":

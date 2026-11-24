@@ -31,6 +31,7 @@ import (
 type API struct {
 	mu              sync.Mutex
 	tasks           map[string]*task
+	rejections      map[string][]sqlite.TaskRejectionRecord
 	nextID          int64
 	workspaces      map[string]workspace
 	db              *gorm.DB
@@ -90,6 +91,8 @@ type task struct {
 	OwnerUserID            string                                `json:"-"`
 	CreatedAt              time.Time                             `json:"created_at,omitempty"`
 	UpdatedAt              time.Time                             `json:"updated_at,omitempty"`
+	Rejections             []taskRejectionDTO                    `json:"rejections,omitempty"`
+	RejectionCount         int                                   `json:"rejection_count"`
 }
 type Event struct {
 	ID        int64     `json:"id"`
@@ -120,7 +123,7 @@ type approvalRequest struct {
 }
 
 func NewAPI() *API {
-	return &API{tasks: map[string]*task{}, workspaces: map[string]workspace{}, metrics: metrics.New()}
+	return &API{tasks: map[string]*task{}, rejections: map[string][]sqlite.TaskRejectionRecord{}, workspaces: map[string]workspace{}, metrics: metrics.New()}
 }
 func NewPersistentAPI(db *gorm.DB) *API {
 	a := NewAPI()
@@ -232,7 +235,7 @@ func originOf(r sqlite.TaskRecord) string {
 }
 
 func (a *API) Routes() []rest.Route {
-	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks", Handler: a.listTasks}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
+	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks", Handler: a.listTasks}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/rejections", Handler: a.listTaskRejections}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
 }
 
 func (a *API) getWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -379,6 +382,7 @@ func (a *API) getTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "task not found")
 		return
 	}
+	a.attachRejections(r.Context(), t)
 	writeData(w, http.StatusOK, t)
 }
 func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
@@ -567,6 +571,11 @@ func (a *API) approveTask(w http.ResponseWriter, r *http.Request) {
 	writeData(w, 200, t)
 }
 func (a *API) rejectTask(w http.ResponseWriter, r *http.Request) {
+	in, parseErr := parseRejectRequest(r)
+	if parseErr != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_rejection", "request body must be valid JSON")
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	t := a.tasks[taskID(r)]
@@ -574,18 +583,61 @@ func (a *API) rejectTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not_found", "task not found")
 		return
 	}
-	prevState, prevApproved := t.State, t.Approved
+	if in.PlanVersion != nil && *in.PlanVersion != t.PlanVersion {
+		writeErr(w, http.StatusConflict, "stale_plan_version", "plan_version does not match the current plan")
+		return
+	}
+	reason, category, normErr := normalizeRejection(in)
+	if normErr != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_rejection", normErr.Error())
+		return
+	}
+	nonce, nonceErr := newApprovalNonce()
+	if nonceErr != nil {
+		writeErr(w, http.StatusInternalServerError, "rejection_failed", "could not allocate rejection id")
+		return
+	}
+	rejectedBy := requestOwnerID(r)
+	if rejectedBy == "" {
+		rejectedBy = "user"
+	}
+	var noncePtr *string
+	if t.ApprovalNonce != "" {
+		nonceCopy := t.ApprovalNonce
+		noncePtr = &nonceCopy
+	}
+	record := sqlite.TaskRejectionRecord{
+		ID: "rej-" + nonce, TaskID: t.ID, RunID: t.ID, PlanVersion: t.PlanVersion,
+		ApprovalNonceID: noncePtr, PlanHash: t.ApprovalHash, RejectedBy: rejectedBy,
+		Category: category, Reason: reason, Source: "task", CreatedAt: time.Now().UTC(),
+	}
+	eventData := map[string]any{
+		"rejection_id":   record.ID,
+		"category":       category,
+		"reason_excerpt": truncateRunes(reason, 200),
+		"plan_version":   t.PlanVersion,
+	}
+	if a.db != nil {
+		event, err := sqlite.NewRejectionRepository(a.db).RejectAtomically(r.Context(), record, "CANCELLED", eventData)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "rejection_failed", err.Error())
+			return
+		}
+		t.Events = append(t.Events, Event{ID: event.Sequence, Type: "approval.rejected", Data: eventData, CreatedAt: event.CreatedAt})
+	} else {
+		a.rejections[t.ID] = append(a.rejections[t.ID], record)
+		if err := a.append(t, "approval.rejected", eventData); err != nil {
+			writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
+			return
+		}
+	}
 	t.State = "CANCELLED"
 	t.Approved = false
-	if err := a.persistTask(t); err != nil {
-		t.State, t.Approved = prevState, prevApproved
-		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
-		return
-	}
-	if err := a.append(t, "approval.rejected", map[string]string{"state": t.State}); err != nil {
-		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
-		return
-	}
+	t.ApprovalNonce = ""
+	t.ApprovalSignature = ""
+	t.ApprovalExpiresAt = 0
+	t.UpdatedAt = time.Now().UTC()
+	a.attachRejections(r.Context(), t)
 	a.metrics.ApprovalsRejected.Add(1)
 	writeData(w, 200, t)
 }

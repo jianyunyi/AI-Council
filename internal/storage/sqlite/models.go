@@ -176,6 +176,24 @@ type AccessTokenRecord struct {
 	CreatedAt time.Time
 }
 
+// TaskRejectionRecord is the durable record of a plan rejection: who rejected
+// which plan version, why (category + free-text reason), and when. Rows are
+// append-only; the task detail reads the newest 20 and the task list reads
+// the newest one per task.
+type TaskRejectionRecord struct {
+	ID              string    `gorm:"primaryKey;size:64"`
+	TaskID          string    `gorm:"not null;size:64;index:idx_task_rejections_task_created,priority:1"`
+	RunID           string    `gorm:"not null;size:64;index"`
+	PlanVersion     int       `gorm:"not null"`
+	ApprovalNonceID *string   `gorm:"size:128"`
+	PlanHash        string    `gorm:"size:128"`
+	RejectedBy      string    `gorm:"not null;size:64"`
+	Category        string    `gorm:"not null;size:32"`
+	Reason          string    `gorm:"not null"`
+	Source          string    `gorm:"not null;size:32;default:task"`
+	CreatedAt       time.Time `gorm:"index:idx_task_rejections_task_created,priority:2"`
+}
+
 // ApprovalNonceRecord records each one-time approval nonce the Runner has
 // consumed, so a signed execution request cannot be replayed with a new
 // request_id. The unique primary key is the fail-closed replay guard.

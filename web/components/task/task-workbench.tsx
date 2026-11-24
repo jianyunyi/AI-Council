@@ -8,8 +8,8 @@ import {taskTitle} from '@/components/task-link'
 import {ConfirmDialog, ConfirmState, showToast, StatusBadge} from '@/components/ui'
 import {approveTask, cancelTask, executeTask, getTask, rejectTask, startTask} from '@/lib/api'
 import {subscribe, CouncilEvent} from '@/lib/events'
-import {STAGES, stageIndexOf, stateLabel, uiStateOf} from '@/lib/task-state'
-import type {Command, Task} from '@/lib/types'
+import {REJECTION_CATEGORY_LABELS, STAGES, stageIndexOf, stateLabel, uiStateOf} from '@/lib/task-state'
+import type {Command, RejectionCategory, Task} from '@/lib/types'
 import {ApprovalPanel} from './approval-panel'
 import {PatchView} from './diff'
 
@@ -77,6 +77,27 @@ function StatusCard({task, onStart}: {task: Task; onStart: () => Promise<void>})
   )
 }
 
+
+function RejectionHistory({task}: {task: Task}) {
+  const rejections = task.rejections ?? []
+  if (!rejections.length) return null
+  return (
+    <section className="card" aria-label="驳回记录">
+      <h2>驳回记录 · {task.rejection_count ?? rejections.length}</h2>
+      <ol className="timeline">
+        {rejections.map(rejection => (
+          <li key={rejection.id} className="tl-step tl-step--fail">
+            <span className="tl-dot" aria-hidden="true">✕</span>
+            <span className="tl-label">{REJECTION_CATEGORY_LABELS[rejection.category] ?? rejection.category} · 计划 v{rejection.plan_version}</span>
+            <span className="tl-state">{new Date(rejection.created_at).toLocaleString()}</span>
+            <p className="small">{rejection.reason}</p>
+          </li>
+        ))}
+      </ol>
+    </section>
+  )
+}
+
 export function TaskWorkbench({id}: {id: string}) {
   const [task, setTask] = useState<Task | null>(null)
   const [events, setEvents] = useState<CouncilEvent[]>([])
@@ -136,10 +157,10 @@ export function TaskWorkbench({id}: {id: string}) {
     }
   }
 
-  async function reject(reason: string) {
+  async function reject(reason: string, category: RejectionCategory) {
     setError('')
     try {
-      const rejected = await rejectTask(id, reason)
+      const rejected = await rejectTask(id, {reason, category, planVersion: task?.plan_version})
       setTask(rejected)
       setReadDiffs(new Set())
       showToast({message: '计划已驳回，任务回到协商阶段。'})
@@ -256,6 +277,7 @@ export function TaskWorkbench({id}: {id: string}) {
             ? <ApprovalPanel task={task} diffsRead={readDiffs.size} diffsTotal={patches.length} canApprove={canApprove}
                 onPlanOpened={() => {}} onApprove={approve} onExecute={execute} onReject={reject} />
             : <StatusCard task={task} onStart={async () => { const started = await startTask(id); setTask(started) }} />}
+          <RejectionHistory task={task} />
         </aside>
 
         <div className="task-col-tl">

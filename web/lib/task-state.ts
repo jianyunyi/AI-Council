@@ -97,3 +97,11 @@ export function summaryScale(task: TaskSummary): string {
   if (task.state === 'DRAFT') return '计划未生成'
   return `${task.patch_count} 文件 · ${task.command_count} 命令`
 }
+
+export const REJECTION_CATEGORY_LABELS: Record<string, string> = {
+  incorrect: '方案不正确',
+  unsafe: '不安全',
+  scope: '范围问题',
+  quality: '质量不足',
+  other: '其他',
+}

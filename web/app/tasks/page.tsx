@@ -6,7 +6,7 @@ import {useWorkspace} from '@/components/app-shell'
 import {TaskLink} from '@/components/task-link'
 import {ConfirmDialog, ConfirmState, showToast, StatusBadge} from '@/components/ui'
 import {cancelTask} from '@/lib/api'
-import {groupTasks, summaryScale, STATE_META, UiStateKey, uiStateOf} from '@/lib/task-state'
+import {groupTasks, REJECTION_CATEGORY_LABELS, summaryScale, STATE_META, UiStateKey, uiStateOf} from '@/lib/task-state'
 import {useTasks} from '@/lib/use-tasks'
 import type {TaskSummary} from '@/lib/types'
 
@@ -67,7 +67,7 @@ export default function TaskListPage() {
             {rows.map(task => (
               <tr key={task.id}>
                 <td><TaskLink task={task} /><div className="small muted">{task.id}</div></td>
-                <td><StatusBadge state={task.state} /></td>
+                <td><StatusBadge state={task.state} />{task.last_rejection && <div className="small muted">最近驳回 · {REJECTION_CATEGORY_LABELS[task.last_rejection.category] ?? task.last_rejection.category}</div>}</td>
                 <td>{rootOf(task.workspace_id)}</td>
                 <td>{summaryScale(task)}</td>
                 <td>

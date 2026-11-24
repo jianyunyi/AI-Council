@@ -25,6 +25,10 @@ export type ConfirmState = {
   textLabel?: string
   textPlaceholder?: string
   minLength?: number
+  /* Optional single-select shown above the text field (e.g. rejection category). */
+  selectLabel?: string
+  selectOptions?: readonly (readonly [string, string])[]
+  selectDefault?: string
 }
 
 /* Native <dialog> + showModal (§3.4 / §4.3). The browser provides focus
@@ -49,11 +53,12 @@ export function closeDialog(dialog: HTMLDialogElement, value: string) {
 }
 export function ConfirmDialog({request, onResolve}: {
   request: ConfirmState | null
-  onResolve: (confirmed: boolean, text: string) => void
+  onResolve: (confirmed: boolean, text: string, selectValue: string) => void
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const [text, setText] = useState('')
+  const [selectValue, setSelectValue] = useState('')
   const pending = useRef(false)
 
   useEffect(() => {
@@ -61,6 +66,7 @@ export function ConfirmDialog({request, onResolve}: {
     if (!dialog) return
     if (request && !dialog.open) {
       setText('')
+      setSelectValue(request.selectDefault ?? request.selectOptions?.[0]?.[0] ?? '')
       pending.current = true
       openDialog(dialog)
     }
@@ -78,7 +84,7 @@ export function ConfirmDialog({request, onResolve}: {
     const value = dialog.returnValue
     dialog.returnValue = ''
     formRef.current?.reset()
-    onResolve(value === 'confirm', text)
+    onResolve(value === 'confirm', text, selectValue)
   }
 
   function confirm(event: FormEvent) {
@@ -96,6 +102,13 @@ export function ConfirmDialog({request, onResolve}: {
         {request.typeName && (
           <label>输入「{request.typeName}」以确认
             <input value={text} onChange={event => setText(event.target.value)} required autoComplete="off" aria-label={`输入 ${request.typeName} 以确认`} />
+          </label>
+        )}
+        {request.selectLabel && request.selectOptions && (
+          <label>{request.selectLabel}
+            <select value={selectValue} onChange={event => setSelectValue(event.target.value)} aria-label={request.selectLabel}>
+              {request.selectOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
           </label>
         )}
         {request.textLabel && (

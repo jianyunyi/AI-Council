@@ -1,4 +1,4 @@
-import {ArtifactEnvelope,CreateRoleInput,CreateUserInput,Envelope,Identity,ManagedRole,ManagedUser,Permission,Task,TaskListPage,UpdateRoleInput,UpdateUserInput,Workspace,WorkspaceShare} from './types'
+import {ArtifactEnvelope,CreateRoleInput,CreateUserInput,Envelope,Identity,ManagedRole,ManagedUser,Permission,RejectionCategory,Task,TaskListPage,TaskRejection,UpdateRoleInput,UpdateUserInput,Workspace,WorkspaceShare} from './types'
 import {apiBase,authorizationHeader} from './desktop'
 
 const unauthorizedListeners=new Set<()=>void>()
@@ -71,6 +71,7 @@ export function listTasks(query:TaskListQuery={}){
 export function startTask(id:string){return request<Task>(`/tasks/${encodeURIComponent(id)}/start`,{method:'POST'})}
 export function approveTask(id:string,planVersion:number,approvalHash:string){return request<Task>(`/tasks/${encodeURIComponent(id)}/approve`,{method:'POST',body:JSON.stringify({plan_version:planVersion,approval_hash:approvalHash})})}
 export function executeTask(id:string){return request<Task>(`/tasks/${encodeURIComponent(id)}/execute`,{method:'POST'})}
-export function rejectTask(id:string,reason?:string){return request<Task>(`/tasks/${encodeURIComponent(id)}/reject`,{method:'POST',body:JSON.stringify({reason:reason??''})})}
+export function rejectTask(id:string,input:{reason:string;category:RejectionCategory;planVersion?:number}){return request<Task>(`/tasks/${encodeURIComponent(id)}/reject`,{method:'POST',body:JSON.stringify({reason:input.reason,category:input.category,plan_version:input.planVersion})})}
+export function listTaskRejections(id:string){return request<TaskRejection[]>(`/tasks/${encodeURIComponent(id)}/rejections`)}
 export function cancelTask(id:string){return request<Task>(`/tasks/${encodeURIComponent(id)}/cancel`,{method:'POST'})}
 export function getArtifact(taskId:string,artifactId:string){return request<ArtifactEnvelope>(`/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`)}
