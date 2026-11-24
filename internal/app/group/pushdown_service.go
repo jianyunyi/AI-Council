@@ -101,7 +101,7 @@ func (s *Service) Approve(ctx context.Context, a Actor, gid, rid string, in Appr
 		ID: newID("pd_"), GroupID: gid, RequirementID: rid, ProposalID: prop.ID,
 		ProposalAttempt: prop.Attempt, ReviewRoundID: round.ID, RedTeamCheckID: check.ID,
 		IdempotencyKey: fmt.Sprintf("pd:%s:%d", rid, prop.Attempt),
-		PlanHash: planHash, ApprovedBy: a.UserID, ModelWorkspaceID: wsID, Status: PDApproved,
+		PlanHash:       planHash, ApprovedBy: a.UserID, ModelWorkspaceID: wsID, Status: PDApproved,
 		ApprovedAt: s.now(), UpdatedAt: s.now(),
 	}
 	approved := false
@@ -317,6 +317,16 @@ func (s *Service) pdFailPermanent(ctx context.Context, req *sqlite.GroupRequirem
 				return nil, err
 			}
 			evs = append(evs, ev)
+			// P9 (§2.8a): even a refused push-down gets a result
+			// submission (outcome not_executed when no task ever
+			// existed) — enqueued in this same transaction.
+			rsEv, err := s.rsEnqueueTx(ctx, tx, req, rec, PDFailed, code, true, at)
+			if err != nil {
+				return nil, err
+			}
+			if rsEv.Seq != 0 {
+				evs = append(evs, rsEv)
+			}
 		}
 		ev, err = rvAppendEvent(ctx, tx, req.GroupID, "pushdown.failed",
 			PushdownEventData{RequirementID: req.ID, PushdownID: rec.ID}, at)

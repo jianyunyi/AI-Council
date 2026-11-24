@@ -62,6 +62,9 @@ type Service struct {
 	tasks        TaskBridge
 	modelWS      ModelWorkspaceLookup
 	mirrors      *mirrorRegistry
+
+	// P9 port; nil until EnableResults (P8 behavior otherwise).
+	artifacts ArtifactSource
 }
 
 func NewService(repo *sqlite.GroupRepo, reqRepo *sqlite.RequirementRepo, ws WorkspaceProvisioner, models AIModelDirectory, provider ProviderInvoker, users UserDirectory, audit AuditSink, hub *Hub) *Service {
@@ -821,10 +824,8 @@ type MessagePage struct {
 
 func checkIntent(intent string) error {
 	switch intent {
-	case "", "chat", "dispatch", "review":
+	case "", "chat", "dispatch", "review", "result_review":
 		return nil
-	case "result_review":
-		return errIntentUnavailable // enabled in P8
 	default:
 		return errInvalidIntent
 	}
@@ -916,7 +917,8 @@ func (s *Service) PostMessage(ctx context.Context, a Actor, gid string, in PostM
 	}
 	// P7: only a review message may carry a requirement id, and a review
 	// message must carry one. Chat/dispatch messages keep the P6 rule.
-	if in.Intent == "review" {
+	// P9: result_review follows the same rule for stage="result" rounds.
+	if in.Intent == "review" || in.Intent == "result_review" {
 		if in.RequirementID == "" {
 			return nil, errRequirementRequired
 		}
@@ -984,6 +986,21 @@ func (s *Service) PostMessage(ctx context.Context, a Actor, gid string, in PostM
 			return nil, errReviewForbidden
 		}
 		plan, err := s.rvPrepareReview(ctx, a, g, m, in.RequirementID, reviewerIDsFromMentions(mentions, m.ID))
+		if err != nil {
+			return nil, err
+		}
+		reviewPlan = plan
+	}
+	// P9: a result_review message opens a stage="result" round on a
+	// result_submitted requirement, through the same prepare/start path.
+	if in.Intent == "result_review" {
+		if !s.resultsEnabled() {
+			return nil, errResultsDisabled
+		}
+		if m.GroupRole != RoleOwner && m.GroupRole != RoleOperator && !a.ManageAny {
+			return nil, errReviewForbidden
+		}
+		plan, err := s.rvPrepareReviewStage(ctx, a, g, m, in.RequirementID, reviewerIDsFromMentions(mentions, m.ID), StageResult)
 		if err != nil {
 			return nil, err
 		}

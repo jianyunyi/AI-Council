@@ -313,11 +313,13 @@ func TestReviewGuards(t *testing.T) {
 	}); code(err) != "requirement_required" {
 		t.Fatalf("review without id err = %v, want requirement_required", err)
 	}
-	// result_review stays gated until P8.
+	// result_review is a P9 intent: in this P7 environment (results
+	// not enabled) it reports results_unavailable; the enabled path
+	// is covered by the P9 tests.
 	if _, err := e.svc.PostMessage(ctx, alice, g.ID, PostMessageInput{
 		BodyMD: "x", ClientMsgID: "cm-g2", Intent: "result_review", RequirementID: req.ID,
-	}); code(err) != "intent_not_available" {
-		t.Fatalf("result_review err = %v, want intent_not_available", err)
+	}); code(err) != "results_unavailable" {
+		t.Fatalf("result_review err = %v, want results_unavailable", err)
 	}
 	// Chat messages still may not carry a requirement id (P6 rule).
 	if _, err := e.svc.PostMessage(ctx, alice, g.ID, PostMessageInput{

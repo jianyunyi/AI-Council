@@ -503,6 +503,19 @@ func (s *Service) redTeamFeedback(ctx context.Context, req *sqlite.GroupRequirem
 // feedback — which is correct.
 func (s *Service) priorFeedback(ctx context.Context, req *sqlite.GroupRequirementRecord) string {
 	fb := s.priorReviewFeedback(ctx, req)
+	// P9 (§2.8f): the FIRST proposal of a cycle that began with a
+	// result revision carries the result reviewers' feedback.
+	if req.Cycle > 1 && s.resultsEnabled() {
+		if count, err := s.reqRepo.CountProposals(ctx, req.ID); err == nil && int(count)+1 == req.CycleStartAttempt {
+			if rf := s.resultFeedback(ctx, req); rf != "" {
+				if fb != "" {
+					fb = rf + "\n\n" + fb
+				} else {
+					fb = rf
+				}
+			}
+		}
+	}
 	if !s.pushdownEnabled() {
 		return fb
 	}

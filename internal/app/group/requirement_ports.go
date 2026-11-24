@@ -140,11 +140,17 @@ type RequirementView struct {
 	// redteam_<status>, plan_changed, workspace_not_ready.
 	CanApprove           bool   `json:"can_approve"`
 	ApproveBlockedReason string `json:"approve_blocked_reason,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	StateChangedAt time.Time  `json:"state_changed_at"`
-	ProposedAt     *time.Time `json:"proposed_at,omitempty"`
-	TerminalAt     *time.Time `json:"terminal_at,omitempty"`
+	// P9: execution cycle bookkeeping and the latest result submission.
+	Cycle             int                   `json:"cycle"`
+	MaxCycles         int                   `json:"max_cycles"`
+	RevisionSource    string                `json:"revision_source,omitempty"`
+	CompletionOutcome string                `json:"completion_outcome,omitempty"`
+	Result            *ResultSubmissionView `json:"result,omitempty"`
+	CreatedAt         time.Time             `json:"created_at"`
+	UpdatedAt         time.Time             `json:"updated_at"`
+	StateChangedAt    time.Time             `json:"state_changed_at"`
+	ProposedAt        *time.Time            `json:"proposed_at,omitempty"`
+	TerminalAt        *time.Time            `json:"terminal_at,omitempty"`
 }
 
 type ProposalView struct {

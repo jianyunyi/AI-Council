@@ -126,11 +126,61 @@ type reviewStartPlan struct {
 	quorum    int
 	deadline  int    // minutes, 0 = none
 	roundID   string // set by rvStartReviewTx
+	// P9: stage is "" (proposal) or StageResult; submission is the
+	// reviewed result for stage=result rounds.
+	stage      string
+	submission *sqlite.ResultSubmissionRecord
+}
+
+func (p *reviewStartPlan) fromState() string {
+	if p.stage == StageResult {
+		return ReqResultSubmitted
+	}
+	return ReqProposed
+}
+
+func (p *reviewStartPlan) toState() string {
+	if p.stage == StageResult {
+		return ReqResultInReview
+	}
+	return ReqInReview
+}
+
+// subjectHash binds the round to its subject: the plan hash for
+// proposal rounds, the RESULT hash for result rounds (C3).
+func (p *reviewStartPlan) subjectHash() string {
+	if p.stage == StageResult {
+		return p.submission.ResultHash
+	}
+	return planHashOf(p.proposal.PlanJSON)
+}
+
+func (p *reviewStartPlan) subjectProposalID() string {
+	if p.stage == StageResult {
+		return p.req.CurrentProposalID
+	}
+	return p.proposal.ID
+}
+
+func (p *reviewStartPlan) subjectRound() int {
+	if p.stage == StageResult {
+		return p.submission.ProposalAttempt
+	}
+	return p.proposal.Attempt
 }
 
 // rvPrepareReview validates everything that can fail BEFORE any write:
 // the caller (endpoint or chat path) runs it ahead of its transaction.
 func (s *Service) rvPrepareReview(ctx context.Context, a Actor, g *sqlite.ChatGroupRecord, me *sqlite.ChatGroupMemberRecord, rid string, reviewerIDs []string) (*reviewStartPlan, error) {
+	return s.rvPrepareReviewStage(ctx, a, g, me, rid, reviewerIDs, StageProposal)
+}
+
+// rvPrepareReviewStage is rvPrepareReview for either stage. The
+// reviewer rule set is IDENTICAL for both stages (the P7 rules the
+// Quick draft re-specified as validateReviewerSet); only the required
+// requirement state, the subject (proposal vs latest submission) and
+// the rule/quorum policy fields differ.
+func (s *Service) rvPrepareReviewStage(ctx context.Context, a Actor, g *sqlite.ChatGroupRecord, me *sqlite.ChatGroupMemberRecord, rid string, reviewerIDs []string, stage string) (*reviewStartPlan, error) {
 	rec, err := s.reqRepo.GetRequirementInGroup(ctx, g.ID, rid)
 	if err != nil {
 		if errors.Is(err, sqlite.ErrRequirementNotFound) {
@@ -141,7 +191,11 @@ func (s *Service) rvPrepareReview(ctx context.Context, a Actor, g *sqlite.ChatGr
 	if rec.RequestedByUserID != a.UserID && !canManage(a, me) {
 		return nil, errReviewForbidden
 	}
-	if rec.State != ReqProposed {
+	if stage == StageResult {
+		if rec.State != ReqResultSubmitted {
+			return nil, errNotResultReviewable
+		}
+	} else if rec.State != ReqProposed {
 		return nil, errRequirementState
 	}
 	if _, err := s.reviewRepo().GetOpenRound(ctx, rid); err == nil {
@@ -149,11 +203,32 @@ func (s *Service) rvPrepareReview(ctx context.Context, a Actor, g *sqlite.ChatGr
 	} else if !errors.Is(err, sqlite.ErrReviewNotFound) {
 		return nil, err
 	}
-	proposal, err := s.reqRepo.GetProposal(ctx, rec.CurrentProposalID)
-	if err != nil {
-		return nil, err
-	}
 	policy := decodePolicy(g.Policy)
+	plan := &reviewStartPlan{req: rec, stage: stage, deadline: policy.ReviewDeadlineMinutes}
+	if stage == StageResult {
+		sub, err := s.results().LatestSubmission(ctx, rid)
+		if err != nil {
+			return nil, err
+		}
+		if sub == nil || sub.Status != SubSubmitted || sub.Cycle != rec.Cycle {
+			return nil, errNotResultReviewable
+		}
+		plan.submission = sub
+		plan.rule = policy.ResultReviewRule
+		if policy.ResultQuorum != nil {
+			plan.quorum = *policy.ResultQuorum
+		}
+	} else {
+		proposal, err := s.reqRepo.GetProposal(ctx, rec.CurrentProposalID)
+		if err != nil {
+			return nil, err
+		}
+		plan.proposal = proposal
+		plan.rule = policy.ProposalReviewRule
+		if policy.ProposalQuorum != nil {
+			plan.quorum = *policy.ProposalQuorum
+		}
+	}
 	minReviewers := policy.MinReviewers
 	if minReviewers < 1 {
 		minReviewers = 1
@@ -176,12 +251,8 @@ func (s *Service) rvPrepareReview(ctx context.Context, a Actor, g *sqlite.ChatGr
 	for _, v := range views {
 		byID[v.ID] = v
 	}
-	plan := &reviewStartPlan{req: rec, proposal: proposal, rule: policy.ProposalReviewRule, deadline: policy.ReviewDeadlineMinutes}
 	if plan.rule == "" {
 		plan.rule = "unanimous"
-	}
-	if policy.ProposalQuorum != nil {
-		plan.quorum = *policy.ProposalQuorum
 	}
 	for _, id := range reviewerIDs {
 		v, ok := byID[id]
@@ -212,8 +283,8 @@ func (s *Service) rvStartReviewTx(ctx context.Context, tx *sqlite.GroupRepo, g *
 	txReq := sqlite.NewRequirementRepo(tx.DB())
 	txRev := sqlite.NewReviewRepo(tx.DB())
 	rec := plan.req
-	ok, err := txReq.UpdateRequirementState(ctx, rec.ID, []string{ReqProposed}, rec.Version, map[string]any{
-		"state": ReqInReview, "state_changed_at": at, "updated_at": at,
+	ok, err := txReq.UpdateRequirementState(ctx, rec.ID, []string{plan.fromState()}, rec.Version, map[string]any{
+		"state": plan.toState(), "state_changed_at": at, "updated_at": at,
 	})
 	if err != nil {
 		return nil, err
@@ -221,10 +292,19 @@ func (s *Service) rvStartReviewTx(ctx context.Context, tx *sqlite.GroupRepo, g *
 	if !ok {
 		return nil, errRequirementGone
 	}
+	stage := plan.stage
+	if stage == "" {
+		stage = StageProposal
+	}
+	submissionID := ""
+	if plan.submission != nil {
+		submissionID = plan.submission.ID
+	}
 	round := &sqlite.ReviewRoundRecord{
 		ID: newID("rnd_"), GroupID: g.ID, RequirementID: rec.ID,
-		ProposalID: plan.proposal.ID, ProposalRound: plan.proposal.Attempt,
-		PlanHash: planHashOf(plan.proposal.PlanJSON), Status: RoundOpen,
+		ProposalID: plan.subjectProposalID(), ProposalRound: plan.subjectRound(),
+		PlanHash: plan.subjectHash(), Status: RoundOpen,
+		Stage: stage, SubmissionID: submissionID,
 		PolicyRule: plan.rule, PolicyQuorum: plan.quorum,
 		StartedByUserID: actorUserID, StartedByMember: actorMemberID,
 		RequestMessageID: requestMessageID, CreatedAt: at,
@@ -268,21 +348,25 @@ func (s *Service) rvStartReviewTx(ctx context.Context, tx *sqlite.GroupRepo, g *
 	}
 	evs := make([]Event, 0, 3)
 	ev, err := rvAppendEvent(ctx, tx, g.ID, "requirement.state_changed",
-		RequirementEventData{RequirementID: rec.ID, State: ReqInReview, Version: rec.Version + 1}, at)
+		RequirementEventData{RequirementID: rec.ID, State: plan.toState(), Version: rec.Version + 1}, at)
 	if err != nil {
 		return nil, err
 	}
 	evs = append(evs, ev)
 	ev, err = rvAppendEvent(ctx, tx, g.ID, "review.round_opened",
-		ReviewEventData{RequirementID: rec.ID, RoundID: round.ID, ProposalRound: round.ProposalRound, Reviewers: refs}, at)
+		ReviewEventData{RequirementID: rec.ID, RoundID: round.ID, ProposalRound: round.ProposalRound, Reviewers: refs, Stage: stage}, at)
 	if err != nil {
 		return nil, err
 	}
 	evs = append(evs, ev)
 	body := fmt.Sprintf("Review round %d opened for @%s's proposal. Reviewers: %s.",
 		round.ProposalRound, rec.AssigneeHandle, strings.Join(handles, ", "))
+	if stage == StageResult {
+		body = fmt.Sprintf("Result review opened for @%s's execution result (cycle %d). Reviewers: %s.",
+			rec.AssigneeHandle, plan.submission.Cycle, strings.Join(handles, ", "))
+	}
 	ev, err = rvPostSystemTx(ctx, tx, g.ID, rec.ID, body,
-		map[string]any{"kind": "review_notice", "requirement_id": rec.ID, "round_id": round.ID}, at)
+		map[string]any{"kind": "review_notice", "requirement_id": rec.ID, "round_id": round.ID, "stage": stage}, at)
 	if err != nil {
 		return nil, err
 	}
@@ -314,21 +398,51 @@ func (s *Service) rvCloseRoundTx(ctx context.Context, tx *sqlite.GroupRepo, roun
 		}
 		fields := map[string]any{"state_changed_at": at, "updated_at": at}
 		var toState string
-		switch outcome {
-		case OutcomePassed:
-			toState = ReqReviewPassed
-		case OutcomeChangesRequested:
-			toState = ReqChangesRequested
-		case OutcomeRejected:
-			toState = ReqRejected
-			fields["failure_code"] = FailReviewRejected
-			fields["failure_detail"] = fmt.Sprintf("proposal rejected by review round %d", round.ProposalRound)
-			fields["terminal_at"] = at
-		default: // inconclusive
-			toState = ReqProposed
+		fromState := ReqInReview
+		if round.Stage == StageResult {
+			// P9 (§2.8c): result-stage close mapping. A passed result
+			// completes the requirement — with accepted_failed when
+			// the execution itself did not succeed, so a failed
+			// execution is never presented as a success.
+			fromState = ReqResultInReview
+			switch outcome {
+			case OutcomePassed:
+				toState = ReqCompleted
+				completion := CompletionAccepted
+				if sub, serr := sqlite.NewResultRepo(tx.DB()).GetSubmission(ctx, round.SubmissionID); serr == nil && sub.ExecutionOutcome != ExecSucceeded {
+					completion = CompletionAcceptedFailed
+				}
+				fields["completion_outcome"] = completion
+				fields["terminal_at"] = at
+			case OutcomeChangesRequested:
+				toState = ReqChangesRequested
+				fields["revision_source"] = RevisionFromResult
+			case OutcomeRejected:
+				toState = ReqRejected
+				fields["failure_code"] = "result_rejected"
+				fields["failure_detail"] = fmt.Sprintf("result rejected by review round %d", round.ProposalRound)
+				fields["terminal_at"] = at
+			default: // inconclusive: a new result review can start
+				toState = ReqResultSubmitted
+			}
+		} else {
+			switch outcome {
+			case OutcomePassed:
+				toState = ReqReviewPassed
+			case OutcomeChangesRequested:
+				toState = ReqChangesRequested
+				fields["revision_source"] = RevisionFromProposal
+			case OutcomeRejected:
+				toState = ReqRejected
+				fields["failure_code"] = FailReviewRejected
+				fields["failure_detail"] = fmt.Sprintf("proposal rejected by review round %d", round.ProposalRound)
+				fields["terminal_at"] = at
+			default: // inconclusive
+				toState = ReqProposed
+			}
 		}
 		fields["state"] = toState
-		ok, err := txReq.UpdateRequirementState(ctx, req.ID, []string{ReqInReview}, req.Version, fields)
+		ok, err := txReq.UpdateRequirementState(ctx, req.ID, []string{fromState}, req.Version, fields)
 		if err != nil {
 			return nil, err
 		}
@@ -341,7 +455,7 @@ func (s *Service) rvCloseRoundTx(ctx context.Context, tx *sqlite.GroupRepo, roun
 			return nil, err
 		}
 		evs = append(evs, ev)
-		if outcome == OutcomePassed && s.pushdownEnabled() {
+		if outcome == OutcomePassed && round.Stage != StageResult && s.pushdownEnabled() {
 			prop, err := txReq.GetProposal(ctx, round.ProposalID)
 			if err != nil {
 				return nil, err
@@ -354,7 +468,7 @@ func (s *Service) rvCloseRoundTx(ctx context.Context, tx *sqlite.GroupRepo, roun
 		}
 	}
 	ev, err := rvAppendEvent(ctx, tx, round.GroupID, "review.closed",
-		ReviewEventData{RequirementID: round.RequirementID, RoundID: round.ID, Outcome: outcome}, at)
+		ReviewEventData{RequirementID: round.RequirementID, RoundID: round.ID, Outcome: outcome, Stage: round.Stage}, at)
 	if err != nil {
 		return nil, err
 	}
@@ -453,7 +567,7 @@ func (s *Service) SubmitDecision(ctx context.Context, a Actor, gid, rid string, 
 		}
 		return nil, err
 	}
-	if rec.State != ReqInReview || me == nil {
+	if (rec.State != ReqInReview && rec.State != ReqResultInReview) || me == nil {
 		return nil, errNoOpenRound
 	}
 	var roundID string
@@ -527,7 +641,7 @@ func (s *Service) ForceCloseReview(ctx context.Context, a Actor, gid, rid string
 		}
 		return nil, err
 	}
-	if rec.State != ReqInReview {
+	if rec.State != ReqInReview && rec.State != ReqResultInReview {
 		return nil, errNoOpenRound
 	}
 	err = s.reviewCommit(ctx, gid, func(tx *sqlite.GroupRepo, at time.Time) ([]Event, error) {
@@ -598,9 +712,31 @@ func (s *Service) ReviseRequirement(ctx context.Context, a Actor, gid, rid strin
 	if rec.State != ReqChangesRequested {
 		return nil, errRequirementState
 	}
-	round, err := s.reviewRepo().GetLatestRound(ctx, rid)
-	if err != nil {
-		return nil, errRequirementState
+	// P9: for a RESULT revision the relevant round is the closed
+	// stage=result round that sent the requirement back — not
+	// GetLatestRound, whose proposal_round ordering cannot tell the
+	// two stage rounds of one attempt apart.
+	var round *sqlite.ReviewRoundRecord
+	if rec.RevisionSource == RevisionFromResult {
+		rounds, lerr := s.reviewRepo().ListRounds(ctx, rid)
+		if lerr != nil {
+			return nil, lerr
+		}
+		for i := len(rounds) - 1; i >= 0; i-- {
+			r := &rounds[i]
+			if r.Stage == StageResult && r.Status == RoundClosed && r.Outcome == OutcomeChangesRequested {
+				round = r
+				break
+			}
+		}
+		if round == nil {
+			return nil, errRequirementState
+		}
+	} else {
+		round, err = s.reviewRepo().GetLatestRound(ctx, rid)
+		if err != nil {
+			return nil, errRequirementState
+		}
 	}
 	roundRevisable := round.Status == RoundClosed && round.Outcome == OutcomeChangesRequested
 	if !roundRevisable && s.pushdownEnabled() && round.Status == RoundClosed && round.Outcome == OutcomePassed {
@@ -621,24 +757,33 @@ func (s *Service) ReviseRequirement(ctx context.Context, a Actor, gid, rid strin
 	if err != nil {
 		return nil, err
 	}
-	maxRounds := decodePolicy(g.Policy).MaxProposalRounds
-	if maxRounds < 1 {
-		maxRounds = 3
+	// P9 (§2.8d): two caps. A RESULT revision starts a new execution
+	// cycle, bounded by maxCycles (policy.MaxResultRounds); a proposal
+	// revision is bounded per cycle (C4) — for cycle 1 with
+	// cycle_start_attempt 1 this is exactly the P7 total cap.
+	policy := decodePolicy(g.Policy)
+	next := int(count) + 1
+	now := s.now()
+	fields := map[string]any{
+		"state": ReqDispatched, "failure_code": "", "failure_detail": "",
+		"current_proposal_id": "", "terminal_at": nil, "revision_source": "",
+		"state_changed_at": now, "updated_at": now,
 	}
-	if int(count) >= maxRounds {
+	if rec.RevisionSource == RevisionFromResult {
+		if rec.Cycle >= maxCycles(policy) {
+			return nil, errCycleLimit
+		}
+		fields["cycle"] = rec.Cycle + 1
+		fields["cycle_start_attempt"] = next
+	} else if int(count)-rec.CycleStartAttempt+1 >= maxAttemptsPerCycle(policy) {
 		return nil, errRoundLimit
 	}
 	if err := s.reviewRepo().UpdateRound(ctx, round.ID, map[string]any{"revision_note": in.Note}); err != nil {
 		return nil, err
 	}
-	now := s.now()
 	_, err = s.mutate(ctx, gid, "requirement.state_changed", func(tx *sqlite.GroupRepo, at time.Time) (any, error) {
 		txReq := sqlite.NewRequirementRepo(tx.DB())
-		ok, err := txReq.UpdateRequirementState(ctx, rid, []string{ReqChangesRequested}, rec.Version, map[string]any{
-			"state": ReqDispatched, "failure_code": "", "failure_detail": "",
-			"current_proposal_id": "", "terminal_at": nil,
-			"state_changed_at": now, "updated_at": now,
-		})
+		ok, err := txReq.UpdateRequirementState(ctx, rid, []string{ReqChangesRequested}, rec.Version, fields)
 		if err != nil {
 			return nil, err
 		}
@@ -713,7 +858,7 @@ func (s *Service) allowedActions(ctx context.Context, a Actor, me *sqlite.ChatGr
 		if canAct {
 			out = append(out, "start_review")
 		}
-	case ReqInReview:
+	case ReqInReview, ReqResultInReview:
 		if me != nil {
 			if round, err := s.reviewRepo().GetOpenRound(ctx, rec.ID); err == nil {
 				if d, err := s.reviewRepo().FindDecision(ctx, round.ID, me.ID); err == nil && d.Status == DecisionPending {
@@ -724,8 +869,15 @@ func (s *Service) allowedActions(ctx context.Context, a Actor, me *sqlite.ChatGr
 		if canManage(a, me) {
 			out = append(out, "force_close")
 		}
-	case ReqChangesRequested:
+	case ReqResultSubmitted:
+		// P9: a submitted result can be sent to result review.
 		if canAct {
+			out = append(out, "request_result_review")
+		}
+	case ReqChangesRequested:
+		// P9 (§2.8i): hide "revise" when the matching cap is reached,
+		// so the card shows the cap instead of a button that would 409.
+		if canAct && s.reviseAllowed(ctx, rec) {
 			out = append(out, "revise")
 		}
 	case ReqProposalFailed, ReqFailed:
@@ -752,12 +904,35 @@ func (s *Service) allowedActions(ctx context.Context, a Actor, me *sqlite.ChatGr
 	}
 	switch rec.State {
 	case ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed,
-		ReqAwaitingApproval, ReqApproved, ReqExecuting:
+		ReqAwaitingApproval, ReqApproved, ReqExecuting,
+		// P9: cancel stays available while the result is collected,
+		// submitted or under result review.
+		ReqExecuted, ReqExecutionFailed, ReqResultSubmitted, ReqResultInReview:
 		if canAct {
 			out = append(out, "cancel")
 		}
 	}
 	return out
+}
+
+// reviseAllowed mirrors ReviseRequirement's two caps for display:
+// result revisions are bounded by the cycle cap, proposal revisions
+// by the per-cycle attempt cap. It fails open (the service method is
+// the enforcer) so a read error never hides a legitimate action.
+func (s *Service) reviseAllowed(ctx context.Context, rec *sqlite.GroupRequirementRecord) bool {
+	g, err := s.repo.GetGroup(ctx, rec.GroupID)
+	if err != nil {
+		return true
+	}
+	policy := decodePolicy(g.Policy)
+	if rec.RevisionSource == RevisionFromResult {
+		return rec.Cycle < maxCycles(policy)
+	}
+	count, err := s.reqRepo.CountProposals(ctx, rec.ID)
+	if err != nil {
+		return true
+	}
+	return int(count)-rec.CycleStartAttempt+1 < maxAttemptsPerCycle(policy)
 }
 
 // ---------- revision feedback for the next proposal ----------
@@ -779,6 +954,12 @@ func (s *Service) priorReviewFeedback(ctx context.Context, req *sqlite.GroupRequ
 	}
 	for i := len(rounds) - 1; i >= 0; i-- {
 		r := &rounds[i]
+		// P9: result rounds share ProposalRound numbering with the
+		// attempt that produced them; their feedback travels via
+		// resultFeedback instead, never through this proposal path.
+		if r.Stage == StageResult {
+			continue
+		}
 		if r.Status != RoundClosed || r.Outcome != OutcomeChangesRequested || r.ProposalRound != int(count) {
 			continue
 		}
@@ -815,12 +996,12 @@ func (s *Service) runReviewJob(ctx context.Context, workerID string, job *sqlite
 	if err != nil {
 		return err
 	}
-	if req.State != ReqInReview {
-		return s.completeJob(ctx, workerID, job) // cancelled / superseded meanwhile
-	}
 	round, err := s.reviewRepo().GetRound(ctx, dec.RoundID)
 	if err != nil || round.Status != RoundOpen {
 		return s.completeJob(ctx, workerID, job)
+	}
+	if req.State != expectedReviewState(round.Stage) {
+		return s.completeJob(ctx, workerID, job) // cancelled / superseded meanwhile
 	}
 	if dec.Status == DecisionPending {
 		ok, err := s.reviewRepo().TransitionDecision(ctx, dec.ID, []string{DecisionPending},
@@ -831,13 +1012,6 @@ func (s *Service) runReviewJob(ctx context.Context, workerID string, job *sqlite
 		if !ok {
 			return s.completeJob(ctx, workerID, job) // another worker owns it
 		}
-	}
-	proposal, err := s.reqRepo.GetProposal(ctx, round.ProposalID)
-	if err != nil {
-		return s.failReviewDecision(ctx, workerID, job, dec, FailInternal)
-	}
-	if planHashOf(proposal.PlanJSON) != round.PlanHash {
-		return s.failReviewDecision(ctx, workerID, job, dec, FailReviewPlanChanged)
 	}
 	info, err := s.models.GetAIModel(ctx, dec.ReviewerAIModel)
 	if err != nil || info.Status != "active" {
@@ -851,7 +1025,33 @@ func (s *Service) runReviewJob(ctx context.Context, workerID string, job *sqlite
 	if len(req.AcceptanceJSON) > 0 {
 		_ = json.Unmarshal(req.AcceptanceJSON, &acceptance)
 	}
-	system, user := buildReviewPrompt(req.Title, string(proposal.PlanJSON), acceptance)
+	// The round's subject depends on its stage (§2.8b): the bound plan
+	// for proposal rounds; the submitted result — re-verified against
+	// the round's hash — for result rounds.
+	var system, user string
+	if round.Stage == StageResult {
+		sub, err := s.results().GetSubmission(ctx, round.SubmissionID)
+		if err != nil {
+			return s.failReviewDecision(ctx, workerID, job, dec, FailInternal)
+		}
+		if sub.ResultHash != round.PlanHash {
+			return s.failReviewDecision(ctx, workerID, job, dec, FailReviewPlanChanged)
+		}
+		arts, err := s.results().ListArtifactsForSubmission(ctx, sub.ID)
+		if err != nil {
+			return s.failReviewDecision(ctx, workerID, job, dec, FailInternal)
+		}
+		system, user = s.buildResultReviewPrompt(ctx, req, sub, arts, acceptance)
+	} else {
+		proposal, err := s.reqRepo.GetProposal(ctx, round.ProposalID)
+		if err != nil {
+			return s.failReviewDecision(ctx, workerID, job, dec, FailInternal)
+		}
+		if planHashOf(proposal.PlanJSON) != round.PlanHash {
+			return s.failReviewDecision(ctx, workerID, job, dec, FailReviewPlanChanged)
+		}
+		system, user = buildReviewPrompt(req.Title, string(proposal.PlanJSON), acceptance)
+	}
 	msgs := []InvokeMessage{{Role: "system", Content: system}, {Role: "user", Content: user}}
 	if err := s.checkBudget(ctx, g, req.ID, info.Model, estimateTokens(msgs)); err != nil {
 		if strings.HasPrefix(err.Error(), FailBudgetExhausted) {

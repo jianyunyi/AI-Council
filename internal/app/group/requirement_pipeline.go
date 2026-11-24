@@ -42,6 +42,8 @@ func (s *Service) runJob(ctx context.Context, workerID string, job *sqlite.Group
 		return s.runReviewJob(ctx, workerID, job)
 	case JobKindRedTeam:
 		return s.runRedTeamJob(ctx, workerID, job)
+	case JobKindResult:
+		return s.runResultJob(ctx, workerID, job)
 	default:
 		return s.runProposalJob(ctx, workerID, job)
 	}
@@ -559,6 +561,13 @@ func (s *Service) requeueExpired(ctx context.Context) error {
 			// P8: an exhausted red-team job errors its check so a
 			// manager can retry it; the requirement stays review_passed.
 			_ = s.expireRedTeamJob(ctx, &rows[i])
+			continue
+		}
+		if rows[i].Kind == JobKindResult {
+			// P9: an exhausted result job commits its submission
+			// facts-only; the requirement never strands in
+			// executed/execution_failed.
+			_ = s.expireResultJob(ctx, &rows[i])
 			continue
 		}
 		req, err := s.reqRepo.GetRequirement(ctx, rows[i].RequirementID)

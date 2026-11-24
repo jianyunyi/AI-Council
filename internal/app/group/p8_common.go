@@ -70,7 +70,9 @@ func canApprove(a Actor, m *sqlite.ChatGroupMemberRecord) bool {
 }
 
 // passingRound returns the closed, passed round over the requirement's
-// CURRENT proposal, or nil.
+// CURRENT proposal, or nil. P9 (C2): result rounds also carry the
+// current ProposalID, so the match must be stage-filtered — a passed
+// RESULT round must never satisfy the proposal gate.
 func (s *Service) passingRound(ctx context.Context, req *sqlite.GroupRequirementRecord) (*sqlite.ReviewRoundRecord, error) {
 	rounds, err := s.reviewRepo().ListRounds(ctx, req.ID)
 	if err != nil {
@@ -78,6 +80,9 @@ func (s *Service) passingRound(ctx context.Context, req *sqlite.GroupRequirement
 	}
 	for i := len(rounds) - 1; i >= 0; i-- {
 		r := &rounds[i]
+		if r.Stage == StageResult {
+			continue
+		}
 		if r.ProposalID == req.CurrentProposalID && r.Status == RoundClosed && r.Outcome == OutcomePassed {
 			return r, nil
 		}
@@ -88,15 +93,16 @@ func (s *Service) passingRound(ctx context.Context, req *sqlite.GroupRequirement
 // p8TransitionTx CASes a requirement state inside tx and appends the
 // requirement.state_changed event next to it (the landed
 // UpdateRequirementState does not append events itself, W4).
-// execution_failed is terminal (terminal_at set); executed is NOT —
-// P9 continues from it.
+// terminal_at is set exactly for the terminal states (isTerminal);
+// since P9 (C1) execution_failed is NOT one of them — a result
+// submission still follows it — and neither is executed.
 func (s *Service) p8TransitionTx(ctx context.Context, tx *sqlite.GroupRepo, req *sqlite.GroupRequirementRecord, from []string, to string, extra map[string]any, at time.Time) (Event, bool, error) {
 	txReq := sqlite.NewRequirementRepo(tx.DB())
 	fields := map[string]any{"state": to, "state_changed_at": at, "updated_at": at}
 	for k, v := range extra {
 		fields[k] = v
 	}
-	if to == ReqExecutionFailed {
+	if isTerminal(to) {
 		fields["terminal_at"] = at
 	}
 	ok, err := txReq.UpdateRequirementState(ctx, req.ID, from, req.Version, fields)

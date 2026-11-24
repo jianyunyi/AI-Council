@@ -152,6 +152,16 @@ func (s *Service) mirrorApply(ctx context.Context, gid, rid, pdID string, st Tas
 		}
 		if won {
 			evs = append(evs, ev)
+			// P9 (§2.8a): the result job is queued in the SAME
+			// transaction as the finish, so a crash can never strand
+			// an executed/execution_failed requirement without one.
+			rsEv, err := s.rsEnqueueTx(ctx, tx, req, rec, pdStatus, code, false, at)
+			if err != nil {
+				return nil, err
+			}
+			if rsEv.Seq != 0 {
+				evs = append(evs, rsEv)
+			}
 			if st.Phase == "failed" {
 				ev, err = s.p8SystemMessage(ctx, tx, gid, rid, KindExecFailure,
 					"执行失败："+failureLabelZH(code),

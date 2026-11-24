@@ -103,6 +103,7 @@ func (s *Service) createRequirementTx(ctx context.Context, tx *sqlite.GroupRepo,
 		RequestedByUserID: author.UserID, RequestedByMemberID: author.ID,
 		AssigneeMemberID: spec.MemberID, AssigneeAIModelID: spec.AIModelID, AssigneeHandle: spec.Handle,
 		Title: title, BodyMD: body, State: ReqDispatched, Version: 1,
+		Cycle: 1, CycleStartAttempt: 1,
 		CreatedAt: at, UpdatedAt: at, StateChangedAt: at,
 	}
 	if err := txReq.CreateRequirement(ctx, rec); err != nil {
@@ -180,6 +181,25 @@ func (s *Service) requirementView(ctx context.Context, rec *sqlite.GroupRequirem
 		}
 		if rec2, err := s.pd().LatestPushdown(ctx, rec.ID); err == nil && rec2 != nil {
 			v.Pushdown = pushdownView(rec2)
+		}
+	}
+	// P9: cycle bookkeeping + latest result submission.
+	v.Cycle = rec.Cycle
+	if v.Cycle < 1 {
+		v.Cycle = 1
+	}
+	v.RevisionSource = rec.RevisionSource
+	v.CompletionOutcome = rec.CompletionOutcome
+	policy := DefaultPolicy()
+	if g, err := s.repo.GetGroup(ctx, rec.GroupID); err == nil {
+		policy = decodePolicy(g.Policy)
+	}
+	v.MaxCycles = maxCycles(policy)
+	if s.resultsEnabled() {
+		if sub, err := s.results().LatestSubmission(ctx, rec.ID); err == nil && sub != nil {
+			if sv, err := s.submissionView(ctx, sub); err == nil {
+				v.Result = sv
+			}
 		}
 	}
 	return v, nil
@@ -350,7 +370,11 @@ func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reas
 	}
 	switch rec.State {
 	case ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed,
-		ReqAwaitingApproval, ReqApproved, ReqExecuting:
+		ReqAwaitingApproval, ReqApproved, ReqExecuting,
+		// P9: cancelling during result collection/submission/review is
+		// allowed; the result job observes the state and stops, and an
+		// open result round is superseded like a proposal round.
+		ReqExecuted, ReqExecutionFailed, ReqResultSubmitted, ReqResultInReview:
 	default:
 		return nil, errRequirementState
 	}
@@ -359,7 +383,8 @@ func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reas
 		txReq := sqlite.NewRequirementRepo(tx.DB())
 		ok, err := txReq.UpdateRequirementState(ctx, rid,
 			[]string{ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed,
-				ReqAwaitingApproval, ReqApproved, ReqExecuting}, rec.Version, map[string]any{
+				ReqAwaitingApproval, ReqApproved, ReqExecuting,
+				ReqExecuted, ReqExecutionFailed, ReqResultSubmitted, ReqResultInReview}, rec.Version, map[string]any{
 				"state": ReqCancelled, "cancelled_by_user_id": a.UserID,
 				"cancelled_by_member_id": memberIDOf(m), "cancel_reason": truncate(reason, 2000),
 				"terminal_at": now, "state_changed_at": now, "updated_at": now,

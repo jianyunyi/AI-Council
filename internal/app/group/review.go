@@ -122,6 +122,10 @@ type ReviewRoundView struct {
 	CreatedAt       time.Time            `json:"created_at"`
 	ClosedAt        *time.Time           `json:"closed_at,omitempty"`
 	Decisions       []ReviewDecisionView `json:"decisions"`
+	// P9: the round's stage (proposal|result); SubmissionID names the
+	// reviewed result submission for stage=result rounds.
+	Stage        string `json:"stage"`
+	SubmissionID string `json:"submission_id,omitempty"`
 }
 
 type ReviewStateView struct {
@@ -147,6 +151,7 @@ type ReviewEventData struct {
 	Outcome          string        `json:"outcome,omitempty"`
 	State            string        `json:"state,omitempty"`
 	Reviewers        []ReviewerRef `json:"reviewers,omitempty"`
+	Stage            string        `json:"stage,omitempty"` // P9: proposal|result
 }
 
 type ReviewerRef struct {
@@ -310,6 +315,10 @@ func (s *Service) buildReviewState(ctx context.Context, a Actor, g *sqlite.ChatG
 			DeadlineAt: r.DeadlineAt, RevisionNote: r.RevisionNote,
 			CreatedAt: r.CreatedAt, ClosedAt: r.ClosedAt,
 			Decisions: make([]ReviewDecisionView, 0, len(decs)),
+			Stage:     r.Stage, SubmissionID: r.SubmissionID,
+		}
+		if rv.Stage == "" {
+			rv.Stage = StageProposal // pre-P9 rows
 		}
 		revealed := r.Status == RoundClosed && r.Outcome != OutcomeSuperseded
 		for j := range decs {
