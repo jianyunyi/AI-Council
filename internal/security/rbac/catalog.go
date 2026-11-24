@@ -12,7 +12,8 @@ import (
 var standardPermissions = []string{
 	"workspace:read", "workspace:write",
 	"provider:read", "provider:write",
-	"task:read", "task:write", "task:approve", "task:execute",
+	"council:read", "council:configure",
+	"task:read", "task:read:any", "task:write", "task:approve", "task:execute",
 	"admin:users", "admin:roles", "admin:permissions", "admin:*",
 }
 

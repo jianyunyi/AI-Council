@@ -1,4 +1,4 @@
-import type {Task} from './types'
+import type {Task, TaskSummary} from './types'
 
 /* Backend runstate -> the six visible UI states (DESIGN v2 §1.1).
    State is always encoded three ways: color token, symbol, Chinese label. */
@@ -79,9 +79,9 @@ export function planScale(task: Task): string {
   return `${(plan.patches ?? []).length} 文件 · +${add} −${del} · ${commands} 命令`
 }
 
-export function groupTasks(tasks: Task[]): {key: UiStateKey; tasks: Task[]}[] {
+export function groupTasks<T extends {state: string}>(tasks: T[]): {key: UiStateKey; tasks: T[]}[] {
   const order: UiStateKey[] = ['wait', 'exec', 'delib', 'done', 'fail', 'draft', 'cancelled']
-  const groups = new Map<UiStateKey, Task[]>()
+  const groups = new Map<UiStateKey, T[]>()
   for (const task of tasks) {
     const key = uiStateOf(task.state)
     const bucket = groups.get(key) ?? []
@@ -89,4 +89,19 @@ export function groupTasks(tasks: Task[]): {key: UiStateKey; tasks: Task[]}[] {
     groups.set(key, bucket)
   }
   return order.filter(key => groups.has(key)).map(key => ({key, tasks: groups.get(key)!}))
+}
+
+/* Plan scale for list summaries: the list DTO carries patch/command counts
+   instead of the plan body, so line-level diff stats are unavailable here. */
+export function summaryScale(task: TaskSummary): string {
+  if (task.state === 'DRAFT') return '计划未生成'
+  return `${task.patch_count} 文件 · ${task.command_count} 命令`
+}
+
+export const REJECTION_CATEGORY_LABELS: Record<string, string> = {
+  incorrect: '方案不正确',
+  unsafe: '不安全',
+  scope: '范围问题',
+  quality: '质量不足',
+  other: '其他',
 }

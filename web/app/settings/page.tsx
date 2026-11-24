@@ -2,10 +2,10 @@
 
 import {useEffect, useState} from 'react'
 import {usePrefs} from '@/components/theme'
+import {CouncilRolesSection} from '@/components/council-roles'
 import {ConfirmDialog, ConfirmState, showToast} from '@/components/ui'
 import {apiBase} from '@/lib/desktop'
 import {desktopBridge, DesktopStatus} from '@/lib/desktop-bridge'
-import {listTaskIds} from '@/lib/task-index'
 
 function RadioRow<T extends string>({label, value, options, onChange}: {
   label: string
@@ -34,10 +34,8 @@ export default function SettingsPage() {
   const [serviceMessage, setServiceMessage] = useState('')
   const [destination, setDestination] = useState('')
   const [health, setHealth] = useState('')
-  const [indexCount, setIndexCount] = useState(0)
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
 
-  useEffect(() => { setIndexCount(listTaskIds().length) }, [])
   useEffect(() => {
     if (!bridge) return
     bridge.status().then(setService).catch(() => {})
@@ -83,8 +81,7 @@ export default function SettingsPage() {
       window.localStorage.removeItem('aicouncil.taskIndex.v1')
       window.localStorage.removeItem('aicouncil.draft.newTask')
     } catch { /* ignore */ }
-    setIndexCount(0)
-    showToast({message: '本机任务索引与草稿已清空。'})
+    showToast({message: '本机草稿与旧任务索引已清空。'})
   }
 
   return (
@@ -136,15 +133,17 @@ export default function SettingsPage() {
         )}
       </section>
 
+      <CouncilRolesSection />
+
       <section className="card" aria-labelledby="data-title">
         <h2 id="data-title">本机数据</h2>
-        <p className="muted">任务索引保存了 {indexCount} 个任务 ID（服务端没有任务列表接口，指挥中心与任务列表靠它汇总）。清空后，已有任务仍可通过 ID 直接打开。</p>
+        <p className="muted">任务列表已改为服务端接口，本机只保留新建任务的未提交草稿。旧版本留下的本机任务索引（aicouncil.taskIndex.v1）已不再使用，可随草稿一并清空。</p>
         <div className="form-actions">
           <button className="danger" onClick={() => setConfirm({
-            title: '清空本机任务索引与草稿？',
-            description: <p>只删除保存在本机的索引与未提交草稿，不会删除服务端任务。</p>,
+            title: '清空本机草稿与旧索引？',
+            description: <p>只删除保存在本机的未提交草稿与旧任务索引，不会删除服务端任务。</p>,
             confirmLabel: '清空',
-          })}>清空索引与草稿</button>
+          })}>清空草稿与旧索引</button>
         </div>
       </section>
 

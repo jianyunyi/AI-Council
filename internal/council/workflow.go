@@ -3,6 +3,7 @@ package council
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 )
@@ -16,7 +17,28 @@ type Workflow struct {
 	Reviewers []Seat
 	Judge     Seat
 	RedTeam   Seat
+
+	// JudgeFailovers and RedTeamFailovers are tried in order when the
+	// primary seat fails (role assignment sets carry up to two each).
+	JudgeFailovers   []Seat
+	RedTeamFailovers []Seat
+
+	onEvent  EventHook
+	snapshot []byte
 }
+
+// EventHook receives runtime council events (currently council.slot_skipped)
+// for persistence by the caller.
+type EventHook func(eventType string, data map[string]any)
+
+var (
+	// ErrJudgeUnavailable fails a run when the judge primary and every
+	// failover seat errored: there is no decision to execute.
+	ErrJudgeUnavailable = errors.New("judge_unavailable")
+	// ErrRedTeamUnavailable fails a run when a red team is assigned but
+	// every red-team seat errored.
+	ErrRedTeamUnavailable = errors.New("red_team_unavailable")
+)
 
 type Progress func(string) error
 
@@ -34,6 +56,37 @@ func NewWorkflow(engine *Engine, proposers, reviewers []Seat, judge, redTeam Sea
 	return &Workflow{Engine: engine, Proposers: append([]Seat(nil), proposers...), Reviewers: append([]Seat(nil), reviewers...), Judge: judge, RedTeam: redTeam}
 }
 
+// WithFailovers attaches judge/red-team failover seats (in ordinal order).
+func (w *Workflow) WithFailovers(judgeFailovers, redTeamFailovers []Seat) *Workflow {
+	w.JudgeFailovers = append([]Seat(nil), judgeFailovers...)
+	w.RedTeamFailovers = append([]Seat(nil), redTeamFailovers...)
+	return w
+}
+
+// SetEventHook registers the sink for council runtime events.
+func (w *Workflow) SetEventHook(hook EventHook) { w.onEvent = hook }
+
+// SetCouncilSnapshot records the resolved-configuration snapshot the run
+// started with; CouncilSnapshot returns it for persistence.
+func (w *Workflow) SetCouncilSnapshot(snapshot []byte) {
+	w.snapshot = append([]byte(nil), snapshot...)
+}
+
+func (w *Workflow) CouncilSnapshot() []byte { return w.snapshot }
+
+func (w *Workflow) emitSlotSkipped(role string, failure SeatFailure) {
+	if w.onEvent == nil {
+		return
+	}
+	w.onEvent("council.slot_skipped", map[string]any{
+		"role":                role,
+		"ordinal":             failure.Seat.Ordinal,
+		"provider_profile_id": failure.Seat.ProfileID,
+		"model":               failure.Seat.Model,
+		"reason":              failure.Err.Error(),
+	})
+}
+
 func (w *Workflow) Analyze(_ context.Context, requirement string) error {
 	if w == nil || w.Engine == nil {
 		return errors.New("council engine is required")
@@ -41,7 +94,9 @@ func (w *Workflow) Analyze(_ context.Context, requirement string) error {
 	if requirement == "" {
 		return errors.New("requirement is required")
 	}
-	if len(w.Proposers) == 0 || len(w.Reviewers) == 0 || w.Judge.ID == "" || w.RedTeam.ID == "" {
+	// Reviewers and red team are optional under role assignments (0..8 and
+	// 0..1 cardinality); a run needs at least one proposer and a judge.
+	if len(w.Proposers) == 0 || w.Judge.ID == "" {
 		return errors.New("council workflow seats are incomplete")
 	}
 	return nil
@@ -79,7 +134,10 @@ func (w *Workflow) deliberateProgress(ctx context.Context, brief schema.TaskBrie
 			return schema.ExecutionPlan{}, err
 		}
 	}
-	proposals, err := w.Engine.Propose(ctx, brief, w.Proposers)
+	proposals, failures, err := w.Engine.ProposeWithFailures(ctx, brief, w.Proposers)
+	for _, failure := range failures {
+		w.emitSlotSkipped("proposer", failure)
+	}
 	if err != nil {
 		return schema.ExecutionPlan{}, err
 	}
@@ -88,16 +146,23 @@ func (w *Workflow) deliberateProgress(ctx context.Context, brief schema.TaskBrie
 			return schema.ExecutionPlan{}, err
 		}
 	}
-	reviews, err := w.Engine.Review(ctx, proposals, w.Reviewers)
-	if err != nil {
-		return schema.ExecutionPlan{}, err
-	}
-	if progress != nil {
-		if err := progress("REVIEWING"); err != nil {
+	var reviews []Generated[schema.PeerReview]
+	if len(w.Reviewers) > 0 {
+		var reviewFailures []SeatFailure
+		reviews, reviewFailures, err = w.Engine.ReviewWithFailures(ctx, proposals, w.Reviewers)
+		for _, failure := range reviewFailures {
+			w.emitSlotSkipped("reviewer", failure)
+		}
+		if err != nil {
 			return schema.ExecutionPlan{}, err
 		}
+		if progress != nil {
+			if err := progress("REVIEWING"); err != nil {
+				return schema.ExecutionPlan{}, err
+			}
+		}
 	}
-	decision, err := w.Engine.Judge(ctx, proposals, reviews, w.Judge)
+	decision, err := w.judgeWithFailover(ctx, proposals, reviews)
 	if err != nil {
 		return schema.ExecutionPlan{}, err
 	}
@@ -106,16 +171,60 @@ func (w *Workflow) deliberateProgress(ctx context.Context, brief schema.TaskBrie
 			return schema.ExecutionPlan{}, err
 		}
 	}
-	redTeam, err := w.Engine.RedTeam(ctx, decision.Value, w.RedTeam)
-	if err != nil {
-		return schema.ExecutionPlan{}, err
-	}
-	if progress != nil {
-		if err := progress("REDTEAM"); err != nil {
+	var report schema.RedTeamReport
+	redTeamSeats := w.redTeamSeats()
+	if len(redTeamSeats) > 0 {
+		generated, err := w.redTeamWithFailover(ctx, decision.Value, redTeamSeats)
+		if err != nil {
 			return schema.ExecutionPlan{}, err
 		}
+		report = generated.Value
+		if progress != nil {
+			if err := progress("REDTEAM"); err != nil {
+				return schema.ExecutionPlan{}, err
+			}
+		}
 	}
-	return BuildExecutionPlan(decision.Value, redTeam.Value, nil)
+	return BuildExecutionPlan(decision.Value, report, nil)
+}
+
+func (w *Workflow) judgeWithFailover(ctx context.Context, proposals []Generated[schema.Proposal], reviews []Generated[schema.PeerReview]) (Generated[schema.CouncilDecision], error) {
+	seats := append([]Seat{w.Judge}, w.JudgeFailovers...)
+	var lastErr error
+	for i, seat := range seats {
+		decision, err := w.Engine.Judge(ctx, proposals, reviews, seat)
+		if err == nil {
+			return decision, nil
+		}
+		lastErr = err
+		if i+1 < len(seats) {
+			w.emitSlotSkipped("judge", SeatFailure{Seat: seat, Err: err})
+		}
+	}
+	return Generated[schema.CouncilDecision]{}, fmt.Errorf("%w: %v", ErrJudgeUnavailable, lastErr)
+}
+
+func (w *Workflow) redTeamSeats() []Seat {
+	var seats []Seat
+	if w.RedTeam.ID != "" {
+		seats = append(seats, w.RedTeam)
+	}
+	return append(seats, w.RedTeamFailovers...)
+}
+
+func (w *Workflow) redTeamWithFailover(ctx context.Context, decision schema.CouncilDecision, seats []Seat) (Generated[schema.RedTeamReport], error) {
+	var lastErr error
+	for i, seat := range seats {
+		report, err := w.Engine.RedTeam(ctx, decision, seat)
+		if err == nil {
+			return report, nil
+		}
+		lastErr = err
+		if i+1 < len(seats) {
+			w.emitSlotSkipped("red_team", SeatFailure{Seat: seat, Err: err})
+		}
+	}
+	return Generated[schema.RedTeamReport]{}, fmt.Errorf("%w: %v", ErrRedTeamUnavailable, lastErr)
 }
 
 func (w *Workflow) ReviewExecution(_ context.Context, _ string, report schema.VerificationReport) error {

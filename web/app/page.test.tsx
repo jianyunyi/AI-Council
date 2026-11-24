@@ -2,7 +2,7 @@
 import {render,screen} from '@testing-library/react'
 import {describe,expect,it,vi} from 'vitest'
 
-vi.mock('@/lib/api',()=>({getTask:vi.fn(async()=>{throw new Error('not found')})}))
+vi.mock('@/lib/api',()=>({getTask:vi.fn(async()=>{throw new Error('not found')}),listTasks:vi.fn(async()=>({items:[]}))}))
 vi.mock('@/components/app-shell',()=>({useWorkspace:()=>({workspaces:[],currentId:'',setCurrentId:()=>{},reload:()=>{}})}))
 
 import Home from './page'

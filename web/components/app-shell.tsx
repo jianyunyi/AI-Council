@@ -6,10 +6,9 @@ import {createContext, FormEvent, useCallback, useContext, useEffect, useRef, us
 import {AuthProvider, useAuth} from './auth-session'
 import {PrefsProvider, usePrefs} from './theme'
 import {ToastHost} from './ui'
-import {getTask, listWorkspaces, onUnauthorized} from '@/lib/api'
+import {listTasks, listWorkspaces, onUnauthorized} from '@/lib/api'
 import {apiBase} from '@/lib/desktop'
 import {desktopBridge} from '@/lib/desktop-bridge'
-import {listTaskIds} from '@/lib/task-index'
 import type {Workspace} from '@/lib/types'
 
 /* ---------- Current-workspace context (top-bar switcher, §1.2) ---------- */
@@ -194,12 +193,9 @@ function ShellFrame({children}: {children: React.ReactNode}) {
 
   useEffect(() => {
     let active = true
-    const ids = listTaskIds()
-    if (!ids.length) { setPendingCount(0); return }
-    Promise.allSettled(ids.slice(0, 50).map(id => getTask(id))).then(results => {
-      if (!active) return
-      setPendingCount(results.filter(result => result.status === 'fulfilled' && result.value.state === 'AWAITING_APPROVAL').length)
-    })
+    listTasks({state: 'AWAITING_APPROVAL', limit: 200}).then(page => {
+      if (active) setPendingCount(page.items.length)
+    }).catch(() => {})
     return () => { active = false }
   }, [pathname])
 

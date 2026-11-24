@@ -3,11 +3,12 @@ package sqlite
 import "time"
 
 type RunRecord struct {
-	ID        string `gorm:"primaryKey;size:64"`
-	State     string `gorm:"not null;size:32"`
-	Version   uint64 `gorm:"not null"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                string `gorm:"primaryKey;size:64"`
+	State             string `gorm:"not null;size:32"`
+	Version           uint64 `gorm:"not null"`
+	CouncilConfigJSON []byte
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type AuditRecord struct {
@@ -67,18 +68,21 @@ type RunnerWorkspaceRecord struct {
 type TaskRecord struct {
 	ID               string `gorm:"primaryKey;size:64"`
 	OwnerUserID      string `gorm:"size:64;index"`
-	WorkspaceID      string
+	WorkspaceID      string `gorm:"index:idx_tasks_workspace_updated,priority:1"`
+	Title            string `gorm:"size:255"`
+	CreatedBy        string `gorm:"size:64;index:idx_tasks_creator_updated,priority:1"`
+	Origin           string `gorm:"size:32;index;not null;default:direct"`
 	Requirement      string
 	ConstraintsJSON  []byte
 	AcceptanceJSON   []byte
-	State            string
+	State            string `gorm:"index:idx_tasks_state_updated,priority:1"`
 	PlanVersion      int
 	ApprovalHash     string
 	ApprovalGranted  bool
 	PlanJSON         []byte
 	VerificationJSON []byte
 	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	UpdatedAt        time.Time `gorm:"index:idx_tasks_workspace_updated,priority:2;index:idx_tasks_state_updated,priority:2;index:idx_tasks_creator_updated,priority:2"`
 }
 type SeatRecord struct {
 	ID                string `gorm:"primaryKey;size:64"`
@@ -171,6 +175,56 @@ type AccessTokenRecord struct {
 	ExpiresAt time.Time `gorm:"index"`
 	RevokedAt *time.Time
 	CreatedAt time.Time
+}
+
+// TaskRejectionRecord is the durable record of a plan rejection: who rejected
+// which plan version, why (category + free-text reason), and when. Rows are
+// append-only; the task detail reads the newest 20 and the task list reads
+// the newest one per task.
+type TaskRejectionRecord struct {
+	ID              string    `gorm:"primaryKey;size:64"`
+	TaskID          string    `gorm:"not null;size:64;index:idx_task_rejections_task_created,priority:1"`
+	RunID           string    `gorm:"not null;size:64;index"`
+	PlanVersion     int       `gorm:"not null"`
+	ApprovalNonceID *string   `gorm:"size:128"`
+	PlanHash        string    `gorm:"size:128"`
+	RejectedBy      string    `gorm:"not null;size:64"`
+	Category        string    `gorm:"not null;size:32"`
+	Reason          string    `gorm:"not null"`
+	Source          string    `gorm:"not null;size:32;default:task"`
+	CreatedAt       time.Time `gorm:"index:idx_task_rejections_task_created,priority:2"`
+}
+
+// CouncilRoleAssignmentRecord is one council role slot: which provider
+// profile + model fills a role (proposer/reviewer/judge/red_team) at a given
+// ordinal within a scope. Scopes are per account: the global set
+// (scope_id = "") and one optional overriding set per workspace.
+type CouncilRoleAssignmentRecord struct {
+	ID                string `gorm:"primaryKey;size:64"`
+	OwnerUserID       string `gorm:"not null;size:64;uniqueIndex:idx_council_role_slot,priority:1"`
+	ScopeType         string `gorm:"not null;size:16;uniqueIndex:idx_council_role_slot,priority:2"`
+	ScopeID           string `gorm:"not null;size:64;uniqueIndex:idx_council_role_slot,priority:3"`
+	Role              string `gorm:"not null;size:32;uniqueIndex:idx_council_role_slot,priority:4"`
+	Ordinal           int    `gorm:"not null;uniqueIndex:idx_council_role_slot,priority:5"`
+	ProviderProfileID string `gorm:"not null;size:64"`
+	Model             string `gorm:"not null;size:128"`
+	ParamsJSON        []byte
+	Enabled           bool   `gorm:"not null;default:true"`
+	UpdatedBy         string `gorm:"not null;size:64"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+// CouncilRoleAssignmentSetRecord carries the optimistic-concurrency version
+// of one scope's assignment set. A scope with no row has no stored set:
+// resolution falls through to the next scope (or the legacy default).
+type CouncilRoleAssignmentSetRecord struct {
+	OwnerUserID string `gorm:"primaryKey;size:64"`
+	ScopeType   string `gorm:"primaryKey;size:16"`
+	ScopeID     string `gorm:"primaryKey;size:64"`
+	Version     int    `gorm:"not null"`
+	UpdatedBy   string `gorm:"not null;size:64"`
+	UpdatedAt   time.Time
 }
 
 // ApprovalNonceRecord records each one-time approval nonce the Runner has

@@ -210,8 +210,16 @@ func rbacRoutePermission(method, path string) (string, bool) {
 		return "provider:read", true
 	case method == http.MethodPost && path == "/api/v1/providers/keys":
 		return "provider:write", true
+	case path == "/api/v1/council/roles" && (method == http.MethodGet || method == http.MethodPut || method == http.MethodDelete):
+		// Fine-grained checks (council:read / council:configure / workspace
+		// access) happen in the handlers; any authenticated user may reach them.
+		return "", true
+	case method == http.MethodPost && path == "/api/v1/council/roles/validate":
+		return "", true
 	case method == http.MethodPost && path == "/api/v1/tasks":
 		return "task:write", true
+	case method == http.MethodGet && path == "/api/v1/tasks":
+		return "task:read", true
 	case method == http.MethodGet && path == "/api/v1/admin/permissions":
 		return "admin:permissions", true
 	}
@@ -219,6 +227,12 @@ func rbacRoutePermission(method, path string) (string, bool) {
 		id := strings.TrimPrefix(path, "/api/v1/providers/keys/")
 		if id != "" && !strings.Contains(id, "/") {
 			return "provider:write", true
+		}
+	}
+	if method == http.MethodGet && strings.HasPrefix(path, "/api/v1/providers/") {
+		parts := strings.Split(strings.TrimPrefix(path, "/api/v1/providers/"), "/")
+		if len(parts) == 2 && parts[0] != "" && parts[1] == "models" {
+			return "provider:read", true
 		}
 	}
 	if permission, ok := taskRoutePermission(method, path); ok {
@@ -273,6 +287,9 @@ func taskRoutePermission(method, path string) (string, bool) {
 	}
 	if len(parts) == 2 {
 		if method == http.MethodGet && parts[1] == "events" {
+			return "task:read", true
+		}
+		if method == http.MethodGet && parts[1] == "rejections" {
 			return "task:read", true
 		}
 		if method == http.MethodPost {

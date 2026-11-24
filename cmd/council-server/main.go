@@ -19,6 +19,7 @@ import (
 	appTask "github.com/aicouncil/aicouncil/internal/app/task"
 	"github.com/aicouncil/aicouncil/internal/approval"
 	councilengine "github.com/aicouncil/aicouncil/internal/council"
+	"github.com/aicouncil/aicouncil/internal/council/roles"
 	"github.com/aicouncil/aicouncil/internal/observability/metrics"
 	"github.com/aicouncil/aicouncil/internal/provider"
 	"github.com/aicouncil/aicouncil/internal/provider/anthropic"
@@ -123,30 +124,52 @@ func main() {
 	if workflow := configuredWorkflow(api.Metrics()); workflow != nil {
 		api.WithCouncil(workflow)
 	}
+	councilRolesRepo := storage.NewCouncilRolesRepository(db)
+	api.WithCouncilRoles(councilRolesRepo)
 	if providerKeyService != nil && rbacService != nil {
-		api.WithCouncilFactory(func(ctx context.Context, ownerID string) (appTask.CouncilPort, error) {
-			profiles, err := providerKeyService.List(ctx, ownerID)
-			if err != nil {
-				return nil, err
-			}
-			credentials := make(map[string]modelCredential)
-			for _, profile := range profiles {
-				if !profile.HasKey {
-					continue
-				}
-				if _, exists := credentials[profile.Provider]; exists {
-					continue
-				}
-				secret, err := providerKeyService.Secret(ctx, ownerID, profile.ID)
+		api.WithCouncilFactory(func(ctx context.Context, ownerID string, workspaceID string) (appTask.CouncilPort, error) {
+			resolver := roles.NewResolver(councilRolesRepo, func(ctx context.Context, owner string) ([]roles.ProfileInfo, error) {
+				profiles, err := providerKeyService.List(ctx, owner)
 				if err != nil {
 					return nil, err
 				}
-				credentials[profile.Provider] = modelCredential{Key: secret, Model: profile.Model}
+				out := make([]roles.ProfileInfo, 0, len(profiles))
+				for _, profile := range profiles {
+					out = append(out, roles.ProfileInfo{ID: profile.ID, Provider: profile.Provider, Model: profile.Model, HasKey: profile.HasKey})
+				}
+				return out, nil
+			})
+			resolved, err := resolver.Resolve(ctx, ownerID, workspaceID)
+			if err != nil {
+				return nil, err
 			}
-			if len(credentials) == 0 {
+			if len(resolved.Proposers) == 0 || len(resolved.Judge) == 0 {
+				// No keyed profiles at all: keep the environment-configured
+				// workflow, exactly as before role assignments existed.
 				return configuredWorkflow(api.Metrics()), nil
 			}
-			return configuredWorkflowFor(credentials, api.Metrics()), nil
+			workflow, err := councilengine.WorkflowFromResolved(resolved, func(slot roles.ResolvedSlot) (provider.ModelProvider, error) {
+				secret, err := providerKeyService.Secret(ctx, ownerID, slot.ProviderProfileID)
+				if err != nil {
+					return nil, err
+				}
+				switch slot.Provider {
+				case "openai":
+					return provider.WithCostMeter(openai.New(openai.Config{APIKey: secret, Model: slot.Model}), api.Metrics()), nil
+				case "deepseek":
+					return provider.WithCostMeter(deepseek.New(deepseek.Config{APIKey: secret, Model: slot.Model}), api.Metrics()), nil
+				case "anthropic":
+					return provider.WithCostMeter(anthropic.New(anthropic.Config{APIKey: secret, Model: slot.Model}), api.Metrics()), nil
+				}
+				return nil, fmt.Errorf("unsupported provider %q", slot.Provider)
+			})
+			if err != nil {
+				// A stored set that no longer builds into runnable seats fails
+				// loudly; silently substituting another configuration would
+				// run models nobody assigned.
+				return nil, err
+			}
+			return workflow, nil
 		})
 	}
 	var runnerConn *grpc.ClientConn

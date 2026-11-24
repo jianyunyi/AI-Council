@@ -2,7 +2,10 @@
 
 import {useEffect, useRef, useState} from 'react'
 import {ConfirmDialog, ConfirmState} from '@/components/ui'
-import type {Task} from '@/lib/types'
+import {REJECTION_CATEGORY_LABELS} from '@/lib/task-state'
+import type {RejectionCategory, Task} from '@/lib/types'
+
+const REJECTION_OPTIONS = Object.entries(REJECTION_CATEGORY_LABELS) as unknown as readonly (readonly [RejectionCategory, string])[]
 
 const HOLD_MS = 1200
 
@@ -33,7 +36,7 @@ export function ApprovalPanel({task, diffsRead, diffsTotal, canApprove, onPlanOp
   onPlanOpened: () => void
   onApprove: () => Promise<void>
   onExecute: () => Promise<void>
-  onReject: (reason: string) => Promise<void>
+  onReject: (reason: string, category: RejectionCategory) => Promise<void>
 }) {
   const [checks, setChecks] = useState({1: false, 2: false, 3: false, 4: false})
   const [planOpened, setPlanOpened] = useState(false)
@@ -68,11 +71,12 @@ export function ApprovalPanel({task, diffsRead, diffsTotal, canApprove, onPlanOp
 
   useEffect(() => () => { if (timer.current) window.clearInterval(timer.current) }, [])
 
-  async function resolveReject(confirmed: boolean, text: string) {
+  async function resolveReject(confirmed: boolean, text: string, selectValue: string) {
     setConfirm(null)
     if (!confirmed) return
     setBusy('reject')
-    try { await onReject(text) } finally { setBusy('') }
+    const category = (REJECTION_OPTIONS.some(([value]) => value === selectValue) ? selectValue : 'other') as RejectionCategory
+    try { await onReject(text, category) } finally { setBusy('') }
   }
 
   if (!canApprove) {
@@ -145,8 +149,11 @@ export function ApprovalPanel({task, diffsRead, diffsTotal, canApprove, onPlanOp
       <button type="button" className="btn danger reject-btn" disabled={busy === 'reject'}
         onClick={() => setConfirm({
           title: '驳回这个计划？',
-          description: <p>驳回后任务将回到协商阶段重新生成计划。</p>,
+          description: <p>驳回后任务将回到协商阶段重新生成计划。理由与分类会保存到任务的驳回记录中。</p>,
           confirmLabel: '驳回计划',
+          selectLabel: '驳回分类',
+          selectOptions: REJECTION_OPTIONS,
+          selectDefault: 'other',
           textLabel: '驳回理由（至少 5 个字）',
           textPlaceholder: '说明哪里不对、期望怎么改',
           minLength: 5,

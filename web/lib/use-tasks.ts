@@ -1,38 +1,42 @@
 'use client'
 
 import {useCallback, useEffect, useState} from 'react'
-import {getTask} from './api'
-import {forgetTask, listTaskIds} from './task-index'
-import type {Task} from './types'
+import {listTasks} from './api'
+import type {TaskSummary} from './types'
 
-function isNotFound(error: unknown): boolean {
-  const text = JSON.stringify(error ?? '').toLowerCase()
-  return text.includes('not_found') || text.includes('not found') || text.includes('404')
+/* The pre-list-endpoint client kept a localStorage index of task IDs
+   (aicouncil.taskIndex.v1) and hydrated each task by ID. The server is now
+   the source of truth: delete the legacy key once, without importing it. */
+const LEGACY_INDEX_KEY = 'aicouncil.taskIndex.v1'
+let legacyIndexCleaned = false
+
+export function cleanupLegacyTaskIndex() {
+  if (legacyIndexCleaned || typeof window === 'undefined') return
+  legacyIndexCleaned = true
+  try { window.localStorage.removeItem(LEGACY_INDEX_KEY) } catch { /* storage unavailable */ }
 }
 
-/* Hydrates the local task index through GET /tasks/:id (the API has no
-   list endpoint). Entries the server no longer knows are pruned. */
-export function useIndexedTasks() {
-  const [tasks, setTasks] = useState<Task[]>([])
+const MAX_LISTED = 1000
+
+/* Loads the caller's accessible tasks from GET /tasks, walking the keyset
+   cursor so list views are not limited to a single page. */
+export function useTasks() {
+  const [tasks, setTasks] = useState<TaskSummary[]>([])
   const [loading, setLoading] = useState(true)
 
   const reload = useCallback(() => {
-    const ids = listTaskIds()
-    if (!ids.length) {
-      setTasks([])
-      setLoading(false)
-      return
-    }
+    cleanupLegacyTaskIndex()
     setLoading(true)
-    Promise.allSettled(ids.map(id => getTask(id))).then(results => {
-      const found: Task[] = []
-      results.forEach((result, index) => {
-        if (result.status === 'fulfilled') found.push(result.value)
-        else if (isNotFound(result.reason)) forgetTask(ids[index])
+    const collected: TaskSummary[] = []
+    const walk = (cursor?: string): Promise<void> =>
+      listTasks({limit: 200, cursor}).then(page => {
+        collected.push(...page.items)
+        if (page.next_cursor && collected.length < MAX_LISTED) return walk(page.next_cursor)
+        return undefined
       })
-      setTasks(found)
-      setLoading(false)
-    })
+    walk()
+      .then(() => { setTasks(collected); setLoading(false) })
+      .catch(() => { setTasks([]); setLoading(false) })
   }, [])
 
   useEffect(() => { reload() }, [reload])

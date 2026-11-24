@@ -71,8 +71,16 @@ func Open(path string) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := db.AutoMigrate(&RunRecord{}, &AuditRecord{}, &ArtifactRecord{}, &ProviderProfileRecord{}, &WorkspaceRecord{}, &WorkspaceShareRecord{}, &RunnerWorkspaceRecord{}, &TaskRecord{}, &SeatRecord{}, &ModelInvocationRecord{}, &EventRecord{}, &ApprovalRecord{}, &ExecutionRecord{}, &UserRecord{}, &IdentityTokenRecord{}, &OAuthFlowRecord{}, &OAuthIdentityRecord{}, &RoleRecord{}, &UserRoleRecord{}, &PermissionRecord{}, &RolePermissionRecord{}, &AccessTokenRecord{}, &ApprovalNonceRecord{}); err != nil {
+	if err := db.AutoMigrate(&RunRecord{}, &AuditRecord{}, &ArtifactRecord{}, &ProviderProfileRecord{}, &WorkspaceRecord{}, &WorkspaceShareRecord{}, &RunnerWorkspaceRecord{}, &TaskRecord{}, &SeatRecord{}, &ModelInvocationRecord{}, &EventRecord{}, &ApprovalRecord{}, &ExecutionRecord{}, &UserRecord{}, &IdentityTokenRecord{}, &OAuthFlowRecord{}, &OAuthIdentityRecord{}, &RoleRecord{}, &UserRoleRecord{}, &PermissionRecord{}, &RolePermissionRecord{}, &AccessTokenRecord{}, &ApprovalNonceRecord{}, &TaskRejectionRecord{}, &CouncilRoleAssignmentRecord{}, &CouncilRoleAssignmentSetRecord{}); err != nil {
 		return nil, err
+	}
+	// Backfill the task-list columns added after the tasks table shipped:
+	// rows created before title/created_by/origin existed carry empty values.
+	if err := db.Exec("UPDATE task_records SET created_by = owner_user_id WHERE created_by IS NULL OR created_by = ''").Error; err != nil {
+		return nil, fmt.Errorf("backfill task created_by: %w", err)
+	}
+	if err := db.Exec("UPDATE task_records SET origin = 'direct' WHERE origin IS NULL OR origin = ''").Error; err != nil {
+		return nil, fmt.Errorf("backfill task origin: %w", err)
 	}
 	ready = true
 	return db, nil

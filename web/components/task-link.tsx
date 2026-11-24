@@ -4,15 +4,17 @@ import Link from 'next/link'
 import {useRouter} from 'next/navigation'
 import {MouseEvent, useRef} from 'react'
 import {navigateWithTransition} from '@/lib/navigate'
-import type {Task} from '@/lib/types'
 
-export function taskTitle(task: Task): string {
-  return task.requirement.split('\n')[0].trim() || task.id
+type TaskRef = {id: string; title?: string; requirement?: string}
+
+export function taskTitle(task: TaskRef): string {
+  if (task.title?.trim()) return task.title.trim()
+  return (task.requirement ?? '').split('\n')[0].trim() || task.id
 }
 
 /* Row title link: participates in the list <-> detail view transition
    (§4.4) via the shared `task-title` name, applied only during navigation. */
-export function TaskLink({task, className}: {task: Task; className?: string}) {
+export function TaskLink({task, className}: {task: TaskRef; className?: string}) {
   const router = useRouter()
   const titleRef = useRef<HTMLSpanElement>(null)
   const href = `/tasks/${encodeURIComponent(task.id)}`

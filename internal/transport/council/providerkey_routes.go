@@ -20,7 +20,36 @@ func (a *API) ProviderKeyRoutes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/providers/keys", Handler: a.listProviderKeys},
 		{Method: http.MethodPost, Path: "/api/v1/providers/keys", Handler: a.createProviderKey},
 		{Method: http.MethodDelete, Path: "/api/v1/providers/keys/:id", Handler: a.deleteProviderKey},
+		{Method: http.MethodGet, Path: "/api/v1/providers/:id/models", Handler: a.listProviderModels},
 	}
+}
+
+// listProviderModels returns the models a provider profile offers. Profiles
+// are local configuration (no remote catalog is fetched), so the list is the
+// profile's single configured model, always verified.
+func (a *API) listProviderModels(w http.ResponseWriter, r *http.Request) {
+	if a.providerKeys == nil {
+		writeErr(w, http.StatusServiceUnavailable, "provider_keys_unavailable", "provider key storage is unavailable")
+		return
+	}
+	id := pathvar.Vars(r)["id"]
+	profiles, err := a.providerKeys.List(r.Context(), requestOwnerID(r))
+	if err != nil {
+		writeInternal(w)
+		return
+	}
+	for _, profile := range profiles {
+		if profile.ID == id {
+			writeData(w, http.StatusOK, map[string]any{
+				"provider_profile_id": profile.ID,
+				"provider":            profile.Provider,
+				"source":              "profile",
+				"models":              []map[string]any{{"id": profile.Model, "verified": true}},
+			})
+			return
+		}
+	}
+	writeErr(w, http.StatusNotFound, "not_found", "provider profile not found")
 }
 
 func (a *API) listProviderKeys(w http.ResponseWriter, r *http.Request) {

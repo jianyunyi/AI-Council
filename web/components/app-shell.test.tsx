@@ -5,7 +5,7 @@ import {afterEach,describe,expect,it,vi} from 'vitest'
 const auth={status:'authenticated',identity:{subject:'admin'},isDesktop:false,can:((permission:string)=>permission==='admin:permissions') as (permission:string)=>boolean}
 vi.mock('./auth-session',()=>({AuthProvider:({children}:{children:React.ReactNode})=><>{children}</>,useAuth:()=>auth}))
 vi.mock('next/navigation',()=>({usePathname:()=>'/',useRouter:()=>({push:vi.fn()})}))
-vi.mock('@/lib/api',()=>({listWorkspaces:vi.fn(async()=>[]),getTask:vi.fn(async()=>{throw new Error('none')}),onUnauthorized:()=>()=>{}}))
+vi.mock('@/lib/api',()=>({listWorkspaces:vi.fn(async()=>[]),listTasks:vi.fn(async()=>({items:[]})),onUnauthorized:()=>()=>{}}))
 import {AppShell} from './app-shell'
 
 afterEach(()=>{cleanup();auth.can=permission=>permission==='admin:permissions'})

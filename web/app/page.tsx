@@ -4,11 +4,11 @@ import Link from 'next/link'
 import {useWorkspace} from '@/components/app-shell'
 import {TaskLink} from '@/components/task-link'
 import {StatusBadge} from '@/components/ui'
-import {planScale, stageIndexOf, STAGES, uiStateOf} from '@/lib/task-state'
-import {useIndexedTasks} from '@/lib/use-tasks'
+import {stageIndexOf, STAGES, summaryScale, uiStateOf} from '@/lib/task-state'
+import {useTasks} from '@/lib/use-tasks'
 
 export default function Home() {
-  const {tasks, loading} = useIndexedTasks()
+  const {tasks, loading} = useTasks()
   const {workspaces} = useWorkspace()
   const rootOf = (id?: string) => workspaces.find(workspace => workspace.id === id)?.root ?? (id ? id.slice(0, 8) : '—')
 
@@ -58,7 +58,7 @@ export default function Home() {
       {!loading && tasks.length === 0 && (
         <section className="card">
           <h2>还没有任务</h2>
-          <p className="muted">新建一个任务，让多个模型独立提案、匿名互审、裁判决策，再由你批准后执行。本机任务索引保存在当前浏览器中；任务详情可通过任务 ID 直接打开。</p>
+          <p className="muted">新建一个任务，让多个模型独立提案、匿名互审、裁判决策，再由你批准后执行。</p>
           <p><Link className="btn primary" href="/tasks/new">＋ 新建任务</Link></p>
         </section>
       )}
@@ -71,7 +71,7 @@ export default function Home() {
             <div className="queue-item" key={task.id}>
               <div className="queue-item__main">
                 <TaskLink task={task} />
-                <div className="queue-item__meta">{rootOf(task.workspace_id)} · {planScale(task)} · 计划 v{task.plan_version ?? '—'}</div>
+                <div className="queue-item__meta">{rootOf(task.workspace_id)} · {summaryScale(task)} · 计划 v{task.plan_version ?? '—'}</div>
               </div>
               <StatusBadge state={task.state} size="md" />
               <Link className="btn small primary" href={`/tasks/${encodeURIComponent(task.id)}`}>去批准</Link>
@@ -105,13 +105,13 @@ export default function Home() {
           <div className="queue-item" key={task.id}>
             <div className="queue-item__main">
               <TaskLink task={task} />
-              <div className="queue-item__meta">{rootOf(task.workspace_id)} · {planScale(task)}</div>
+              <div className="queue-item__meta">{rootOf(task.workspace_id)} · {summaryScale(task)}</div>
             </div>
             <StatusBadge state={task.state} />
             <Link className="btn small secondary" href={`/tasks/${encodeURIComponent(task.id)}`}>查看</Link>
           </div>
         ))}
-        {tasks.length > 0 && <p className="small muted">共 {tasks.length} 个任务保存在本机索引中。<Link href="/tasks">查看全部</Link></p>}
+        {tasks.length > 0 && <p className="small muted">共 {tasks.length} 个任务。<Link href="/tasks">查看全部</Link></p>}
       </section>
     </div>
   )

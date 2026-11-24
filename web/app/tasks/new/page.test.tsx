@@ -8,6 +8,7 @@ const api=vi.hoisted(()=>({
   listWorkspaces:vi.fn(),
   startTask:vi.fn(),
   getTask:vi.fn(async()=>{throw new Error('not found')}),
+  listTasks:vi.fn(async()=>({items:[]})),
   onUnauthorized:()=>()=>{},
 }))
 const push=vi.hoisted(()=>vi.fn())
