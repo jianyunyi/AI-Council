@@ -71,6 +71,7 @@ type GroupJobRecord struct {
 	GroupID        string     `gorm:"size:64;not null;index:idx_job_claim,priority:1"`
 	RequirementID  string     `gorm:"size:64;not null;index"`
 	Kind           string     `gorm:"size:32;not null;index"`
+	TargetID       string     `gorm:"size:64"` // P7: review jobs carry the decision id
 	State          string     `gorm:"size:16;not null;index:idx_job_claim,priority:2"` // queued|running|done|failed|cancelled
 	SerialKey      string     `gorm:"size:128;not null;index"`
 	Priority       int        `gorm:"not null;default:0"`
