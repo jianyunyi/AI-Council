@@ -294,6 +294,11 @@ func (a *API) Routes() []rest.Route {
 			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id/requirements/:rid", Handler: a.getGroupRequirement},
 			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/retry", Handler: a.retryGroupRequirement},
 			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/cancel", Handler: a.cancelGroupRequirement},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/review", Handler: a.startGroupReview},
+			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id/requirements/:rid/review", Handler: a.getGroupReview},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/review/decision", Handler: a.submitGroupReviewDecision},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/review/force-close", Handler: a.forceCloseGroupReview},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/revise", Handler: a.reviseGroupRequirement},
 			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id/events", Handler: a.groupEvents},
 		)
 	}
