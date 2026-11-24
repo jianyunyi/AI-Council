@@ -77,7 +77,15 @@ type TaskRecord struct {
 	Title            string `gorm:"size:255"`
 	CreatedBy        string `gorm:"size:64;index:idx_tasks_creator_updated,priority:1"`
 	Origin           string `gorm:"size:32;index;not null;default:direct"`
-	Requirement      string
+	// ExternalKey is the P8 idempotency key for group push-down tasks
+	// ("pd:<requirement>:<attempt>"); NULL for direct tasks. SQLite
+	// unique indexes treat NULLs as distinct, so direct tasks (NULL)
+	// never collide.
+	ExternalKey *string `gorm:"size:120;uniqueIndex:uq_tasks_external_key"`
+	// GroupRequirementID back-links a push-down task to its group
+	// requirement ("" for direct tasks).
+	GroupRequirementID string `gorm:"size:64;not null;default:'';index"`
+	Requirement        string
 	ConstraintsJSON  []byte
 	AcceptanceJSON   []byte
 	State            string `gorm:"index:idx_tasks_state_updated,priority:1"`
