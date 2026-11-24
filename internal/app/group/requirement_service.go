@@ -199,7 +199,8 @@ func decodeReqCursor(cursor string) (time.Time, string, error) {
 }
 
 func (s *Service) ListRequirements(ctx context.Context, a Actor, gid string, in ListRequirementsInput) (*RequirementPage, error) {
-	if _, _, err := s.access(ctx, a, gid); err != nil {
+	_, me, err := s.access(ctx, a, gid)
+	if err != nil {
 		return nil, err
 	}
 	if s.reqRepo == nil {
@@ -230,6 +231,7 @@ func (s *Service) ListRequirements(ctx context.Context, a Actor, gid string, in 
 		if err != nil {
 			return nil, err
 		}
+		v.AllowedActions = s.allowedActions(ctx, a, me, &recs[i])
 		page.Items = append(page.Items, v)
 	}
 	if more && len(recs) > 0 {
@@ -239,7 +241,8 @@ func (s *Service) ListRequirements(ctx context.Context, a Actor, gid string, in 
 }
 
 func (s *Service) GetRequirement(ctx context.Context, a Actor, gid, rid string) (*RequirementView, error) {
-	if _, _, err := s.access(ctx, a, gid); err != nil {
+	_, me, err := s.access(ctx, a, gid)
+	if err != nil {
 		return nil, err
 	}
 	if s.reqRepo == nil {
@@ -256,6 +259,7 @@ func (s *Service) GetRequirement(ctx context.Context, a Actor, gid, rid string) 
 	if err != nil {
 		return nil, err
 	}
+	v.AllowedActions = s.allowedActions(ctx, a, me, rec)
 	return &v, nil
 }
 
@@ -333,7 +337,7 @@ func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reas
 		return nil, errForbidden
 	}
 	switch rec.State {
-	case ReqDispatched, ReqProposing, ReqProposed:
+	case ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed:
 	default:
 		return nil, errRequirementState
 	}
@@ -341,7 +345,7 @@ func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reas
 	_, err = s.mutate(ctx, gid, "requirement.state_changed", func(tx *sqlite.GroupRepo, at time.Time) (any, error) {
 		txReq := sqlite.NewRequirementRepo(tx.DB())
 		ok, err := txReq.UpdateRequirementState(ctx, rid,
-			[]string{ReqDispatched, ReqProposing, ReqProposed}, rec.Version, map[string]any{
+			[]string{ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed}, rec.Version, map[string]any{
 				"state": ReqCancelled, "cancelled_by_user_id": a.UserID,
 				"cancelled_by_member_id": memberIDOf(m), "cancel_reason": truncate(reason, 2000),
 				"terminal_at": now, "state_changed_at": now, "updated_at": now,
@@ -358,6 +362,11 @@ func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reas
 		return RequirementEventData{RequirementID: rid, State: ReqCancelled, Version: rec.Version + 1}, nil
 	})
 	if err != nil {
+		return nil, err
+	}
+	// P7: cancelling mid-review closes the open round as superseded —
+	// outstanding decisions are withdrawn and verdicts stay hidden.
+	if err := s.CloseOpenReviewAfterCancel(ctx, gid, rid); err != nil {
 		return nil, err
 	}
 	s.record(ctx, a.UserID, "group.requirement_cancelled", gid, "group_requirement", rid, map[string]any{"reason": truncate(reason, 200)})

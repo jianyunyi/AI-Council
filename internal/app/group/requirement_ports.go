@@ -30,6 +30,11 @@ const (
 	ReqProposalFailed = "proposal_failed"
 	ReqFailed         = "failed"
 	ReqCancelled      = "cancelled"
+	// P7 review-round states.
+	ReqInReview         = "in_review"
+	ReqChangesRequested = "changes_requested"
+	ReqReviewPassed     = "review_passed"
+	ReqRejected         = "rejected"
 
 	// Failure codes (stable strings; the UI switches on them).
 	FailBudgetExhausted = "budget_exhausted"
@@ -37,6 +42,7 @@ const (
 	FailProviderError   = "provider_unavailable"
 	FailAssigneeGone    = "assignee_unavailable"
 	FailInternal        = "internal"
+	FailReviewRejected  = "review_rejected" // P7: terminal reason for rejected
 
 	// Message kinds for requirement cards (P5 kinds: text; P7 adds result).
 	KindDispatchCard = "dispatch_card"
@@ -44,10 +50,12 @@ const (
 
 	// Job kinds.
 	JobKindPropose = "propose"
+	JobKindReview  = "review" // P7: TargetID carries the decision id
 
 	// Invocation purposes (budget ledger).
 	PurposePropose       = "propose"
 	PurposeProposeRepair = "propose_repair"
+	PurposeReview        = "review" // P7
 )
 
 var (
@@ -115,11 +123,14 @@ type RequirementView struct {
 	Version           int           `json:"version"`
 	Proposal          *ProposalView `json:"proposal,omitempty"`
 	Job               *JobView      `json:"job,omitempty"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
-	StateChangedAt    time.Time     `json:"state_changed_at"`
-	ProposedAt        *time.Time    `json:"proposed_at,omitempty"`
-	TerminalAt        *time.Time    `json:"terminal_at,omitempty"`
+	// AllowedActions is computed per requesting actor (P7): start_review,
+	// submit_decision, force_close, revise, retry, cancel.
+	AllowedActions []string   `json:"allowed_actions,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	StateChangedAt time.Time  `json:"state_changed_at"`
+	ProposedAt     *time.Time `json:"proposed_at,omitempty"`
+	TerminalAt     *time.Time `json:"terminal_at,omitempty"`
 }
 
 type ProposalView struct {

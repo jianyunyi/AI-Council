@@ -50,7 +50,7 @@ func (w *ProposalWorker) Run(ctx context.Context) {
 			if job == nil {
 				break
 			}
-			if err := w.svc.runProposalJob(ctx, w.id, job); err != nil && ctx.Err() == nil {
+			if err := w.svc.runJob(ctx, w.id, job); err != nil && ctx.Err() == nil {
 				log.Printf("group worker: job %s: %v", job.ID, err)
 			}
 		}

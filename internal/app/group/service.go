@@ -815,10 +815,10 @@ type MessagePage struct {
 
 func checkIntent(intent string) error {
 	switch intent {
-	case "", "chat", "dispatch":
+	case "", "chat", "dispatch", "review":
 		return nil
-	case "review", "result_review":
-		return errIntentUnavailable // enabled in P7
+	case "result_review":
+		return errIntentUnavailable // enabled in P8
 	default:
 		return errInvalidIntent
 	}
@@ -908,7 +908,13 @@ func (s *Service) PostMessage(ctx context.Context, a Actor, gid string, in PostM
 	if err := checkIntent(in.Intent); err != nil {
 		return nil, err
 	}
-	if in.RequirementID != "" {
+	// P7: only a review message may carry a requirement id, and a review
+	// message must carry one. Chat/dispatch messages keep the P6 rule.
+	if in.Intent == "review" {
+		if in.RequirementID == "" {
+			return nil, errRequirementRequired
+		}
+	} else if in.RequirementID != "" {
 		return nil, errRequirementUnavail
 	}
 	body := strings.TrimRight(in.BodyMD, " \t\r\n")
@@ -959,6 +965,24 @@ func (s *Service) PostMessage(ctx context.Context, a Actor, gid string, in PostM
 			}
 		}
 	}
+	// P7 review: same validate-before-write discipline as dispatch. The
+	// mentioned members (humans and AIs) become the round's reviewers;
+	// rvPrepareReview checks membership, roles, the assignee exclusion
+	// and the policy's reviewer-count bounds.
+	var reviewPlan *reviewStartPlan
+	if in.Intent == "review" {
+		if s.provider == nil || s.reqRepo == nil {
+			return nil, errIntentUnavailable
+		}
+		if m.GroupRole != RoleOwner && m.GroupRole != RoleOperator && !a.ManageAny {
+			return nil, errReviewForbidden
+		}
+		plan, err := s.rvPrepareReview(ctx, a, g, m, in.RequirementID, reviewerIDsFromMentions(mentions, m.ID))
+		if err != nil {
+			return nil, err
+		}
+		reviewPlan = plan
+	}
 	idem := gid + ":" + m.ID + ":" + in.ClientMsgID
 
 	mu := s.lock(gid)
@@ -969,6 +993,7 @@ func (s *Service) PostMessage(ctx context.Context, a Actor, gid string, in PostM
 	var ev Event
 	var extra []Event
 	var reqIDs []string
+	reviewStarted := false
 	dup := false
 	err = s.repo.Tx(ctx, func(tx *sqlite.GroupRepo) error {
 		existing, err := tx.FindMessageByIdem(ctx, idem)
@@ -990,6 +1015,9 @@ func (s *Service) PostMessage(ctx context.Context, a Actor, gid string, in PostM
 		rec := &sqlite.ChatMessageRecord{ID: msgID, GroupID: gid, Seq: msgSeq, AuthorType: AuthorUser,
 			AuthorMemberID: m.ID, Kind: KindText, BodyMD: body, ReplyToMessageID: in.ReplyToMessageID,
 			ClientMsgID: in.ClientMsgID, IdemKey: strPtr(idem), Status: "final", CreatedAt: at}
+		if reviewPlan != nil {
+			rec.RequirementID = in.RequirementID // the review anchor message
+		}
 		if err := tx.CreateMessage(ctx, rec); err != nil {
 			return err
 		}
@@ -1012,6 +1040,14 @@ func (s *Service) PostMessage(ctx context.Context, a Actor, gid string, in PostM
 			}
 			reqIDs, extra = ids, cardEvs
 		}
+		if reviewPlan != nil {
+			evs, err := s.rvStartReviewTx(ctx, tx, g, a.UserID, m.ID, msgID, reviewPlan, at)
+			if err != nil {
+				return err
+			}
+			extra = append(extra, evs...)
+			reviewStarted = true
+		}
 		return nil
 	})
 	if err != nil {
@@ -1027,6 +1063,10 @@ func (s *Service) PostMessage(ctx context.Context, a Actor, gid string, in PostM
 		for _, rid := range reqIDs {
 			s.record(ctx, a.UserID, "group.requirement_dispatched", gid, "group_requirement", rid, map[string]any{
 				"anchor_message_id": msgID})
+		}
+		if reviewStarted {
+			s.record(ctx, a.UserID, "group.review_started", gid, "group_requirement", in.RequirementID, map[string]any{
+				"round_id": reviewPlan.roundID, "via": "chat"})
 		}
 	}
 	return &PostMessageResult{Message: view, Duplicate: dup}, nil

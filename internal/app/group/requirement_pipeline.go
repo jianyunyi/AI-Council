@@ -33,6 +33,18 @@ import (
 //     the provider again. "proposing" is a resumable state here (a fresh
 //     job after a crash or a retry re-enters generation).
 
+// runJob dispatches one claimed job by kind (propose in P6, review in
+// P7). Unknown kinds drain quietly so a stale binary never wedges the
+// queue.
+func (s *Service) runJob(ctx context.Context, workerID string, job *sqlite.GroupJobRecord) error {
+	switch job.Kind {
+	case JobKindReview:
+		return s.runReviewJob(ctx, workerID, job)
+	default:
+		return s.runProposalJob(ctx, workerID, job)
+	}
+}
+
 // runProposalJob executes one claimed job to completion (or requeue).
 func (s *Service) runProposalJob(ctx context.Context, workerID string, job *sqlite.GroupJobRecord) error {
 	req, err := s.reqRepo.GetRequirement(ctx, job.RequirementID)
@@ -95,9 +107,10 @@ func (s *Service) generateProposal(ctx context.Context, workerID string, job *sq
 		_ = json.Unmarshal(req.AcceptanceJSON, &acceptance)
 	}
 
+	priorFeedback := s.priorReviewFeedback(ctx, req)
 	var repair *repairContext
 	for attempt := 0; attempt < 2; attempt++ {
-		msgs := buildProposalMessages(req.Title, req.BodyMD, acceptance, contextLines, repair)
+		msgs := buildProposalMessages(req.Title, req.BodyMD, acceptance, contextLines, repair, priorFeedback)
 		estInput := estimateTokens(msgs)
 		if err := s.checkBudget(ctx, g, req.ID, info.Model, estInput); err != nil {
 			if strings.HasPrefix(err.Error(), FailBudgetExhausted) {
@@ -132,16 +145,23 @@ func (s *Service) generateProposal(ctx context.Context, workerID string, job *sq
 }
 
 // invoke performs one provider call and writes its ledger row either way.
+// The call is attributed to the requirement's assignee model.
 func (s *Service) invoke(ctx context.Context, job *sqlite.GroupJobRecord, req *sqlite.GroupRequirementRecord, info AIModelInfo, msgs []InvokeMessage, purpose string) (InvokeResult, string, error) {
+	return s.invokeAs(ctx, job, req, req.AssigneeAIModelID, info, msgs, purpose)
+}
+
+// invokeAs is invoke with an explicit calling model — P7 review jobs
+// invoke the REVIEWER's model, not the requirement assignee's.
+func (s *Service) invokeAs(ctx context.Context, job *sqlite.GroupJobRecord, req *sqlite.GroupRequirementRecord, aiModelID string, info AIModelInfo, msgs []InvokeMessage, purpose string) (InvokeResult, string, error) {
 	start := s.now()
 	res, err := s.provider.Generate(ctx, InvokeRequest{
-		AIModelID: req.AssigneeAIModelID, Model: info.Model,
+		AIModelID: aiModelID, Model: info.Model,
 		Messages: msgs, JSONMode: true, Temperature: 0.2,
 	})
 	latency := s.now().Sub(start).Milliseconds()
 	inv := &sqlite.GroupModelInvocationRecord{
 		ID: newID("inv_"), GroupID: req.GroupID, RequirementID: req.ID, JobID: job.ID,
-		AIModelID: req.AssigneeAIModelID, Model: info.Model, Purpose: purpose,
+		AIModelID: aiModelID, Model: info.Model, Purpose: purpose,
 		Status: "ok", LatencyMS: latency, CreatedAt: s.now(),
 	}
 	if err != nil {
@@ -525,6 +545,12 @@ func (s *Service) requeueExpired(ctx context.Context) error {
 	}
 	for i := range rows {
 		if rows[i].State != "failed" {
+			continue
+		}
+		if rows[i].Kind == JobKindReview {
+			// P7: an exhausted review job errors its decision so the
+			// round can still close; the requirement itself is untouched.
+			_ = s.expireReviewJob(ctx, &rows[i])
 			continue
 		}
 		req, err := s.reqRepo.GetRequirement(ctx, rows[i].RequirementID)

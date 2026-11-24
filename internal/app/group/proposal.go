@@ -25,8 +25,9 @@ const proposalSystemPrompt = "You are an AI engineer in a shared planning group.
 // buildProposalMessages assembles [system, ...context, user]. Context
 // messages are rendered as plain transcript lines inside the user message
 // (single user turn keeps provider compatibility); repair, when non-nil,
-// appends the failed reply and the fix instruction.
-func buildProposalMessages(reqTitle, reqBody string, acceptance []string, contextLines []string, repair *repairContext) []InvokeMessage {
+// appends the failed reply and the fix instruction. priorFeedback (P7)
+// carries the previous round's review feedback on revision runs.
+func buildProposalMessages(reqTitle, reqBody string, acceptance []string, contextLines []string, repair *repairContext, priorFeedback string) []InvokeMessage {
 	var b strings.Builder
 	b.WriteString("Requirement: ")
 	b.WriteString(reqTitle)
@@ -38,6 +39,10 @@ func buildProposalMessages(reqTitle, reqBody string, acceptance []string, contex
 			b.WriteString("\n- ")
 			b.WriteString(a)
 		}
+	}
+	if priorFeedback != "" {
+		b.WriteString("\n\nReviewer feedback on your previous proposal (address every point):\n")
+		b.WriteString(priorFeedback)
 	}
 	if len(contextLines) > 0 {
 		b.WriteString("\n\nRecent group discussion (oldest first):\n")
