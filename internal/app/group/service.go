@@ -46,21 +46,23 @@ const (
 )
 
 type Service struct {
-	repo   *sqlite.GroupRepo
-	ws     WorkspaceProvisioner
-	models AIModelDirectory
-	users  UserDirectory
-	audit  AuditSink
-	hub    *Hub
-	now    func() time.Time
-	locks  sync.Map // groupID -> *sync.Mutex
+	repo     *sqlite.GroupRepo
+	reqRepo  *sqlite.RequirementRepo // P6; nil disables dispatch
+	ws       WorkspaceProvisioner
+	models   AIModelDirectory
+	provider ProviderInvoker // P6; nil disables dispatch
+	users    UserDirectory
+	audit    AuditSink
+	hub      *Hub
+	now      func() time.Time
+	locks    sync.Map // groupID -> *sync.Mutex
 }
 
-func NewService(repo *sqlite.GroupRepo, ws WorkspaceProvisioner, models AIModelDirectory, users UserDirectory, audit AuditSink, hub *Hub) *Service {
+func NewService(repo *sqlite.GroupRepo, reqRepo *sqlite.RequirementRepo, ws WorkspaceProvisioner, models AIModelDirectory, provider ProviderInvoker, users UserDirectory, audit AuditSink, hub *Hub) *Service {
 	if hub == nil {
 		hub = NewHub(256)
 	}
-	return &Service{repo: repo, ws: ws, models: models, users: users, audit: audit, hub: hub,
+	return &Service{repo: repo, reqRepo: reqRepo, ws: ws, models: models, provider: provider, users: users, audit: audit, hub: hub,
 		now: func() time.Time { return time.Now().UTC() }}
 }
 
@@ -813,10 +815,10 @@ type MessagePage struct {
 
 func checkIntent(intent string) error {
 	switch intent {
-	case "", "chat":
+	case "", "chat", "dispatch":
 		return nil
-	case "dispatch", "review", "result_review":
-		return errIntentUnavailable // enabled in P6/P7
+	case "review", "result_review":
+		return errIntentUnavailable // enabled in P7
 	default:
 		return errInvalidIntent
 	}
@@ -933,6 +935,30 @@ func (s *Service) PostMessage(ctx context.Context, a Actor, gid string, in PostM
 	if err != nil {
 		return nil, err
 	}
+	// P6 dispatch: validate everything that can fail BEFORE the message is
+	// written, so a rejected dispatch posts nothing. Only owners/operators
+	// (or group:manage:any holders) may dispatch, and only to AI members
+	// that are active with a ready workspace. PostMessage is human-only —
+	// the author is the caller's own member row — so AI-authored dispatch
+	// is inert by construction.
+	var specs []dispatchTarget
+	if in.Intent == "dispatch" {
+		if s.provider == nil || s.reqRepo == nil {
+			return nil, errIntentUnavailable
+		}
+		if m.GroupRole != RoleOwner && m.GroupRole != RoleOperator && !a.ManageAny {
+			return nil, errDispatchForbidden
+		}
+		specs = extractCallSpecs(mentions, authors)
+		if len(specs) == 0 {
+			return nil, errNoCallMentions
+		}
+		for _, spec := range specs {
+			if _, _, err := s.validateAssignee(ctx, spec.MemberID, authors); err != nil {
+				return nil, err
+			}
+		}
+	}
 	idem := gid + ":" + m.ID + ":" + in.ClientMsgID
 
 	mu := s.lock(gid)
@@ -941,6 +967,8 @@ func (s *Service) PostMessage(ctx context.Context, a Actor, gid string, in PostM
 	at := s.now()
 	var view MessageView
 	var ev Event
+	var extra []Event
+	var reqIDs []string
 	dup := false
 	err = s.repo.Tx(ctx, func(tx *sqlite.GroupRepo) error {
 		existing, err := tx.FindMessageByIdem(ctx, idem)
@@ -977,6 +1005,13 @@ func (s *Service) PostMessage(ctx context.Context, a Actor, gid string, in PostM
 			return err
 		}
 		ev = e
+		if len(specs) > 0 {
+			ids, cardEvs, err := s.dispatchFanout(ctx, tx, g, m, msgID, body, specs, authors, at)
+			if err != nil {
+				return err
+			}
+			reqIDs, extra = ids, cardEvs
+		}
 		return nil
 	})
 	if err != nil {
@@ -984,8 +1019,15 @@ func (s *Service) PostMessage(ctx context.Context, a Actor, gid string, in PostM
 	}
 	if !dup {
 		s.hub.Publish(gid, ev)
+		for _, e := range extra {
+			s.hub.Publish(gid, e)
+		}
 		s.record(ctx, a.UserID, "group.message_created", gid, "chat_message", view.ID, map[string]any{
 			"seq": view.Seq, "mentions": len(mentions)})
+		for _, rid := range reqIDs {
+			s.record(ctx, a.UserID, "group.requirement_dispatched", gid, "group_requirement", rid, map[string]any{
+				"anchor_message_id": msgID})
+		}
 	}
 	return &PostMessageResult{Message: view, Duplicate: dup}, nil
 }

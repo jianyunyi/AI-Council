@@ -26,8 +26,10 @@ func InstallGroups(a *API) *group.Service {
 	}
 	svc := group.NewService(
 		sqlite.NewGroupRepo(a.db),
+		nil, // P6 requirement repo + provider are wired in requirement_wiring.go (InstallRequirementPipeline)
 		&groupWorkspaceAdapter{a: a},
 		group.AIModelServiceDirectory{Svc: a.aiModels},
+		nil,
 		group.GormUserDirectory{DB: a.db},
 		groupAuditAdapter{db: a.db},
 		group.NewHub(256),

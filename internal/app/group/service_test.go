@@ -128,7 +128,7 @@ func newEnv(t *testing.T) *env {
 		"u_bob":   {ID: "u_bob", Username: "bob", DisplayName: "Bob"},
 		"u_eve":   {ID: "u_eve", Username: "eve", DisplayName: "Eve"},
 	}
-	svc := NewService(store.NewGroupRepo(db), ws, models, users, audit, NewHub(64))
+	svc := NewService(store.NewGroupRepo(db), nil, ws, models, nil, users, audit, NewHub(64))
 	clock := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return clock }
 	return &env{svc: svc, ws: ws, audit: audit, clock: &clock}

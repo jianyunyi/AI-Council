@@ -100,7 +100,7 @@ var (
 	errHumanApproval      = newErr(http.StatusUnprocessableEntity, "human_approval_required", "require_human_approval is locked to true in v1")
 	errInvalidBody        = newErr(http.StatusUnprocessableEntity, "invalid_body", "body_md must be 1..16000 characters")
 	errInvalidClientMsgID = newErr(http.StatusUnprocessableEntity, "invalid_client_msg_id", "client_msg_id must be 1..64 characters")
-	errIntentUnavailable  = newErr(http.StatusUnprocessableEntity, "intent_not_available", "dispatch and review intents are not available yet")
+	errIntentUnavailable  = newErr(http.StatusUnprocessableEntity, "intent_not_available", "this intent is not available yet")
 	errInvalidIntent      = newErr(http.StatusUnprocessableEntity, "invalid_intent", "intent must be chat|dispatch|review|result_review")
 	errRequirementUnavail = newErr(http.StatusUnprocessableEntity, "requirement_not_available", "requirements are not available yet")
 	errReplyNotFound      = newErr(http.StatusUnprocessableEntity, "reply_not_found", "reply_to_message_id not found in this group")
