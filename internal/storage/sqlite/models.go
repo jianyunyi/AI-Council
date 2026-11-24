@@ -51,6 +51,11 @@ type WorkspaceRecord struct {
 	IsGit         bool
 	Dirty         bool
 	PolicyJSON    []byte
+	// Kind: "standard" | "model_private" | "group_shared". See internal/app/wskind.
+	Kind string `gorm:"size:16;not null;default:standard;index"`
+	// Archived hides the workspace from API listings without deleting it
+	// (used when an AI model is disabled; reactivation unarchives).
+	Archived bool `gorm:"not null;default:false"`
 }
 type WorkspaceShareRecord struct {
 	WorkspaceID string    `gorm:"primaryKey;size:64;uniqueIndex:idx_workspace_share_user,priority:1;index"`
@@ -226,6 +231,41 @@ type CouncilRoleAssignmentSetRecord struct {
 	UpdatedBy   string `gorm:"not null;size:64"`
 	UpdatedAt   time.Time
 }
+
+// AIModelRecord is an admin-enabled (provider profile, model) pair with a
+// mention handle. The handle is globally unique: group chats address models
+// by @handle, so it must be unambiguous across the deployment.
+type AIModelRecord struct {
+	ID                string `gorm:"primaryKey;size:64"`
+	ProviderProfileID string `gorm:"size:64;not null;uniqueIndex:uq_ai_models_profile_model,priority:1"`
+	Model             string `gorm:"size:200;not null;uniqueIndex:uq_ai_models_profile_model,priority:2"`
+	Handle            string `gorm:"size:32;not null;uniqueIndex:uq_ai_models_handle"`
+	DisplayName       string `gorm:"size:120;not null"`
+	DefaultParamsJSON []byte
+	Status            string `gorm:"size:16;not null;index"` // active|disabled|degraded
+	CreatedBy         string `gorm:"size:64;not null"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+func (AIModelRecord) TableName() string { return "ai_models" }
+
+// ModelWorkspaceRecord binds an AI model to its private workspace and tracks
+// Runner registration for that workspace.
+type ModelWorkspaceRecord struct {
+	AIModelID string `gorm:"primaryKey;size:64"`
+	WorkspaceID string `gorm:"size:64;not null;uniqueIndex:uq_model_workspaces_ws"`
+	// RunnerWorkspaceID is the ID the Runner knows the workspace by (in this
+	// codebase the workspace ID itself); empty until registration succeeds.
+	RunnerWorkspaceID string `gorm:"size:64;not null;default:''"`
+	Status            string `gorm:"size:16;not null;index"` // provisioning|ready|error|archived
+	LastError         string `gorm:"not null;default:''"`
+	Attempts          int    `gorm:"not null;default:0"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+func (ModelWorkspaceRecord) TableName() string { return "model_workspaces" }
 
 // ApprovalNonceRecord records each one-time approval nonce the Runner has
 // consumed, so a signed execution request cannot be replayed with a new
