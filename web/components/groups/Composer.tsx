@@ -38,10 +38,16 @@ export default function Composer({
   replyTo?: { id: string; preview: string } | null
   onCancelReply?: () => void
   /** P7: when set, the next send opens a review round on this requirement
-   * with the @mentioned members as reviewers. */
-  reviewTarget?: { requirementId: string; title: string } | null
+   * with the @mentioned members as reviewers. P9: stage 'result' opens a
+   * RESULT review (intent result_review) instead. */
+  reviewTarget?: { requirementId: string; title: string; stage?: 'proposal' | 'result' } | null
   onClearReviewTarget?: () => void
-  onSend: (body: string, replyToId?: string, intent?: 'chat' | 'dispatch' | 'review', requirementId?: string) => Promise<void>
+  onSend: (
+    body: string,
+    replyToId?: string,
+    intent?: 'chat' | 'dispatch' | 'review' | 'result_review',
+    requirementId?: string,
+  ) => Promise<void>
   onAddAiMember?: (aiModelId: string) => Promise<void>
   /** P6: owners/operators may flip the composer into dispatch mode. */
   canDispatch?: boolean
@@ -124,7 +130,7 @@ export default function Composer({
     setError('')
     try {
       if (reviewTarget) {
-        await onSend(body, undefined, 'review', reviewTarget.requirementId)
+        await onSend(body, undefined, reviewTarget.stage === 'result' ? 'result_review' : 'review', reviewTarget.requirementId)
         onClearReviewTarget?.()
       } else {
         await onSend(body, replyTo?.id, dispatchMode ? 'dispatch' : undefined)
@@ -159,7 +165,11 @@ export default function Composer({
       )}
       {reviewTarget && (
         <div className="composer-reply">
-          <span className="muted">评审模式：发送后将开启对需求「{reviewTarget.title}」的评审，@ 到的成员为评审者</span>
+          <span className="muted">
+            {reviewTarget.stage === 'result'
+              ? `结果评审模式：发送后将开启对需求「${reviewTarget.title}」执行结果的评审，@ 到的成员为评审者`
+              : `评审模式：发送后将开启对需求「${reviewTarget.title}」的评审，@ 到的成员为评审者`}
+          </span>
           <button type="button" className="btn btn-sm" onClick={onClearReviewTarget}>
             取消
           </button>

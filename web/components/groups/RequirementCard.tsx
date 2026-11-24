@@ -9,13 +9,22 @@ import {
   type MemberView,
   type RequirementView,
 } from '@/lib/api/groups'
-import { canCancel, canRetry, stateMeta } from '@/lib/requirements'
+import { canCancel, canRetry, completionLabel, stateMeta } from '@/lib/requirements'
 import ApprovalSection from './ApprovalSection'
 import PlanView from './PlanView'
+import ResultSection from './ResultSection'
 import ReviewSection from './ReviewSection'
 
-const REVIEW_STATES: ReadonlySet<string> = new Set(['proposed', 'in_review', 'changes_requested', 'review_passed', 'rejected'])
+const REVIEW_STATES: ReadonlySet<string> = new Set([
+  'proposed',
+  'in_review',
+  'changes_requested',
+  'review_passed',
+  'rejected',
+  'result_in_review',
+])
 const P8_STATES: ReadonlySet<string> = new Set(['awaiting_approval', 'approved', 'executing', 'executed', 'execution_failed'])
+const RESULT_STATES: ReadonlySet<string> = new Set(['executed', 'execution_failed', 'result_submitted', 'result_in_review', 'completed'])
 
 /**
  * Live card for one requirement, rendered in place of a dispatch_card /
@@ -40,7 +49,8 @@ export default function RequirementCard({
   /** P7: when provided (the message list always provides it), the card
    * grows the review section for review-lifecycle states. */
   members?: MemberView[]
-  onReviewChat?: (req: RequirementView) => void
+  /** P9: stage distinguishes a proposal review from a result review. */
+  onReviewChat?: (req: RequirementView, stage: 'proposal' | 'result') => void
 }) {
   const [req, setReq] = useState<RequirementView | null>(null)
   const [error, setError] = useState('')
@@ -73,6 +83,8 @@ export default function RequirementCard({
   }
 
   const meta = stateMeta(req.state)
+  const badgeLabel =
+    req.state === 'completed' && req.completion_outcome ? completionLabel(req.completion_outcome) || meta.label : meta.label
   const mine = !!myMemberId && req.requested_by_member_id === myMemberId
   const mayAct = !!(canManage || mine)
 
@@ -92,7 +104,7 @@ export default function RequirementCard({
   return (
     <div className="requirement-card" data-requirement-id={req.id}>
       <div className="requirement-head">
-        <span className={`badge req-tone-${meta.tone}`}>{meta.label}</span>
+        <span className={`badge req-tone-${meta.tone}`}>{badgeLabel}</span>
         <span>
           需求 → <strong>@{req.assignee_handle}</strong>
         </span>
@@ -121,11 +133,20 @@ export default function RequirementCard({
           members={members}
           bump={bump}
           onChanged={() => void load()}
-          onReviewChat={onReviewChat ? () => onReviewChat(req) : undefined}
+          onReviewChat={onReviewChat ? () => onReviewChat(req, 'proposal') : undefined}
         />
       )}
       {(req.redteam || req.pushdown || P8_STATES.has(req.state)) && (
         <ApprovalSection groupId={groupId} requirement={req} onChanged={() => void load()} />
+      )}
+      {members && (RESULT_STATES.has(req.state) || req.result) && (
+        <ResultSection
+          groupId={groupId}
+          requirement={req}
+          members={members}
+          onChanged={() => void load()}
+          onReviewChat={onReviewChat ? () => onReviewChat(req, 'result') : undefined}
+        />
       )}
       {error && (
         <p className="alert alert-danger" role="alert">

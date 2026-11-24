@@ -733,3 +733,11 @@ table.management-table tbody tr:hover { background: var(--page-s3); }
 .approval-block p { margin: 0; }
 .approval-warn { color: var(--page-text2); }
 .message.system-card { background: var(--page-s2); border: 1px solid var(--page-line); border-radius: var(--radius-s); padding: 6px 10px; }
+/* Part B P9: execution results inside requirement cards. */
+.result-section { display: grid; gap: 8px; border-top: 1px dashed var(--page-line); padding-top: 8px; }
+.result-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.result-summary { margin: 0; font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.result-acceptance { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.result-acceptance li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.result-artifacts { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.result-artifacts li { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

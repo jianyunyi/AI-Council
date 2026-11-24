@@ -81,11 +81,13 @@ export interface MessageView {
   seq: number
   author_type: 'user' | 'ai' | 'system'
   author?: MemberView
-  kind: 'text' | 'requirement' | 'proposal' | 'dispatch_card' | 'result_card' | 'system'
+  kind: 'text' | 'requirement' | 'proposal' | 'dispatch_card' | 'result_card' | 'system' | 'result_submission'
   body_md: string
   reply_to_message_id?: string
   requirement_id?: string
   artifact_id?: string
+  /** Structured card payload (e.g. the result_submission outcome). */
+  payload?: Record<string, unknown>
   status: 'streaming' | 'final' | 'failed'
   edited_at?: string
   created_at: string
@@ -283,6 +285,9 @@ export type RequirementState =
   | 'executing'
   | 'executed'
   | 'execution_failed'
+  | 'result_submitted'
+  | 'result_in_review'
+  | 'completed'
 
 export interface ProposalView {
   id: string
@@ -323,6 +328,41 @@ export interface PushdownView {
   finished_at?: string
 }
 
+/** Part B P9: one copied (or deliberately not copied) task artifact. */
+export interface GroupArtifactView {
+  id: string
+  name: string
+  kind: string
+  media_type?: string
+  size_bytes: number
+  sha256?: string
+  status: 'copied' | 'excluded_kind' | 'too_large' | 'limit_reached' | 'digest_missing' | 'digest_mismatch' | 'error'
+  cycle: number
+}
+
+export interface AcceptanceReportItem {
+  acceptance: string
+  status: 'met' | 'unmet' | 'unknown'
+  evidence: string
+}
+
+/** Part B P9: one execution result submission (per execution cycle). */
+export interface ResultSubmissionView {
+  id: string
+  cycle: number
+  proposal_attempt: number
+  task_id?: string
+  execution_outcome: 'succeeded' | 'failed' | 'cancelled' | 'not_executed'
+  failure_category?: string
+  status: string
+  summary_md?: string
+  summary_source?: 'model' | 'facts'
+  acceptance_report?: AcceptanceReportItem[]
+  result_hash?: string
+  artifacts: GroupArtifactView[]
+  submitted_at?: string
+}
+
 export interface RequirementView {
   id: string
   group_id: string
@@ -341,6 +381,12 @@ export interface RequirementView {
   version: number
   proposal?: ProposalView
   job?: RequirementJobView
+  /** Part B P9: execution cycle bookkeeping + latest result. */
+  cycle: number
+  max_cycles: number
+  revision_source?: 'proposal' | 'result'
+  completion_outcome?: 'accepted' | 'accepted_failed'
+  result?: ResultSubmissionView
   /** Per-actor actions computed by the backend (P7). */
   allowed_actions?: string[]
   /** Part B P8: red-team check + push-down for the current attempt. */
@@ -429,6 +475,10 @@ export interface ReviewRoundView {
   created_at: string
   closed_at?: string
   decisions: ReviewDecisionView[]
+  /** Part B P9: proposal rounds judge the plan; result rounds judge
+   * the submitted execution result (submission_id). */
+  stage: 'proposal' | 'result'
+  submission_id?: string
 }
 
 export interface ReviewStateView {
@@ -518,6 +568,38 @@ export function retryRedTeam(groupId: string, requirementId: string): Promise<Re
     }),
   )
 }
+
+// ---------- results (Part B P9) ----------
+
+function resultBase(groupId: string, requirementId: string): string {
+  return `/groups/${encodeURIComponent(groupId)}/requirements/${encodeURIComponent(requirementId)}`
+}
+
+export function listResults(groupId: string, requirementId: string): Promise<{ items: ResultSubmissionView[] }> {
+  return call(request(`${resultBase(groupId, requirementId)}/results`))
+}
+
+export function startResultReview(
+  groupId: string,
+  requirementId: string,
+  reviewerMemberIds: string[],
+  expectedVersion?: number,
+): Promise<ReviewStateView> {
+  return call(
+    request(`${resultBase(groupId, requirementId)}/result-review`, {
+      method: 'POST',
+      body: JSON.stringify({ reviewer_member_ids: reviewerMemberIds, expected_version: expectedVersion ?? 0 }),
+    }),
+  )
+}
+
+/** Direct download URL for a copied artifact (same base as the REST
+ * calls; the desktop bridge adds Authorization the same way). */
+export function artifactDownloadUrl(groupId: string, requirementId: string, artifactId: string): string {
+  return `${apiBase()}${resultBase(groupId, requirementId)}/artifacts/${encodeURIComponent(artifactId)}`
+}
+
+export const resultsApi = { listResults, startResultReview, artifactDownloadUrl }
 
 // ---------- directories (for pickers) ----------
 

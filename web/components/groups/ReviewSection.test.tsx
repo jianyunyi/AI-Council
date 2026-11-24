@@ -42,6 +42,8 @@ const baseReq: RequirementView = {
   body_md: '@claude-x plan the migration',
   state: 'proposed',
   version: 3,
+  cycle: 1,
+  max_cycles: 2,
   allowed_actions: ['start_review', 'cancel'],
   proposal: {
     id: 'prop_1',
@@ -104,6 +106,7 @@ describe('ReviewSection', () => {
           proposal_round: 1,
           status: 'open',
           rule: 'unanimous',
+          stage: 'proposal',
           started_by_member_id: 'gm_alice',
           created_at: '2026-11-24T12:00:00Z',
           decisions: [
@@ -147,6 +150,7 @@ describe('ReviewSection', () => {
           status: 'closed',
           outcome: 'changes_requested',
           rule: 'unanimous',
+          stage: 'proposal',
           started_by_member_id: 'gm_alice',
           created_at: '2026-11-24T12:00:00Z',
           closed_at: '2026-11-24T12:05:00Z',

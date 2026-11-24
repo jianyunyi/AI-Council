@@ -21,6 +21,9 @@ export const REQUIREMENT_STATE_META: Record<RequirementState, { label: string; t
   executing: { label: '执行中', tone: 'progress' },
   executed: { label: '已执行', tone: 'ok' },
   execution_failed: { label: '执行失败', tone: 'danger' },
+  result_submitted: { label: '结果已提交', tone: 'ok' },
+  result_in_review: { label: '结果评审中', tone: 'progress' },
+  completed: { label: '已完成', tone: 'ok' },
 }
 
 export function stateMeta(state: string): { label: string; tone: string } {
@@ -45,8 +48,118 @@ export function canCancel(req: Pick<RequirementView, 'state'>): boolean {
     req.state === 'review_passed' ||
     req.state === 'awaiting_approval' ||
     req.state === 'approved' ||
-    req.state === 'executing'
+    req.state === 'executing' ||
+    // P9: execution no longer ends the requirement — the result is
+    // still collected, submitted and reviewed, and all of it can be
+    // cancelled (mirrors the backend).
+    req.state === 'executed' ||
+    req.state === 'execution_failed' ||
+    req.state === 'result_submitted' ||
+    req.state === 'result_in_review'
   )
+}
+
+/** The full Part B pipeline as stepper stops (P9: 8 stops). */
+export const REQUIREMENT_STEPS = ['派发', '提案', '评审', '人工批准', '下推', '执行', '结果评审', '完成'] as const
+
+/** Index of the stepper stop a state currently sits at. */
+export function activeStopIndex(state: string): number {
+  switch (state) {
+    case 'dispatched':
+    case 'failed':
+    case 'cancelled':
+      return 0
+    case 'proposing':
+    case 'proposed':
+    case 'proposal_failed':
+      return 1
+    case 'in_review':
+    case 'changes_requested':
+    case 'rejected':
+      return 2
+    case 'review_passed':
+    case 'awaiting_approval':
+      return 3
+    case 'approved':
+      return 4
+    case 'executing':
+    case 'executed':
+    case 'execution_failed':
+      return 5
+    case 'result_submitted':
+    case 'result_in_review':
+      return 6
+    case 'completed':
+      return 7
+    default:
+      return 0
+  }
+}
+
+/** The last stop a live (non-terminal) requirement can reach. */
+export const lastLiveStop = REQUIREMENT_STEPS.length - 1
+
+/** Completion badge text: a failed execution that reviewers accepted
+ * is never presented as an unqualified success. */
+export function completionLabel(outcome?: string): string {
+  switch (outcome) {
+    case 'accepted':
+      return '已完成'
+    case 'accepted_failed':
+      return '已完成（接受失败结果）'
+    default:
+      return ''
+  }
+}
+
+export const EXECUTION_OUTCOME_LABEL: Record<string, string> = {
+  succeeded: '执行成功',
+  failed: '执行失败',
+  cancelled: '执行已取消',
+  not_executed: '未执行',
+}
+
+export function executionOutcomeLabel(outcome?: string): string {
+  if (!outcome) return ''
+  return EXECUTION_OUTCOME_LABEL[outcome] ?? outcome
+}
+
+export const ARTIFACT_STATUS_LABEL: Record<string, string> = {
+  copied: '已复制',
+  excluded_kind: '已排除（日志等类型不复制）',
+  too_large: '超过大小上限，未复制',
+  limit_reached: '超过数量上限，未复制',
+  digest_missing: '缺少摘要，未复制',
+  digest_mismatch: '摘要不一致，未复制',
+  error: '复制出错',
+}
+
+export function artifactStatusLabel(status?: string): string {
+  if (!status) return ''
+  return ARTIFACT_STATUS_LABEL[status] ?? status
+}
+
+export const ACCEPTANCE_STATUS_LABEL: Record<string, string> = {
+  met: '已达成',
+  unmet: '未达成',
+  unknown: '不确定',
+}
+
+/** Shown above the revise box: a result-sourced revision restarts
+ * the WHOLE pipeline, including a fresh human approval (D1). */
+export function reviseHint(req: Pick<RequirementView, 'revision_source'>): string {
+  if (req.revision_source === 'result') {
+    return '本轮修订源于结果评审：修订后将开启新的执行轮次，重新经过评审、红队检查与人工审批。'
+  }
+  return ''
+}
+
+/** Why the revise button is gone in changes_requested (a cap was hit). */
+export function reviseBlockedNote(req: Pick<RequirementView, 'revision_source' | 'max_cycles'>): string {
+  if (req.revision_source === 'result') {
+    return `已达到执行轮次上限（最多 ${req.max_cycles || 2} 轮），不能再修订。`
+  }
+  return '已达到本轮的提案次数上限，不能再修订。'
 }
 
 /** Why the approve button is disabled (backend approve_blocked_reason). */

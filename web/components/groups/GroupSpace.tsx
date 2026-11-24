@@ -38,7 +38,7 @@ export default function GroupSpace({ id }: { id: string }) {
   const [error, setError] = useState('')
   const [notFound, setNotFound] = useState(false)
   const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null)
-  const [reviewTarget, setReviewTarget] = useState<{ requirementId: string; title: string } | null>(null)
+  const [reviewTarget, setReviewTarget] = useState<{ requirementId: string; title: string; stage: 'proposal' | 'result' } | null>(null)
   const [reqBump, setReqBump] = useState(0)
   const [editing, setEditing] = useState<MessageView | null>(null)
   const [editText, setEditText] = useState('')
@@ -122,6 +122,8 @@ export default function GroupSpace({ id }: { id: string }) {
         case 'pushdown.created':
         case 'pushdown.failed':
         case 'task.mirrored':
+        case 'result.collecting':
+        case 'result.submitted':
           setReqBump((b) => b + 1)
           break
         default:
@@ -149,17 +151,22 @@ export default function GroupSpace({ id }: { id: string }) {
     }
   }
 
-  const send = async (body: string, replyToId?: string, intent?: 'chat' | 'dispatch' | 'review', requirementId?: string) => {
+  const send = async (
+    body: string,
+    replyToId?: string,
+    intent?: 'chat' | 'dispatch' | 'review' | 'result_review',
+    requirementId?: string,
+  ) => {
     const res = await postMessage(id, {
       body_md: body,
       client_msg_id: draftKey.current,
       reply_to_message_id: replyToId,
       ...(intent ? { intent } : {}),
-      ...(intent === 'review' && requirementId ? { requirement_id: requirementId } : {}),
+      ...((intent === 'review' || intent === 'result_review') && requirementId ? { requirement_id: requirementId } : {}),
     })
     draftKey.current = newClientMsgId() // rotate only after success; failures retry with the same key
     upsertMessage(res.message)
-    if (intent === 'review') setReqBump((b) => b + 1)
+    if (intent === 'review' || intent === 'result_review') setReqBump((b) => b + 1)
   }
 
   const addAi = async (aiModelId: string) => {
@@ -270,7 +277,7 @@ export default function GroupSpace({ id }: { id: string }) {
           reqBump={reqBump}
           canManageGroup={group.can_manage}
           onReply={(m) => setReplyTo({ id: m.id, preview: m.body_md.slice(0, 60) })}
-          onReviewChat={(req) => setReviewTarget({ requirementId: req.id, title: req.title })}
+          onReviewChat={(req, stage) => setReviewTarget({ requirementId: req.id, title: req.title, stage })}
           onEdit={(m) => {
             setEditing(m)
             setEditText(m.body_md)

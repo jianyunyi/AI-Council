@@ -31,6 +31,8 @@ const base: RequirementView = {
   body_md: '@claude-x plan the migration',
   state: 'proposed',
   version: 3,
+  cycle: 1,
+  max_cycles: 2,
   proposal: {
     id: 'prop_1',
     attempt: 1,

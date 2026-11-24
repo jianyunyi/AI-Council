@@ -1,5 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { blockedReasonLabel, canCancel, canRetry, previewDispatch, stateMeta } from './requirements'
+import {
+  activeStopIndex,
+  artifactStatusLabel,
+  blockedReasonLabel,
+  canCancel,
+  canRetry,
+  completionLabel,
+  executionOutcomeLabel,
+  lastLiveStop,
+  previewDispatch,
+  REQUIREMENT_STEPS,
+  reviseBlockedNote,
+  reviseHint,
+  stateMeta,
+} from './requirements'
 import type { RequirementView } from './api/groups'
 
 const req = (state: RequirementView['state']): Pick<RequirementView, 'state'> => ({ state })
@@ -48,8 +62,48 @@ describe('requirement helpers', () => {
     expect(canCancel(req('awaiting_approval'))).toBe(true)
     expect(canCancel(req('approved'))).toBe(true)
     expect(canCancel(req('executing'))).toBe(true)
-    expect(canCancel(req('executed'))).toBe(false)
-    expect(canCancel(req('execution_failed'))).toBe(false)
+    // P9 supersedes the two P8 assertions below: execution no longer
+    // ends the requirement, so cancel stays available (see the P9
+    // block) — executed/execution_failed are cancellable now.
+    expect(canCancel(req('executed'))).toBe(true)
+    expect(canCancel(req('execution_failed'))).toBe(true)
+  })
+
+  it('labels the P9 result states and walks the 8-stop stepper', () => {
+    expect(stateMeta('result_submitted').label).toBe('结果已提交')
+    expect(stateMeta('result_in_review').label).toBe('结果评审中')
+    expect(stateMeta('completed').label).toBe('已完成')
+    expect(canCancel(req('result_submitted'))).toBe(true)
+    expect(canCancel(req('result_in_review'))).toBe(true)
+    expect(canCancel(req('completed'))).toBe(false)
+    expect(REQUIREMENT_STEPS).toHaveLength(8)
+    expect(lastLiveStop).toBe(7)
+    expect(activeStopIndex('dispatched')).toBe(0)
+    expect(activeStopIndex('proposed')).toBe(1)
+    expect(activeStopIndex('in_review')).toBe(2)
+    expect(activeStopIndex('awaiting_approval')).toBe(3)
+    expect(activeStopIndex('approved')).toBe(4)
+    expect(activeStopIndex('executed')).toBe(5)
+    expect(activeStopIndex('execution_failed')).toBe(5)
+    expect(activeStopIndex('result_submitted')).toBe(6)
+    expect(activeStopIndex('result_in_review')).toBe(6)
+    expect(activeStopIndex('completed')).toBe(7)
+  })
+
+  it('labels P9 outcomes, artifacts and revision hints', () => {
+    expect(completionLabel('accepted')).toBe('已完成')
+    expect(completionLabel('accepted_failed')).toBe('已完成（接受失败结果）')
+    expect(completionLabel(undefined)).toBe('')
+    expect(executionOutcomeLabel('succeeded')).toBe('执行成功')
+    expect(executionOutcomeLabel('not_executed')).toBe('未执行')
+    expect(artifactStatusLabel('copied')).toBe('已复制')
+    expect(artifactStatusLabel('excluded_kind')).toContain('日志')
+    expect(artifactStatusLabel('digest_mismatch')).toContain('未复制')
+    const resultReq = { revision_source: 'result' as const, max_cycles: 2 }
+    expect(reviseHint(resultReq)).toContain('人工审批')
+    expect(reviseHint({ revision_source: 'proposal' as const })).toBe('')
+    expect(reviseBlockedNote(resultReq)).toContain('执行轮次上限')
+    expect(reviseBlockedNote({ revision_source: 'proposal' as const, max_cycles: 2 })).toContain('提案次数上限')
   })
 
   it('explains why approval is blocked', () => {

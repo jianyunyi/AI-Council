@@ -13,23 +13,15 @@ import {
   type ReviewStateView,
   type ReviewVerdict,
 } from '@/lib/api/groups'
-import { DECISION_STATUS_LABEL, REVIEW_OUTCOME_LABEL, REVIEW_VERDICT_LABEL } from '@/lib/requirements'
-
-const STEPS = ['提案', '评审', '人工批准', '执行'] as const
-
-function stepIndex(state: RequirementView['state']): number {
-  switch (state) {
-    case 'proposed':
-      return 0
-    case 'in_review':
-    case 'changes_requested':
-      return 1
-    case 'review_passed':
-      return 2
-    default:
-      return 0
-  }
-}
+import {
+  activeStopIndex,
+  DECISION_STATUS_LABEL,
+  REQUIREMENT_STEPS,
+  REVIEW_OUTCOME_LABEL,
+  REVIEW_VERDICT_LABEL,
+  reviseBlockedNote,
+  reviseHint,
+} from '@/lib/requirements'
 
 /**
  * Review rounds UI for one requirement card (Part B P7). Renders only
@@ -102,12 +94,12 @@ export default function ReviewSection({
   const canStart = requirement.state === 'proposed' && (requirement.allowed_actions?.includes('start_review') ?? false)
   const openRound = review?.rounds.find((r) => r.status === 'open')
   const closedRounds = review?.rounds.filter((r) => r.status === 'closed') ?? []
-  const current = stepIndex(requirement.state)
+  const current = activeStopIndex(requirement.state)
 
   return (
     <div className="review-section">
       <ol className="review-steps" aria-label="进度">
-        {STEPS.map((label, i) => (
+        {REQUIREMENT_STEPS.map((label, i) => (
           <li key={label} className={i < current ? 'step-done' : i === current ? 'step-current' : 'step-todo'}>
             {label}
           </li>
@@ -156,10 +148,11 @@ export default function ReviewSection({
         </div>
       )}
 
-      {requirement.state === 'in_review' && openRound && (
+      {(requirement.state === 'in_review' || requirement.state === 'result_in_review') && openRound && (
         <div className="review-open">
           <p className="muted">
-            第 {openRound.proposal_round} 轮评审中 · 规则：{openRound.rule === 'quorum' ? `达到 ${openRound.quorum ?? 1} 票` : '全体一致'} ·
+            第 {openRound.proposal_round} 轮{openRound.stage === 'result' ? '结果' : '方案'}评审中 · 规则：
+            {openRound.rule === 'quorum' ? `达到 ${openRound.quorum ?? 1} 票` : '全体一致'} ·
             裁决在轮次结束前互相不可见
           </p>
           <ul className="review-decisions">
@@ -221,6 +214,7 @@ export default function ReviewSection({
 
       {requirement.state === 'changes_requested' && review?.can_revise && (
         <div className="review-revise">
+          {reviseHint(requirement) && <p className="muted">{reviseHint(requirement)}</p>}
           <textarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
@@ -239,12 +233,16 @@ export default function ReviewSection({
         </div>
       )}
 
+      {requirement.state === 'changes_requested' && review && !review.can_revise && (
+        <p className="muted">{reviseBlockedNote(requirement)}</p>
+      )}
+
       {requirement.state === 'review_passed' && <p className="muted">评审已通过，下一步为人工批准（尚未开启）。</p>}
 
       {closedRounds.map((r) => (
         <div key={r.id} className="review-round-closed">
           <p className="muted">
-            第 {r.proposal_round} 轮 · 结果：{REVIEW_OUTCOME_LABEL[r.outcome ?? ''] ?? r.outcome}
+            第 {r.proposal_round} 轮{r.stage === 'result' ? '结果评审' : '方案评审'} · 结果：{REVIEW_OUTCOME_LABEL[r.outcome ?? ''] ?? r.outcome}
             {r.revision_note ? ` · 修订说明：${r.revision_note}` : ''}
           </p>
           {r.outcome !== 'superseded' && (
