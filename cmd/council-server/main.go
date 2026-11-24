@@ -172,6 +172,10 @@ func main() {
 	if groupService != nil && providerKeyService != nil {
 		resolver := roles.NewResolver(councilRolesRepo, profileSource)
 		transport.InstallGroupPushdown(api, groupService, resolver)
+		// Part B P9: result copy-up + result review over the Part A
+		// artifact store. Without it, requirements keep the exact P8
+		// behavior at executed/execution_failed.
+		transport.InstallGroupResults(api, groupService)
 		groupService.SetMirrorContext(workerCtx)
 		if err := groupService.ResumeMirrors(workerCtx); err != nil {
 			slog.Warn("resume group pushdown mirrors", "error", err)
