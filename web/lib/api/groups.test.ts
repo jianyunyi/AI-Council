@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createGroup, GroupApiError, listMessages, listUsers, postMessage } from './groups'
+import { cancelRequirement, createGroup, getRequirement, GroupApiError, listMessages, listRequirements, listUsers, postMessage, retryRequirement } from './groups'
 import { parseMentions, splitSegments } from '../mentions'
 
 function stubFetch(impl: (url: string, init?: RequestInit) => Promise<unknown>) {
@@ -60,6 +60,38 @@ describe('groups api', () => {
 
     stubFetch(() => fail(403, 'forbidden', 'no'))
     await expect(listUsers()).resolves.toBeNull()
+  })
+
+  it('lists requirements with filters in the query string', async () => {
+    stubFetch((url) => {
+      expect(url).toContain('/groups/grp_1/requirements')
+      expect(url).toContain('state=proposed')
+      expect(url).toContain('assignee_member_id=gm_9')
+      return ok({ items: [] })
+    })
+    const page = await listRequirements('grp_1', { state: 'proposed', assignee_member_id: 'gm_9' })
+    expect(page.items).toEqual([])
+  })
+
+  it('gets, retries and cancels a requirement', async () => {
+    const seen: string[] = []
+    stubFetch((url, init) => {
+      seen.push(`${init?.method ?? 'GET'} ${url}`)
+      return ok({ id: 'req_1', state: 'dispatched' })
+    })
+    await getRequirement('grp_1', 'req_1')
+    await retryRequirement('grp_1', 'req_1')
+    await cancelRequirement('grp_1', 'req_1', 'no longer needed')
+    expect(seen[0]).toContain('GET ')
+    expect(seen[0]).toContain('/groups/grp_1/requirements/req_1')
+    expect(seen[1]).toContain('POST ')
+    expect(seen[1]).toContain('/requirements/req_1/retry')
+    expect(seen[2]).toContain('/requirements/req_1/cancel')
+  })
+
+  it('maps requirement errors to GroupApiError', async () => {
+    stubFetch(() => fail(404, 'requirement_not_found', 'requirement not found'))
+    await expect(getRequirement('grp_1', 'req_x')).rejects.toMatchObject({ status: 404, code: 'requirement_not_found' })
   })
 })
 

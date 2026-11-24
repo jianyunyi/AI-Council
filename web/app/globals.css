@@ -696,3 +696,21 @@ table.management-table tbody tr:hover { background: var(--page-s3); }
 .edit-box { border: 1px solid var(--page-line); border-radius: var(--radius-m); padding: 10px 12px; margin-top: 10px; background: var(--page-s1); }
 .edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
 @media (max-width: 900px) { .group-space { grid-template-columns: minmax(0, 1fr); } }
+/* Part B P6: requirement cards + composer dispatch mode (same .group-ui
+   section conventions, --page-* tokens). */
+.composer-intent { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+.requirement-card { border: 1px solid var(--page-line2); border-radius: var(--radius-m); padding: 8px 10px; background: var(--page-s2); display: grid; gap: 6px; }
+.requirement-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.requirement-title { font-weight: 600; }
+.requirement-failure { color: var(--page-fail); margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.requirement-proposal p { margin: 0 0 6px; }
+.requirement-actions { display: flex; gap: 6px; }
+.req-tone-info { background: color-mix(in oklab, var(--page-accent) 16%, transparent); color: var(--page-accent); }
+.req-tone-progress { background: color-mix(in oklab, var(--page-wait) 18%, transparent); color: var(--page-wait); }
+.req-tone-ok { background: color-mix(in oklab, var(--page-done) 16%, transparent); color: var(--page-done); }
+.req-tone-danger { background: color-mix(in oklab, var(--page-fail) 14%, transparent); color: var(--page-fail); }
+.req-tone-muted { background: var(--page-s3); color: var(--page-text2); }
+.plan-view { display: grid; gap: 8px; font-size: 13.5px; margin-top: 6px; }
+.plan-view ul { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+.plan-view code { font-size: 12.5px; overflow-wrap: anywhere; }
+.plan-diff { max-height: 260px; overflow: auto; background: var(--page-s1); border: 1px solid var(--page-line); border-radius: var(--radius-s); padding: 8px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }

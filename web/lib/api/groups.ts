@@ -5,6 +5,7 @@
 // adapted here (see listUsers).
 import { ApiError, listUsers as listAdminUsers, request } from '../api'
 import { apiBase } from '../desktop'
+import type { ExecutionPlan } from '../types'
 
 // ---------- types (mirror internal/app/group views) ----------
 
@@ -262,6 +263,90 @@ export function editMessage(groupId: string, messageId: string, bodyMd: string):
 
 export function resolveMentions(groupId: string, q: string): Promise<{ items: MentionCandidate[] }> {
   return call(request(`/groups/${encodeURIComponent(groupId)}/mentions/resolve?q=${encodeURIComponent(q)}`))
+}
+
+// ---------- requirements (Part B P6) ----------
+
+export type RequirementState = 'dispatched' | 'proposing' | 'proposed' | 'proposal_failed' | 'failed' | 'cancelled'
+
+export interface ProposalView {
+  id: string
+  attempt: number
+  plan: ExecutionPlan
+  summary: string
+  created_at: string
+}
+
+export interface RequirementJobView {
+  state: string
+  attempts: number
+}
+
+export interface RequirementView {
+  id: string
+  group_id: string
+  anchor_message_id: string
+  requested_by: string
+  requested_by_member_id: string
+  assignee_member_id: string
+  assignee_ai_model_id: string
+  assignee_handle: string
+  title: string
+  body_md: string
+  acceptance?: string[]
+  state: RequirementState
+  failure_code?: string
+  failure_detail?: string
+  version: number
+  proposal?: ProposalView
+  job?: RequirementJobView
+  created_at: string
+  updated_at: string
+  state_changed_at: string
+  proposed_at?: string
+  terminal_at?: string
+}
+
+export interface ListRequirementsParams {
+  state?: RequirementState
+  assignee_member_id?: string
+  cursor?: string
+  limit?: number
+}
+
+export function listRequirements(
+  groupId: string,
+  params: ListRequirementsParams = {},
+): Promise<{ items: RequirementView[]; next_cursor?: string }> {
+  const qs = new URLSearchParams()
+  if (params.state) qs.set('state', params.state)
+  if (params.assignee_member_id) qs.set('assignee_member_id', params.assignee_member_id)
+  if (params.cursor) qs.set('cursor', params.cursor)
+  if (params.limit) qs.set('limit', String(params.limit))
+  const suffix = qs.toString()
+  return call(request(`/groups/${encodeURIComponent(groupId)}/requirements${suffix ? `?${suffix}` : ''}`))
+}
+
+export function getRequirement(groupId: string, requirementId: string): Promise<RequirementView> {
+  return call(request(`/groups/${encodeURIComponent(groupId)}/requirements/${encodeURIComponent(requirementId)}`))
+}
+
+export function retryRequirement(groupId: string, requirementId: string): Promise<RequirementView> {
+  return call(
+    request(`/groups/${encodeURIComponent(groupId)}/requirements/${encodeURIComponent(requirementId)}/retry`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  )
+}
+
+export function cancelRequirement(groupId: string, requirementId: string, reason?: string): Promise<RequirementView> {
+  return call(
+    request(`/groups/${encodeURIComponent(groupId)}/requirements/${encodeURIComponent(requirementId)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason ?? '' }),
+    }),
+  )
 }
 
 // ---------- directories (for pickers) ----------

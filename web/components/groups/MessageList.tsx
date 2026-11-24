@@ -3,6 +3,7 @@
 import { useMemo } from 'react'
 import type { MemberView, MessageView } from '@/lib/api/groups'
 import { splitSegments } from '@/lib/mentions'
+import RequirementCard from './RequirementCard'
 
 const EDIT_WINDOW_MS = 10 * 60 * 1000
 
@@ -32,12 +33,19 @@ export default function MessageList({
   currentMemberId,
   onReply,
   onEdit,
+  groupId,
+  reqBump,
+  canManageGroup,
 }: {
   messages: MessageView[]
   members: MemberView[]
   currentMemberId?: string
   onReply: (m: MessageView) => void
   onEdit: (m: MessageView) => void
+  /** P6: when set, dispatch_card/proposal messages render as live requirement cards. */
+  groupId?: string
+  reqBump?: number
+  canManageGroup?: boolean
 }) {
   if (messages.length === 0) {
     return <p className="muted">暂无消息，来发第一条吧。</p>
@@ -47,6 +55,7 @@ export default function MessageList({
       {messages.map((m) => {
         const mine = m.author?.id === currentMemberId
         const editable = mine && m.kind === 'text' && Date.now() - new Date(m.created_at).getTime() < EDIT_WINDOW_MS
+        const isCard = (m.kind === 'dispatch_card' || m.kind === 'proposal') && !!m.requirement_id && !!groupId
         return (
           <li key={m.id} className="message" data-seq={m.seq}>
             <div className="message-head">
@@ -59,17 +68,29 @@ export default function MessageList({
               {m.status === 'failed' && <span className="badge badge-warning">发送失败</span>}
             </div>
             {m.reply_to_message_id && <div className="message-reply muted">↩ 回复 #{m.reply_to_message_id.slice(0, 8)}</div>}
-            <Body msg={m} />
-            <div className="message-actions">
-              <button type="button" className="btn btn-sm" onClick={() => onReply(m)}>
-                回复
-              </button>
-              {editable && (
-                <button type="button" className="btn btn-sm" onClick={() => onEdit(m)}>
-                  编辑
-                </button>
-              )}
-            </div>
+            {isCard ? (
+              <RequirementCard
+                groupId={groupId!}
+                requirementId={m.requirement_id!}
+                bump={reqBump ?? 0}
+                myMemberId={currentMemberId}
+                canManage={canManageGroup}
+              />
+            ) : (
+              <>
+                <Body msg={m} />
+                <div className="message-actions">
+                  <button type="button" className="btn btn-sm" onClick={() => onReply(m)}>
+                    回复
+                  </button>
+                  {editable && (
+                    <button type="button" className="btn btn-sm" onClick={() => onEdit(m)}>
+                      编辑
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
           </li>
         )
       })}

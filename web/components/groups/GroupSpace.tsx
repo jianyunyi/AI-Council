@@ -38,6 +38,7 @@ export default function GroupSpace({ id }: { id: string }) {
   const [error, setError] = useState('')
   const [notFound, setNotFound] = useState(false)
   const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null)
+  const [reqBump, setReqBump] = useState(0)
   const [editing, setEditing] = useState<MessageView | null>(null)
   const [editText, setEditText] = useState('')
   const [mySubject, setMySubject] = useState('')
@@ -111,8 +112,11 @@ export default function GroupSpace({ id }: { id: string }) {
         case 'member.removed':
           void loadGroup()
           break
+        case 'requirement.state_changed':
+          setReqBump((b) => b + 1)
+          break
         default:
-          break // P6+: requirement/proposal/dispatch events land here
+          break // P7+: review/dispatch-result events land here
       }
     },
     [loadGroup, upsertMessage],
@@ -136,11 +140,12 @@ export default function GroupSpace({ id }: { id: string }) {
     }
   }
 
-  const send = async (body: string, replyToId?: string) => {
+  const send = async (body: string, replyToId?: string, intent?: 'chat' | 'dispatch') => {
     const res = await postMessage(id, {
       body_md: body,
       client_msg_id: draftKey.current,
       reply_to_message_id: replyToId,
+      ...(intent ? { intent } : {}),
     })
     draftKey.current = newClientMsgId() // rotate only after success; failures retry with the same key
     upsertMessage(res.message)
@@ -250,6 +255,9 @@ export default function GroupSpace({ id }: { id: string }) {
           messages={messages}
           members={group.members}
           currentMemberId={myMemberId}
+          groupId={id}
+          reqBump={reqBump}
+          canManageGroup={group.can_manage}
           onReply={(m) => setReplyTo({ id: m.id, preview: m.body_md.slice(0, 60) })}
           onEdit={(m) => {
             setEditing(m)
@@ -282,6 +290,8 @@ export default function GroupSpace({ id }: { id: string }) {
             onCancelReply={() => setReplyTo(null)}
             onSend={send}
             onAddAiMember={addAi}
+            canDispatch={group.my_role === 'owner' || group.my_role === 'operator' || group.can_manage}
+            aiHandles={new Set(group.members.filter((m) => !m.removed_at && m.ai_model_id).map((m) => m.handle))}
           />
         ) : (
           <p className="muted">{archived ? '群已归档，只读。' : '你不是该群成员，不能发言。'}</p>

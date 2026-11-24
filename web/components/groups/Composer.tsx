@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { GroupApiError, resolveMentions, type MentionCandidate } from '@/lib/api/groups'
+import { previewDispatch } from '@/lib/requirements'
 import MentionPicker from './MentionPicker'
 
 interface ActiveQuery {
@@ -27,15 +28,21 @@ export default function Composer({
   onCancelReply,
   onSend,
   onAddAiMember,
+  canDispatch,
+  aiHandles,
 }: {
   groupId: string
   disabled?: boolean
   replyTo?: { id: string; preview: string } | null
   onCancelReply?: () => void
-  onSend: (body: string, replyToId?: string) => Promise<void>
+  onSend: (body: string, replyToId?: string, intent?: 'chat' | 'dispatch') => Promise<void>
   onAddAiMember?: (aiModelId: string) => Promise<void>
+  /** P6: owners/operators may flip the composer into dispatch mode. */
+  canDispatch?: boolean
+  aiHandles?: ReadonlySet<string>
 }) {
   const [text, setText] = useState('')
+  const [dispatchMode, setDispatchMode] = useState(false)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
   const [query, setQuery] = useState<ActiveQuery | null>(null)
@@ -98,11 +105,21 @@ export default function Composer({
   const submit = async () => {
     const body = text.trimEnd()
     if (!body.trim() || sending || disabled) return
+    if (dispatchMode) {
+      // The backend rejects a dispatch with no resolved AI mention
+      // (422 no_ai_mention); warn here instead of failing the send.
+      const preview = previewDispatch(body, aiHandles ?? new Set())
+      if (!preview.ok) {
+        setError(preview.problem)
+        return
+      }
+    }
     setSending(true)
     setError('')
     try {
-      await onSend(body, replyTo?.id)
+      await onSend(body, replyTo?.id, dispatchMode ? 'dispatch' : undefined)
       setText('')
+      setDispatchMode(false)
       setQuery(null)
       setCandidates([])
       onCancelReply?.()
@@ -116,6 +133,19 @@ export default function Composer({
 
   return (
     <div className="composer">
+      {canDispatch && (
+        <div className="composer-intent">
+          <button
+            type="button"
+            className={dispatchMode ? 'chip chip-active' : 'chip'}
+            aria-pressed={dispatchMode}
+            onClick={() => setDispatchMode((v) => !v)}
+          >
+            派发需求
+          </button>
+          {dispatchMode && <span className="muted">派发模式：@ 到的每位 AI 都会收到一条需求并给出方案；评审通过且人工批准后才会执行。</span>}
+        </div>
+      )}
       {replyTo && (
         <div className="composer-reply">
           <span className="muted">回复：{replyTo.preview}</span>
