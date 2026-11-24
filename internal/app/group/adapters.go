@@ -21,7 +21,7 @@ type AIModelServiceDirectory struct{ Svc *aimodel.Service }
 
 func toInfo(v aimodel.View) AIModelInfo {
 	info := AIModelInfo{ID: v.ID, Handle: v.Handle, DisplayName: v.DisplayName, Model: v.Model,
-		ProviderName: v.ProviderName, Status: v.Status}
+		ProviderName: v.ProviderName, ProviderProfileID: v.ProviderProfileID, Status: v.Status}
 	if v.Workspace != nil {
 		info.WorkspaceStatus = v.Workspace.Status
 	}

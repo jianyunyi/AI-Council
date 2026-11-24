@@ -56,6 +56,12 @@ type Service struct {
 	hub      *Hub
 	now      func() time.Time
 	locks    sync.Map // groupID -> *sync.Mutex
+
+	// P8 ports; all nil until EnablePushdown (P7 behavior otherwise).
+	redTeamSeats RedTeamSeatSource
+	tasks        TaskBridge
+	modelWS      ModelWorkspaceLookup
+	mirrors      *mirrorRegistry
 }
 
 func NewService(repo *sqlite.GroupRepo, reqRepo *sqlite.RequirementRepo, ws WorkspaceProvisioner, models AIModelDirectory, provider ProviderInvoker, users UserDirectory, audit AuditSink, hub *Hub) *Service {

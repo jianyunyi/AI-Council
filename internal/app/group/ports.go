@@ -18,13 +18,14 @@ type Actor struct {
 var ErrDirectoryNotFound = errors.New("directory: not found")
 
 type AIModelInfo struct {
-	ID              string
-	Handle          string
-	DisplayName     string
-	Model           string
-	ProviderName    string
-	Status          string // active|disabled|degraded
-	WorkspaceStatus string // provisioning|ready|error|archived|""
+	ID                string
+	Handle            string
+	DisplayName       string
+	Model             string
+	ProviderName      string
+	ProviderProfileID string // P8: red-team seat independence exclusion key
+	Status            string // active|disabled|degraded
+	WorkspaceStatus   string // provisioning|ready|error|archived|""
 }
 
 // AIModelDirectory is a read-only view of the P4 AI model registry.

@@ -43,6 +43,7 @@ const (
 	FailAssigneeGone    = "assignee_unavailable"
 	FailInternal        = "internal"
 	FailReviewRejected  = "review_rejected" // P7: terminal reason for rejected
+	FailRedTeamFlagged  = "redteam_flagged" // P8: red team sent the plan back
 
 	// Message kinds for requirement cards (P5 kinds: text; P7 adds result).
 	KindDispatchCard = "dispatch_card"
@@ -50,12 +51,14 @@ const (
 
 	// Job kinds.
 	JobKindPropose = "propose"
-	JobKindReview  = "review" // P7: TargetID carries the decision id
+	JobKindReview  = "review"  // P7: TargetID carries the decision id
+	JobKindRedTeam = "redteam" // P8: TargetID carries the red-team check id
 
 	// Invocation purposes (budget ledger).
 	PurposePropose       = "propose"
 	PurposeProposeRepair = "propose_repair"
-	PurposeReview        = "review" // P7
+	PurposeReview        = "review"  // P7
+	PurposeRedTeam       = "redteam" // P8
 )
 
 var (
@@ -124,8 +127,19 @@ type RequirementView struct {
 	Proposal          *ProposalView `json:"proposal,omitempty"`
 	Job               *JobView      `json:"job,omitempty"`
 	// AllowedActions is computed per requesting actor (P7): start_review,
-	// submit_decision, force_close, revise, retry, cancel.
-	AllowedActions []string   `json:"allowed_actions,omitempty"`
+	// submit_decision, force_close, revise, retry, cancel. P8 adds
+	// retry_redteam, approve, retry_pushdown.
+	AllowedActions []string `json:"allowed_actions,omitempty"`
+	// P8: the latest red-team check and push-down for the current
+	// proposal attempt (nil when push-down is not configured).
+	RedTeam  *RedTeamView  `json:"redteam,omitempty"`
+	Pushdown *PushdownView `json:"pushdown,omitempty"`
+	// CanApprove is the D1 rule evaluated for the requesting actor;
+	// ApproveBlockedReason explains a disabled approve button, in the
+	// stable order: not_owner_or_operator, state_<state>,
+	// redteam_<status>, plan_changed, workspace_not_ready.
+	CanApprove           bool   `json:"can_approve"`
+	ApproveBlockedReason string `json:"approve_blocked_reason,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 	StateChangedAt time.Time  `json:"state_changed_at"`

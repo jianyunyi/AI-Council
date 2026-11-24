@@ -161,6 +161,12 @@ func planHashOf(planJSON []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// PlanHashOf is planHashOf exported for the council task bridge (P8,
+// W3): the bridge recomputes the group plan hash over a task's plan so
+// push-down can prove the task still carries the reviewed plan. It MUST
+// stay the same function that stamps review_rounds.plan_hash.
+func PlanHashOf(planJSON []byte) string { return planHashOf(planJSON) }
+
 // aggregateRound maps a CLOSED round's decisions to an outcome.
 // error/withdrawn decisions never count as approval: under "unanimous"
 // they make the round inconclusive unless someone objected; under

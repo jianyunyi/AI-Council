@@ -36,6 +36,7 @@ import (
 type API struct {
 	mu              sync.Mutex
 	tasks           map[string]*task
+	taskExternalKeys map[string]string // P8: push-down idempotency key -> task ID
 	rejections      map[string][]sqlite.TaskRejectionRecord
 	nextID          int64
 	workspaces      map[string]workspace
@@ -102,6 +103,8 @@ type task struct {
 	UpdatedAt              time.Time                             `json:"updated_at,omitempty"`
 	Rejections             []taskRejectionDTO                    `json:"rejections,omitempty"`
 	RejectionCount         int                                   `json:"rejection_count"`
+	ExternalKey            string                                `json:"-"` // P8 push-down idempotency key
+	GroupRequirementID     string                                `json:"-"` // P8 back-link to the group requirement
 }
 type Event struct {
 	ID        int64     `json:"id"`
@@ -132,7 +135,7 @@ type approvalRequest struct {
 }
 
 func NewAPI() *API {
-	return &API{tasks: map[string]*task{}, rejections: map[string][]sqlite.TaskRejectionRecord{}, workspaces: map[string]workspace{}, metrics: metrics.New()}
+	return &API{tasks: map[string]*task{}, taskExternalKeys: map[string]string{}, rejections: map[string][]sqlite.TaskRejectionRecord{}, workspaces: map[string]workspace{}, metrics: metrics.New()}
 }
 func NewPersistentAPI(db *gorm.DB) *API {
 	a := NewAPI()
@@ -186,7 +189,12 @@ func NewPersistentAPI(db *gorm.DB) *API {
 		if v != nil {
 			verificationArtifactID = verificationArtifactIDFor(r.ID, r.PlanVersion)
 		}
-		a.tasks[r.ID] = &task{ID: r.ID, State: state, WorkspaceID: r.WorkspaceID, Title: r.Title, CreatedBy: createdByOf(r), Origin: originOf(r), Requirement: r.Requirement, Acceptance: acceptance, PlanVersion: r.PlanVersion, ApprovalHash: r.ApprovalHash, Approved: r.ApprovalGranted, Plan: plan, Verification: v, VerificationArtifactID: verificationArtifactID, OwnerUserID: r.OwnerUserID, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
+		loaded := &task{ID: r.ID, State: state, WorkspaceID: r.WorkspaceID, Title: r.Title, CreatedBy: createdByOf(r), Origin: originOf(r), Requirement: r.Requirement, Acceptance: acceptance, PlanVersion: r.PlanVersion, ApprovalHash: r.ApprovalHash, Approved: r.ApprovalGranted, Plan: plan, Verification: v, VerificationArtifactID: verificationArtifactID, OwnerUserID: r.OwnerUserID, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, GroupRequirementID: r.GroupRequirementID}
+		if r.ExternalKey != nil && *r.ExternalKey != "" {
+			loaded.ExternalKey = *r.ExternalKey
+			a.taskExternalKeys[*r.ExternalKey] = r.ID
+		}
+		a.tasks[r.ID] = loaded
 	}
 	for id := range a.tasks {
 		if n, err := strconv.ParseInt(strings.TrimPrefix(id, "task-"), 10, 64); err == nil && n > a.nextID {
@@ -600,71 +608,104 @@ func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
 	}
 	writeData(w, 200, t)
 }
+// execFailure is a typed core failure carrying the exact HTTP status,
+// code and message the handlers have always produced. The cores below
+// return it; handlers map it back with writeErr, so behavior is
+// unchanged, and the group push-down bridge (taskbridge.go) maps the
+// same codes onto its own permanence rules.
+type execFailure struct {
+	Status int
+	Code   string
+	Msg    string
+}
+
+func (f *execFailure) Error() string { return f.Code + ": " + f.Msg }
+
 func (a *API) approveTask(w http.ResponseWriter, r *http.Request) {
 	var in approvalRequest
 	if json.NewDecoder(r.Body).Decode(&in) != nil || in.ApprovalHash == "" {
 		writeErr(w, 400, "invalid_approval", "approval_hash is required")
 		return
 	}
+	owner := requestOwnerID(r)
+	t, _, fail := a.approveTaskCore(r.Context(), taskID(r), in.PlanVersion, in.ApprovalHash, "user", func(t *task) *execFailure {
+		if !a.canEditWorkspace(r.Context(), t.WorkspaceID, owner) {
+			return &execFailure{Status: 404, Code: "not_found", Msg: "task not found"}
+		}
+		return nil
+	})
+	if fail != nil {
+		writeErr(w, fail.Status, fail.Code, fail.Msg)
+		return
+	}
+	writeData(w, 200, t)
+}
+
+// approveTaskCore is the approveTask handler body, extracted unchanged
+// (P8): state + plan-version check, client hash check, Runner-facing
+// HMAC signature with one-time nonce, ApprovalRepository record. The
+// check closure carries the caller's access rule (the HTTP handler
+// passes the workspace ACL check; the group push-down bridge passes
+// nil — group approval is its authorization, W19). actor lands on the
+// approval record: "user" for the HTTP path, the approving human's ID
+// for push-down. Returns the task and the approval record ID.
+func (a *API) approveTaskCore(ctx context.Context, id string, planVersion int, approvalHash, actor string, check func(*task) *execFailure) (*task, string, *execFailure) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	t := a.tasks[taskID(r)]
-	if t == nil || !a.canEditWorkspace(r.Context(), t.WorkspaceID, requestOwnerID(r)) {
-		writeErr(w, 404, "not_found", "task not found")
-		return
+	t := a.tasks[id]
+	if t == nil {
+		return nil, "", &execFailure{Status: 404, Code: "not_found", Msg: "task not found"}
 	}
-	if t.State != "AWAITING_APPROVAL" || in.PlanVersion != t.PlanVersion {
-		writeErr(w, 409, "invalid_state", "task is not awaiting matching approval")
-		return
+	if check != nil {
+		if f := check(t); f != nil {
+			return nil, "", f
+		}
 	}
-	if in.ApprovalHash != t.ApprovalHash {
-		writeErr(w, http.StatusConflict, "approval_mismatch", "approval hash does not match immutable plan")
-		return
+	if t.State != "AWAITING_APPROVAL" || planVersion != t.PlanVersion {
+		return nil, "", &execFailure{Status: 409, Code: "invalid_state", Msg: "task is not awaiting matching approval"}
 	}
-	t.ApprovalHash = in.ApprovalHash
+	if approvalHash != t.ApprovalHash {
+		return nil, "", &execFailure{Status: http.StatusConflict, Code: "approval_mismatch", Msg: "approval hash does not match immutable plan"}
+	}
+	t.ApprovalHash = approvalHash
 	// The client-facing approval_hash binds the UI confirmation to the immutable
 	// plan and keys the Council-side approval record, so it stays as-is. The
 	// Runner-facing credential is separate: a keyed HMAC over the plan with a
 	// short expiry and a one-time nonce, generated here at approval time.
 	if a.signer == nil {
-		writeErr(w, http.StatusServiceUnavailable, "signing_unavailable", "approval signing key is not configured")
-		return
+		return nil, "", &execFailure{Status: http.StatusServiceUnavailable, Code: "signing_unavailable", Msg: "approval signing key is not configured"}
 	}
 	nonce, nonceErr := newApprovalNonce()
 	if nonceErr != nil {
-		writeErr(w, http.StatusInternalServerError, "signing_failed", "could not generate approval nonce")
-		return
+		return nil, "", &execFailure{Status: http.StatusInternalServerError, Code: "signing_failed", Msg: "could not generate approval nonce"}
 	}
 	expiresAt := time.Now().Add(10 * time.Minute).Unix()
 	signature, signErr := a.signer.Sign(t.ID, t.WorkspaceID, t.PlanVersion, t.Plan, expiresAt, nonce)
 	if signErr != nil {
-		writeErr(w, http.StatusInternalServerError, "signing_failed", "could not sign approval")
-		return
+		return nil, "", &execFailure{Status: http.StatusInternalServerError, Code: "signing_failed", Msg: "could not sign approval"}
 	}
 	t.ApprovalSignature = signature
 	t.ApprovalExpiresAt = expiresAt
 	t.ApprovalNonce = nonce
+	approvalID := ""
 	if a.approvalRepo != nil {
-		if err := a.approvalRepo.Invalidate(r.Context(), t.ID); err != nil {
-			writeErr(w, http.StatusInternalServerError, "approval_persistence_failed", err.Error())
-			return
+		if err := a.approvalRepo.Invalidate(ctx, t.ID); err != nil {
+			return nil, "", &execFailure{Status: http.StatusInternalServerError, Code: "approval_persistence_failed", Msg: err.Error()}
 		}
-		if err := a.approvalRepo.Save(r.Context(), sqlite.ApprovalRecord{ID: strconv.FormatInt(time.Now().UnixNano(), 10), RunID: t.ID, PlanVersion: in.PlanVersion, SnapshotHash: in.ApprovalHash, Decision: "approved", Actor: "user", CreatedAt: time.Now().UTC()}); err != nil {
-			writeErr(w, http.StatusInternalServerError, "approval_persistence_failed", err.Error())
-			return
+		approvalID = strconv.FormatInt(time.Now().UnixNano(), 10)
+		if err := a.approvalRepo.Save(ctx, sqlite.ApprovalRecord{ID: approvalID, RunID: t.ID, PlanVersion: planVersion, SnapshotHash: approvalHash, Decision: "approved", Actor: actor, CreatedAt: time.Now().UTC()}); err != nil {
+			return nil, "", &execFailure{Status: http.StatusInternalServerError, Code: "approval_persistence_failed", Msg: err.Error()}
 		}
 	}
 	t.Approved = true
 	if err := a.persistTask(t); err != nil {
-		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
-		return
+		return nil, "", &execFailure{Status: http.StatusInternalServerError, Code: "task_persistence_failed", Msg: err.Error()}
 	}
-	if err := a.append(t, "approval.created", in); err != nil {
-		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
-		return
+	if err := a.append(t, "approval.created", approvalRequest{PlanVersion: planVersion, ApprovalHash: approvalHash}); err != nil {
+		return nil, "", &execFailure{Status: http.StatusInternalServerError, Code: "event_persistence_failed", Msg: err.Error()}
 	}
 	a.metrics.ApprovalsGranted.Add(1)
-	writeData(w, 200, t)
+	return t, approvalID, nil
 }
 func (a *API) rejectTask(w http.ResponseWriter, r *http.Request) {
 	in, parseErr := parseRejectRequest(r)
@@ -758,67 +799,84 @@ func (a *API) getArtifact(w http.ResponseWriter, r *http.Request) {
 	writeData(w, 200, env)
 }
 func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
-	a.mu.Lock()
-	t := a.tasks[taskID(r)]
-	if t == nil || !a.canEditWorkspace(r.Context(), t.WorkspaceID, requestOwnerID(r)) {
-		a.mu.Unlock()
-		writeErr(w, 404, "not_found", "task not found")
+	owner := requestOwnerID(r)
+	t, fail := a.executeTaskCore(r.Context(), taskID(r), func(t *task) *execFailure {
+		if !a.canEditWorkspace(r.Context(), t.WorkspaceID, owner) {
+			return &execFailure{Status: 404, Code: "not_found", Msg: "task not found"}
+		}
+		return nil
+	})
+	if fail != nil {
+		writeErr(w, fail.Status, fail.Code, fail.Msg)
 		return
+	}
+	writeData(w, 200, t)
+}
+
+// executeTaskCore is the executeTask handler body, extracted unchanged
+// (P8, W23): load task -> workspace-kind guard -> consume the single-use
+// approval -> synchronous Runner call -> VERIFYING -> SUCCEEDED. The
+// check closure carries the caller's access rule (HTTP handler: the
+// workspace ACL check; group push-down bridge: nil, per W19). The lock
+// is released around the Runner call exactly as the handler did.
+func (a *API) executeTaskCore(ctx context.Context, id string, check func(*task) *execFailure) (*task, *execFailure) {
+	a.mu.Lock()
+	t := a.tasks[id]
+	if t == nil {
+		a.mu.Unlock()
+		return nil, &execFailure{Status: 404, Code: "not_found", Msg: "task not found"}
+	}
+	if check != nil {
+		if f := check(t); f != nil {
+			a.mu.Unlock()
+			return nil, f
+		}
 	}
 	resuming := t.State == "EXECUTING"
 	if t.State != "AWAITING_APPROVAL" && !resuming {
 		if !t.Approved {
 			a.mu.Unlock()
-			writeErr(w, 403, "approval_required", "manual approval required")
-			return
+			return nil, &execFailure{Status: 403, Code: "approval_required", Msg: "manual approval required"}
 		}
 		a.mu.Unlock()
-		writeErr(w, http.StatusConflict, "invalid_state", "task is not awaiting approval")
-		return
+		return nil, &execFailure{Status: http.StatusConflict, Code: "invalid_state", Msg: "task is not awaiting approval"}
 	}
 	if !t.Approved && !resuming {
 		a.mu.Unlock()
-		writeErr(w, 403, "approval_required", "manual approval required")
-		return
+		return nil, &execFailure{Status: 403, Code: "approval_required", Msg: "manual approval required"}
 	}
 	if a.runnerClient == nil {
 		a.mu.Unlock()
-		writeErr(w, http.StatusServiceUnavailable, "runner_unavailable", "runner client is not configured")
-		return
+		return nil, &execFailure{Status: http.StatusServiceUnavailable, Code: "runner_unavailable", Msg: "runner client is not configured"}
 	}
 	// Kind guard: group_shared workspaces can never execute. This runs before
 	// the approval record is consumed so a rejected execution leaves the
 	// one-time approval untouched.
 	if a.db != nil {
-		if err := wskind.GuardExecution(r.Context(), sqlite.NewWorkspaceKindStore(a.db), t.WorkspaceID); err != nil {
+		if err := wskind.GuardExecution(ctx, sqlite.NewWorkspaceKindStore(a.db), t.WorkspaceID); err != nil {
 			a.mu.Unlock()
 			if errors.Is(err, wskind.ErrNotExecutable) || errors.Is(err, wskind.ErrUnknownKind) {
-				writeErr(w, http.StatusConflict, "workspace_not_executable", err.Error())
-			} else {
-				writeErr(w, http.StatusInternalServerError, "workspace_kind_failed", err.Error())
+				return nil, &execFailure{Status: http.StatusConflict, Code: "workspace_not_executable", Msg: err.Error()}
 			}
-			return
+			return nil, &execFailure{Status: http.StatusInternalServerError, Code: "workspace_kind_failed", Msg: err.Error()}
 		}
 	}
 	if a.approvalRepo != nil && !resuming {
-		consumed, err := a.approvalRepo.ConsumeAndMarkExecuting(r.Context(), t.ID, t.PlanVersion, t.ApprovalHash)
+		consumed, err := a.approvalRepo.ConsumeAndMarkExecuting(ctx, t.ID, t.PlanVersion, t.ApprovalHash)
 		if err != nil {
 			a.mu.Unlock()
-			writeErr(w, http.StatusInternalServerError, "approval_persistence_failed", err.Error())
-			return
+			return nil, &execFailure{Status: http.StatusInternalServerError, Code: "approval_persistence_failed", Msg: err.Error()}
 		}
 		if !consumed {
 			a.mu.Unlock()
-			writeErr(w, http.StatusConflict, "approval_consumed", "matching approval is no longer active")
-			return
+			return nil, &execFailure{Status: http.StatusConflict, Code: "approval_consumed", Msg: "matching approval is no longer active"}
 		}
 	}
 	if !resuming {
 		t.State = "EXECUTING"
 		if err := a.append(t, "state.changed", map[string]string{"state": t.State}); err != nil {
 			a.mu.Unlock()
-			writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
-			return
+			return nil, &execFailure{Status: http.StatusInternalServerError, Code: "event_persistence_failed", Msg: err.Error()}
 		}
 	}
 	req := &runnerv1.ExecuteApprovedPlanRequest{RequestId: t.ID + ":" + strconv.Itoa(t.PlanVersion), RunId: t.ID, WorkspaceId: t.WorkspaceID, PlanVersion: int32(t.PlanVersion), ApprovalHash: t.ApprovalSignature, ExpiresAt: t.ApprovalExpiresAt, Nonce: t.ApprovalNonce, Acceptance: append([]string(nil), t.Plan.Acceptance...)}
@@ -836,31 +894,27 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 	// other API request. State write-back below re-acquires it.
 	a.mu.Unlock()
 	runnerStarted := time.Now()
-	resp, err := a.runnerClient.ExecuteApprovedPlan(r.Context(), req)
+	resp, err := a.runnerClient.ExecuteApprovedPlan(ctx, req)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err != nil {
 		a.metrics.RecordRunnerExecution(false, time.Since(runnerStarted))
-		writeErr(w, http.StatusBadGateway, "runner_unavailable", err.Error())
-		return
+		return nil, &execFailure{Status: http.StatusBadGateway, Code: "runner_unavailable", Msg: err.Error()}
 	}
 	if resp == nil || resp.Status != "SUCCEEDED" {
 		a.metrics.RecordRunnerExecution(false, time.Since(runnerStarted))
 		t.State = "FAILED"
 		if persistErr := a.persistTask(t); persistErr != nil {
-			writeErr(w, http.StatusInternalServerError, "task_persistence_failed", persistErr.Error())
-			return
+			return nil, &execFailure{Status: http.StatusInternalServerError, Code: "task_persistence_failed", Msg: persistErr.Error()}
 		}
 		if appendErr := a.append(t, "state.changed", map[string]string{"state": t.State}); appendErr != nil {
-			writeErr(w, http.StatusInternalServerError, "event_persistence_failed", appendErr.Error())
-			return
+			return nil, &execFailure{Status: http.StatusInternalServerError, Code: "event_persistence_failed", Msg: appendErr.Error()}
 		}
 		errorCode := "runner returned no result"
 		if resp != nil {
 			errorCode = resp.ErrorCode
 		}
-		writeErr(w, 409, "execution_failed", errorCode)
-		return
+		return nil, &execFailure{Status: 409, Code: "execution_failed", Msg: errorCode}
 	}
 	a.metrics.RecordRunnerExecution(true, time.Since(runnerStarted))
 	t.Verification = resp
@@ -868,34 +922,28 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 		artifactID := verificationArtifactIDFor(t.ID, t.PlanVersion)
 		verificationArtifact, artifactErr := artifactcore.New("runner.verification", artifactID, t.ID, resp)
 		if artifactErr != nil {
-			writeErr(w, http.StatusInternalServerError, "artifact_persistence_failed", "Runner verification artifact could not be encoded")
-			return
+			return nil, &execFailure{Status: http.StatusInternalServerError, Code: "artifact_persistence_failed", Msg: "Runner verification artifact could not be encoded"}
 		}
-		if artifactErr = a.artifactRepo.SaveOwned(r.Context(), t.OwnerUserID, t.ID, verificationArtifact); artifactErr != nil {
-			writeErr(w, http.StatusInternalServerError, "artifact_persistence_failed", "Runner verification artifact could not be stored")
-			return
+		if artifactErr = a.artifactRepo.SaveOwned(ctx, t.OwnerUserID, t.ID, verificationArtifact); artifactErr != nil {
+			return nil, &execFailure{Status: http.StatusInternalServerError, Code: "artifact_persistence_failed", Msg: "Runner verification artifact could not be stored"}
 		}
 		t.VerificationArtifactID = artifactID
 	}
 	t.State = "VERIFYING"
 	if err := a.persistTask(t); err != nil {
-		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
-		return
+		return nil, &execFailure{Status: http.StatusInternalServerError, Code: "task_persistence_failed", Msg: err.Error()}
 	}
 	if err := a.append(t, "state.changed", map[string]string{"state": t.State}); err != nil {
-		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
-		return
+		return nil, &execFailure{Status: http.StatusInternalServerError, Code: "event_persistence_failed", Msg: err.Error()}
 	}
 	t.State = "SUCCEEDED"
 	if err := a.persistTask(t); err != nil {
-		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
-		return
+		return nil, &execFailure{Status: http.StatusInternalServerError, Code: "task_persistence_failed", Msg: err.Error()}
 	}
 	if err := a.append(t, "state.changed", map[string]string{"state": t.State}); err != nil {
-		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
-		return
+		return nil, &execFailure{Status: http.StatusInternalServerError, Code: "event_persistence_failed", Msg: err.Error()}
 	}
-	writeData(w, 200, t)
+	return t, nil
 }
 
 func verificationArtifactIDFor(taskID string, planVersion int) string {
@@ -903,32 +951,51 @@ func verificationArtifactIDFor(taskID string, planVersion int) string {
 }
 
 func (a *API) cancelTask(w http.ResponseWriter, r *http.Request) {
+	owner := requestOwnerID(r)
+	t, fail := a.cancelTaskCore(taskID(r), func(t *task) *execFailure {
+		if !a.canEditWorkspace(r.Context(), t.WorkspaceID, owner) {
+			return &execFailure{Status: 404, Code: "not_found", Msg: "task not found"}
+		}
+		return nil
+	})
+	if fail != nil {
+		writeErr(w, fail.Status, fail.Code, fail.Msg)
+		return
+	}
+	writeData(w, 200, t)
+}
+
+// cancelTaskCore is the cancelTask handler body, extracted unchanged
+// (P8): the group push-down calls it best-effort when a requirement is
+// cancelled mid-flight.
+func (a *API) cancelTaskCore(id string, check func(*task) *execFailure) (*task, *execFailure) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	t := a.tasks[taskID(r)]
-	if t == nil || !a.canEditWorkspace(r.Context(), t.WorkspaceID, requestOwnerID(r)) {
-		writeErr(w, 404, "not_found", "task not found")
-		return
+	t := a.tasks[id]
+	if t == nil {
+		return nil, &execFailure{Status: 404, Code: "not_found", Msg: "task not found"}
+	}
+	if check != nil {
+		if f := check(t); f != nil {
+			return nil, f
+		}
 	}
 	// A synchronous Runner execution has no cancel RPC; refuse rather than mark
 	// the task CANCELLED while the Runner keeps running (state/reality mismatch).
 	if t.State == "EXECUTING" {
-		writeErr(w, http.StatusConflict, "execution_in_progress", "task is executing and cannot be cancelled")
-		return
+		return nil, &execFailure{Status: http.StatusConflict, Code: "execution_in_progress", Msg: "task is executing and cannot be cancelled"}
 	}
 	prevState, prevApproved := t.State, t.Approved
 	t.State = "CANCELLED"
 	t.Approved = false
 	if err := a.persistTask(t); err != nil {
 		t.State, t.Approved = prevState, prevApproved
-		writeErr(w, http.StatusInternalServerError, "task_persistence_failed", err.Error())
-		return
+		return nil, &execFailure{Status: http.StatusInternalServerError, Code: "task_persistence_failed", Msg: err.Error()}
 	}
 	if err := a.append(t, "state.changed", map[string]string{"state": t.State}); err != nil {
-		writeErr(w, http.StatusInternalServerError, "event_persistence_failed", err.Error())
-		return
+		return nil, &execFailure{Status: http.StatusInternalServerError, Code: "event_persistence_failed", Msg: err.Error()}
 	}
-	writeData(w, 200, t)
+	return t, nil
 }
 func (a *API) append(t *task, typ string, data any) error {
 	e := Event{ID: int64(len(t.Events) + 1), Type: typ, Data: data, CreatedAt: time.Now().UTC()}
