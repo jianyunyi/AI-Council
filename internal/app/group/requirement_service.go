@@ -172,6 +172,16 @@ func (s *Service) requirementView(ctx context.Context, rec *sqlite.GroupRequirem
 	if job, err := s.reqRepo.GetJobForRequirement(ctx, rec.ID); err == nil {
 		v.Job = &JobView{State: job.State, Attempts: job.Attempts}
 	}
+	if s.pushdownEnabled() {
+		if v.Proposal != nil {
+			if c, err := s.pd().LatestCheck(ctx, rec.ID, v.Proposal.Attempt); err == nil && c != nil {
+				v.RedTeam = redTeamView(c)
+			}
+		}
+		if rec2, err := s.pd().LatestPushdown(ctx, rec.ID); err == nil && rec2 != nil {
+			v.Pushdown = pushdownView(rec2)
+		}
+	}
 	return v, nil
 }
 
@@ -232,6 +242,7 @@ func (s *Service) ListRequirements(ctx context.Context, a Actor, gid string, in 
 			return nil, err
 		}
 		v.AllowedActions = s.allowedActions(ctx, a, me, &recs[i])
+		v.CanApprove, v.ApproveBlockedReason = s.approvalFlags(ctx, a, me, &recs[i], &v)
 		page.Items = append(page.Items, v)
 	}
 	if more && len(recs) > 0 {
@@ -260,6 +271,7 @@ func (s *Service) GetRequirement(ctx context.Context, a Actor, gid, rid string) 
 		return nil, err
 	}
 	v.AllowedActions = s.allowedActions(ctx, a, me, rec)
+	v.CanApprove, v.ApproveBlockedReason = s.approvalFlags(ctx, a, me, rec, &v)
 	return &v, nil
 }
 
@@ -337,7 +349,8 @@ func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reas
 		return nil, errForbidden
 	}
 	switch rec.State {
-	case ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed:
+	case ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed,
+		ReqAwaitingApproval, ReqApproved, ReqExecuting:
 	default:
 		return nil, errRequirementState
 	}
@@ -345,7 +358,8 @@ func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reas
 	_, err = s.mutate(ctx, gid, "requirement.state_changed", func(tx *sqlite.GroupRepo, at time.Time) (any, error) {
 		txReq := sqlite.NewRequirementRepo(tx.DB())
 		ok, err := txReq.UpdateRequirementState(ctx, rid,
-			[]string{ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed}, rec.Version, map[string]any{
+			[]string{ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed,
+				ReqAwaitingApproval, ReqApproved, ReqExecuting}, rec.Version, map[string]any{
 				"state": ReqCancelled, "cancelled_by_user_id": a.UserID,
 				"cancelled_by_member_id": memberIDOf(m), "cancel_reason": truncate(reason, 2000),
 				"terminal_at": now, "state_changed_at": now, "updated_at": now,
@@ -359,6 +373,13 @@ func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reas
 		if err := txReq.CancelQueuedJobsForRequirement(ctx, rid, now); err != nil {
 			return nil, err
 		}
+		// P8: a queued/running red-team check for a cancelled
+		// requirement must never finish it later.
+		if rec.State == ReqReviewPassed && s.pushdownEnabled() {
+			if err := sqlite.NewPushdownRepo(tx.DB()).SupersedeOpenChecks(ctx, rid, now); err != nil {
+				return nil, err
+			}
+		}
 		return RequirementEventData{RequirementID: rid, State: ReqCancelled, Version: rec.Version + 1}, nil
 	})
 	if err != nil {
@@ -368,6 +389,11 @@ func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reas
 	// outstanding decisions are withdrawn and verdicts stay hidden.
 	if err := s.CloseOpenReviewAfterCancel(ctx, gid, rid); err != nil {
 		return nil, err
+	}
+	// P8: cancelling an approved/executing requirement also cancels
+	// its pushed-down task (best-effort; see cancelPushdown).
+	if rec.State == ReqApproved || rec.State == ReqExecuting {
+		s.cancelPushdown(ctx, a.UserID, rid)
 	}
 	s.record(ctx, a.UserID, "group.requirement_cancelled", gid, "group_requirement", rid, map[string]any{"reason": truncate(reason, 200)})
 	return s.GetRequirement(ctx, a, gid, rid)

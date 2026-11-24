@@ -296,8 +296,9 @@ func (s *Service) rvStartReviewTx(ctx context.Context, tx *sqlite.GroupRepo, g *
 // outcome. Superseded skips the requirement transition (the caller is
 // cancelling it in the same flow). Caller guarantees no decision is
 // pending/running, except for superseded where that is handled by the
-// caller withdrawing them first.
-func rvCloseRoundTx(ctx context.Context, tx *sqlite.GroupRepo, round *sqlite.ReviewRoundRecord, outcome, closedBy string, at time.Time) ([]Event, error) {
+// caller withdrawing them first. When push-down is enabled, a passed
+// close also queues the red-team check in the same transaction (§2.6a).
+func (s *Service) rvCloseRoundTx(ctx context.Context, tx *sqlite.GroupRepo, round *sqlite.ReviewRoundRecord, outcome, closedBy string, at time.Time) ([]Event, error) {
 	txReq := sqlite.NewRequirementRepo(tx.DB())
 	txRev := sqlite.NewReviewRepo(tx.DB())
 	if err := txRev.UpdateRound(ctx, round.ID, map[string]any{
@@ -340,6 +341,17 @@ func rvCloseRoundTx(ctx context.Context, tx *sqlite.GroupRepo, round *sqlite.Rev
 			return nil, err
 		}
 		evs = append(evs, ev)
+		if outcome == OutcomePassed && s.pushdownEnabled() {
+			prop, err := txReq.GetProposal(ctx, round.ProposalID)
+			if err != nil {
+				return nil, err
+			}
+			ev, err := s.rtEnqueueTx(ctx, tx, round.GroupID, req, prop, round, at)
+			if err != nil {
+				return nil, err
+			}
+			evs = append(evs, ev)
+		}
 	}
 	ev, err := rvAppendEvent(ctx, tx, round.GroupID, "review.closed",
 		ReviewEventData{RequirementID: round.RequirementID, RoundID: round.ID, Outcome: outcome}, at)
@@ -351,7 +363,7 @@ func rvCloseRoundTx(ctx context.Context, tx *sqlite.GroupRepo, round *sqlite.Rev
 }
 
 // rvMaybeCloseTx closes the round when every decision is final.
-func rvMaybeCloseTx(ctx context.Context, tx *sqlite.GroupRepo, round *sqlite.ReviewRoundRecord, closedBy string, at time.Time) ([]Event, error) {
+func (s *Service) rvMaybeCloseTx(ctx context.Context, tx *sqlite.GroupRepo, round *sqlite.ReviewRoundRecord, closedBy string, at time.Time) ([]Event, error) {
 	txRev := sqlite.NewReviewRepo(tx.DB())
 	decs, err := txRev.ListDecisions(ctx, round.ID)
 	if err != nil {
@@ -363,7 +375,7 @@ func rvMaybeCloseTx(ctx context.Context, tx *sqlite.GroupRepo, round *sqlite.Rev
 		}
 	}
 	outcome := aggregateRound(decs, round.PolicyRule, round.PolicyQuorum)
-	return rvCloseRoundTx(ctx, tx, round, outcome, closedBy, at)
+	return s.rvCloseRoundTx(ctx, tx, round, outcome, closedBy, at)
 }
 
 // ---------- endpoints' service methods ----------
@@ -482,7 +494,7 @@ func (s *Service) SubmitDecision(ctx context.Context, a Actor, gid, rid string, 
 			return nil, err
 		}
 		evs := []Event{ev}
-		closeEvs, err := rvMaybeCloseTx(ctx, tx, round, a.UserID, at)
+		closeEvs, err := s.rvMaybeCloseTx(ctx, tx, round, a.UserID, at)
 		if err != nil {
 			return nil, err
 		}
@@ -545,7 +557,7 @@ func (s *Service) ForceCloseReview(ctx context.Context, a Actor, gid, rid string
 			}
 		}
 		outcome := aggregateRound(decs, round.PolicyRule, round.PolicyQuorum)
-		return rvCloseRoundTx(ctx, tx, round, outcome, a.UserID, at)
+		return s.rvCloseRoundTx(ctx, tx, round, outcome, a.UserID, at)
 	})
 	if err != nil {
 		return nil, err
@@ -587,7 +599,22 @@ func (s *Service) ReviseRequirement(ctx context.Context, a Actor, gid, rid strin
 		return nil, errRequirementState
 	}
 	round, err := s.reviewRepo().GetLatestRound(ctx, rid)
-	if err != nil || round.Status != RoundClosed || round.Outcome != OutcomeChangesRequested {
+	if err != nil {
+		return nil, errRequirementState
+	}
+	roundRevisable := round.Status == RoundClosed && round.Outcome == OutcomeChangesRequested
+	if !roundRevisable && s.pushdownEnabled() && round.Status == RoundClosed && round.Outcome == OutcomePassed {
+		// P8: the red team, not the round, sent this attempt back — the
+		// round legitimately passed, and the flagged check is what
+		// makes the requirement revisable. The findings reach the next
+		// prompt via priorFeedback/redTeamFeedback.
+		if prop, perr := s.reqRepo.GetProposal(ctx, rec.CurrentProposalID); perr == nil {
+			if c, cerr := s.pd().LatestCheck(ctx, rid, prop.Attempt); cerr == nil && c != nil && c.Status == RTFlagged {
+				roundRevisable = true
+			}
+		}
+	}
+	if !roundRevisable {
 		return nil, errRequirementState
 	}
 	count, err := s.reqRepo.CountProposals(ctx, rid)
@@ -672,7 +699,7 @@ func (s *Service) CloseOpenReviewAfterCancel(ctx context.Context, gid, rid strin
 				}
 			}
 		}
-		return rvCloseRoundTx(ctx, tx, round, OutcomeSuperseded, "system", at)
+		return s.rvCloseRoundTx(ctx, tx, round, OutcomeSuperseded, "system", at)
 	})
 }
 
@@ -705,9 +732,27 @@ func (s *Service) allowedActions(ctx context.Context, a Actor, me *sqlite.ChatGr
 		if canAct {
 			out = append(out, "retry")
 		}
+	case ReqReviewPassed:
+		// P8: an errored red-team check can be retried by a manager.
+		if s.pushdownEnabled() && canManage(a, me) && rec.CurrentProposalID != "" {
+			if p, err := s.reqRepo.GetProposal(ctx, rec.CurrentProposalID); err == nil {
+				if c, err := s.pd().LatestCheck(ctx, rec.ID, p.Attempt); err == nil && c != nil && c.Status == RTError {
+					out = append(out, "retry_redteam")
+				}
+			}
+		}
+	case ReqAwaitingApproval:
+		if canApprove(a, me) {
+			out = append(out, "approve")
+		}
+	case ReqApproved:
+		if canApprove(a, me) {
+			out = append(out, "retry_pushdown")
+		}
 	}
 	switch rec.State {
-	case ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed:
+	case ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed,
+		ReqAwaitingApproval, ReqApproved, ReqExecuting:
 		if canAct {
 			out = append(out, "cancel")
 		}
@@ -855,7 +900,7 @@ func (s *Service) runReviewJob(ctx context.Context, workerID string, job *sqlite
 			return nil, err
 		}
 		if roundNow.Status == RoundOpen {
-			closeEvs, err := rvMaybeCloseTx(ctx, tx, roundNow, "system", at)
+			closeEvs, err := s.rvMaybeCloseTx(ctx, tx, roundNow, "system", at)
 			if err != nil {
 				return nil, err
 			}
@@ -895,7 +940,7 @@ func (s *Service) failReviewDecisionOnly(ctx context.Context, dec *sqlite.Review
 		if err != nil || round.Status != RoundOpen {
 			return nil, nil
 		}
-		return rvMaybeCloseTx(ctx, tx, round, "system", at)
+		return s.rvMaybeCloseTx(ctx, tx, round, "system", at)
 	})
 }
 

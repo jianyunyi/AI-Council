@@ -40,6 +40,8 @@ func (s *Service) runJob(ctx context.Context, workerID string, job *sqlite.Group
 	switch job.Kind {
 	case JobKindReview:
 		return s.runReviewJob(ctx, workerID, job)
+	case JobKindRedTeam:
+		return s.runRedTeamJob(ctx, workerID, job)
 	default:
 		return s.runProposalJob(ctx, workerID, job)
 	}
@@ -107,7 +109,7 @@ func (s *Service) generateProposal(ctx context.Context, workerID string, job *sq
 		_ = json.Unmarshal(req.AcceptanceJSON, &acceptance)
 	}
 
-	priorFeedback := s.priorReviewFeedback(ctx, req)
+	priorFeedback := s.priorFeedback(ctx, req)
 	var repair *repairContext
 	for attempt := 0; attempt < 2; attempt++ {
 		msgs := buildProposalMessages(req.Title, req.BodyMD, acceptance, contextLines, repair, priorFeedback)
@@ -551,6 +553,12 @@ func (s *Service) requeueExpired(ctx context.Context) error {
 			// P7: an exhausted review job errors its decision so the
 			// round can still close; the requirement itself is untouched.
 			_ = s.expireReviewJob(ctx, &rows[i])
+			continue
+		}
+		if rows[i].Kind == JobKindRedTeam {
+			// P8: an exhausted red-team job errors its check so a
+			// manager can retry it; the requirement stays review_passed.
+			_ = s.expireRedTeamJob(ctx, &rows[i])
 			continue
 		}
 		req, err := s.reqRepo.GetRequirement(ctx, rows[i].RequirementID)

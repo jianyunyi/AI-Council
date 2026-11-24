@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aicouncil/aicouncil/internal/council/schema"
 	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
 )
 
@@ -154,11 +155,28 @@ type ReviewerRef struct {
 	Handle     string `json:"handle,omitempty"`
 }
 
-// planHashOf fingerprints a proposal's plan JSON; a review round binds
-// to the hash at open time so a swapped plan is detectable.
+// planHashOf fingerprints a proposal's plan; a review round binds to
+// the hash at open time so a swapped plan is detectable. The hash is
+// over the CANONICAL form (parse into schema.ExecutionPlan, re-marshal):
+// proposal PlanJSON is raw model output whose byte layout (key order,
+// whitespace, omitted empty fields) is not stable, while the P8 task
+// bridge can only recompute the hash from the parsed plan a task
+// carries. Canonicalizing keeps both sides in agreement; unparseable
+// input falls back to the raw bytes.
 func planHashOf(planJSON []byte) string {
+	if canonical, err := canonicalPlanJSON(planJSON); err == nil {
+		planJSON = canonical
+	}
 	sum := sha256.Sum256(planJSON)
 	return hex.EncodeToString(sum[:])
+}
+
+func canonicalPlanJSON(planJSON []byte) ([]byte, error) {
+	var plan schema.ExecutionPlan
+	if err := json.Unmarshal(planJSON, &plan); err != nil {
+		return nil, err
+	}
+	return json.Marshal(plan)
 }
 
 // PlanHashOf is planHashOf exported for the council task bridge (P8,
