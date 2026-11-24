@@ -167,7 +167,7 @@ func TestConfigureRBACPasswordBootstrapAndRestart(t *testing.T) {
 	require.Equal(t, []string{"admin:users"}, roles[0].Permissions)
 	permissions, err := service.ListPermissions(ctx)
 	require.NoError(t, err)
-	require.Len(t, permissions, 15)
+	require.Len(t, permissions, 17)
 }
 
 func TestConfigureRBACLegacyBootstrapKeepsBearerToken(t *testing.T) {

@@ -126,6 +126,13 @@ func main() {
 	}
 	councilRolesRepo := storage.NewCouncilRolesRepository(db)
 	api.WithCouncilRoles(councilRolesRepo)
+	// AI model registry (Part B P4): build the service against the API's
+	// stores and re-drive any provisioning interrupted by a restart.
+	if aiModelService := transport.InstallAIModels(api); aiModelService != nil {
+		if err := aiModelService.ResumePending(context.Background()); err != nil {
+			slog.Warn("resume pending ai model provisioning", "error", err)
+		}
+	}
 	if providerKeyService != nil && rbacService != nil {
 		api.WithCouncilFactory(func(ctx context.Context, ownerID string, workspaceID string) (appTask.CouncilPort, error) {
 			resolver := roles.NewResolver(councilRolesRepo, func(ctx context.Context, owner string) ([]roles.ProfileInfo, error) {
@@ -254,6 +261,11 @@ func migrateRunnerWorkspaces(ctx context.Context, db *gorm.DB, runner workspaceR
 	}
 	migrations := make([]migration, 0, len(records))
 	for _, record := range records {
+		if record.Archived || record.Kind == "group_shared" {
+			// Archived workspaces stay unregistered; group_shared workspaces
+			// never have a Runner workspace (wskind guard).
+			continue
+		}
 		relative := record.RunnerPath
 		if relative == "" {
 			relative, err = filepath.Rel(root, record.CanonicalRoot)

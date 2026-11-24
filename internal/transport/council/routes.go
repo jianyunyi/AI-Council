@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -13,7 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aicouncil/aicouncil/internal/app/aimodel"
 	appTask "github.com/aicouncil/aicouncil/internal/app/task"
+	"github.com/aicouncil/aicouncil/internal/app/wskind"
 	"github.com/aicouncil/aicouncil/internal/approval"
 	artifactcore "github.com/aicouncil/aicouncil/internal/core/artifact"
 	councilengine "github.com/aicouncil/aicouncil/internal/council"
@@ -43,6 +46,7 @@ type API struct {
 	council         appTask.CouncilPort
 	councilFactory  func(context.Context, string, string) (appTask.CouncilPort, error)
 	councilRoles    *sqlite.CouncilRolesRepository
+	aiModels        *aimodel.Service
 	providerKeys    *providerkeysvc.Service
 	signer          *approval.Signer
 	workspaceAccess *workspaceaccess.Service
@@ -66,6 +70,7 @@ type workspace struct {
 	Root        string `json:"root"`
 	IsGit       bool   `json:"is_git"`
 	Dirty       bool   `json:"dirty"`
+	Kind        string `json:"kind"`
 	Access      string `json:"access,omitempty"`
 	IsOwner     bool   `json:"is_owner"`
 	OwnerUserID string `json:"-"`
@@ -153,7 +158,12 @@ func NewPersistentAPI(db *gorm.DB) *API {
 		panic(fmt.Sprintf("load workspaces on startup: %v", err))
 	}
 	for _, r := range workspaceRows {
-		a.workspaces[r.ID] = workspace{ID: r.ID, Root: r.CanonicalRoot, IsGit: r.IsGit, Dirty: r.Dirty, OwnerUserID: r.OwnerUserID, RunnerPath: r.RunnerPath}
+		if r.Archived {
+			// Archived workspaces (e.g. a disabled AI model's private
+			// workspace) stay in storage but are not served.
+			continue
+		}
+		a.workspaces[r.ID] = workspace{ID: r.ID, Root: r.CanonicalRoot, IsGit: r.IsGit, Dirty: r.Dirty, Kind: wskind.Normalize(r.Kind), OwnerUserID: r.OwnerUserID, RunnerPath: r.RunnerPath}
 	}
 	for _, r := range rows {
 		var acceptance []string
@@ -219,6 +229,13 @@ func (a *API) WithProviderKeys(service *providerkeysvc.Service) *API {
 	return a
 }
 
+// WithAIModelService installs the AI model registry service backing the
+// /api/v1/ai-models endpoints.
+func (a *API) WithAIModelService(service *aimodel.Service) *API {
+	a.aiModels = service
+	return a
+}
+
 // WithApprovalSigner installs the shared HMAC key used to sign Runner approvals.
 func (a *API) WithApprovalSigner(signer *approval.Signer) *API { a.signer = signer; return a }
 
@@ -244,7 +261,7 @@ func originOf(r sqlite.TaskRecord) string {
 }
 
 func (a *API) Routes() []rest.Route {
-	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks", Handler: a.listTasks}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/rejections", Handler: a.listTaskRejections}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}, {Method: http.MethodGet, Path: "/api/v1/council/roles", Handler: a.getCouncilRoles}, {Method: http.MethodPut, Path: "/api/v1/council/roles", Handler: a.putCouncilRoles}, {Method: http.MethodDelete, Path: "/api/v1/council/roles", Handler: a.deleteCouncilRoles}, {Method: http.MethodPost, Path: "/api/v1/council/roles/validate", Handler: a.validateCouncilRoles}}
+	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks", Handler: a.listTasks}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/rejections", Handler: a.listTaskRejections}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}, {Method: http.MethodGet, Path: "/api/v1/council/roles", Handler: a.getCouncilRoles}, {Method: http.MethodPut, Path: "/api/v1/council/roles", Handler: a.putCouncilRoles}, {Method: http.MethodDelete, Path: "/api/v1/council/roles", Handler: a.deleteCouncilRoles}, {Method: http.MethodPost, Path: "/api/v1/council/roles/validate", Handler: a.validateCouncilRoles}, {Method: http.MethodGet, Path: "/api/v1/ai-models", Handler: a.listAIModels}, {Method: http.MethodPost, Path: "/api/v1/ai-models", Handler: a.createAIModel}, {Method: http.MethodGet, Path: "/api/v1/ai-models/:id", Handler: a.getAIModel}, {Method: http.MethodPatch, Path: "/api/v1/ai-models/:id", Handler: a.patchAIModel}, {Method: http.MethodDelete, Path: "/api/v1/ai-models/:id", Handler: a.deleteAIModel}, {Method: http.MethodGet, Path: "/api/v1/ai-models/:id/workspace", Handler: a.getAIModelWorkspace}, {Method: http.MethodPost, Path: "/api/v1/ai-models/:id/workspace/retry", Handler: a.retryAIModelWorkspace}}
 }
 
 func (a *API) getWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -300,10 +317,12 @@ func (a *API) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "runner_registration_failed", "Runner rejected workspace registration")
 		return
 	}
-	ws := workspace{ID: id, Root: registered.Root, IsGit: registered.IsGit, Dirty: registered.Dirty, Access: string(workspaceaccess.Editor), IsOwner: true, OwnerUserID: owner, RunnerPath: root}
+	// Client-created workspaces are always standard; model_private and
+	// group_shared are created only by internal services.
+	ws := workspace{ID: id, Root: registered.Root, IsGit: registered.IsGit, Dirty: registered.Dirty, Kind: wskind.Standard, Access: string(workspaceaccess.Editor), IsOwner: true, OwnerUserID: owner, RunnerPath: root}
 	a.workspaces[id] = ws
 	if a.db != nil {
-		if err := a.db.Create(&sqlite.WorkspaceRecord{ID: id, OwnerUserID: owner, CanonicalRoot: ws.Root, RunnerPath: root, IsGit: ws.IsGit, Dirty: ws.Dirty}).Error; err != nil {
+		if err := a.db.Create(&sqlite.WorkspaceRecord{ID: id, OwnerUserID: owner, CanonicalRoot: ws.Root, RunnerPath: root, IsGit: ws.IsGit, Dirty: ws.Dirty, Kind: wskind.Standard}).Error; err != nil {
 			delete(a.workspaces, id)
 			a.nextID--
 			a.mu.Unlock()
@@ -328,11 +347,19 @@ func validRunnerRelativePath(value string) bool {
 	return clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator))
 }
 func (a *API) listWorkspaces(w http.ResponseWriter, r *http.Request) {
+	kindFilter := r.URL.Query().Get("kind")
+	if kindFilter != "" && !wskind.Valid(kindFilter) {
+		writeErr(w, http.StatusBadRequest, "invalid_kind", "kind must be standard, model_private or group_shared")
+		return
+	}
 	owner := requestOwnerID(r)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := make([]workspace, 0, len(a.workspaces))
 	for _, ws := range a.workspaces {
+		if kindFilter != "" && wskind.Normalize(ws.Kind) != kindFilter {
+			continue
+		}
 		access, err := a.effectiveWorkspaceAccess(r.Context(), ws.ID, owner)
 		if err == nil && access != workspaceaccess.AccessNone {
 			ws.Access = string(access)
@@ -717,6 +744,20 @@ func (a *API) executeTask(w http.ResponseWriter, r *http.Request) {
 		a.mu.Unlock()
 		writeErr(w, http.StatusServiceUnavailable, "runner_unavailable", "runner client is not configured")
 		return
+	}
+	// Kind guard: group_shared workspaces can never execute. This runs before
+	// the approval record is consumed so a rejected execution leaves the
+	// one-time approval untouched.
+	if a.db != nil {
+		if err := wskind.GuardExecution(r.Context(), sqlite.NewWorkspaceKindStore(a.db), t.WorkspaceID); err != nil {
+			a.mu.Unlock()
+			if errors.Is(err, wskind.ErrNotExecutable) || errors.Is(err, wskind.ErrUnknownKind) {
+				writeErr(w, http.StatusConflict, "workspace_not_executable", err.Error())
+			} else {
+				writeErr(w, http.StatusInternalServerError, "workspace_kind_failed", err.Error())
+			}
+			return
+		}
 	}
 	if a.approvalRepo != nil && !resuming {
 		consumed, err := a.approvalRepo.ConsumeAndMarkExecuting(r.Context(), t.ID, t.PlanVersion, t.ApprovalHash)
