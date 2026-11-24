@@ -83,3 +83,62 @@ func (ad groupProviderAdapter) Generate(ctx context.Context, req group.InvokeReq
 		ProviderRequestID: resp.ProviderRequestID,
 	}, nil
 }
+
+// GenerateForProfile implements group.ProfileProviderInvoker (P8): a
+// red-team seat names a provider profile + model directly (Part A role
+// assignment), which may not be a registered AI model, so Generate's
+// AIModelID lookup cannot serve it. The construction is identical to
+// Generate's — profile record, decrypted secret, per-type provider,
+// cost meter — with the seat's model instead of the registry's.
+func (ad groupProviderAdapter) GenerateForProfile(ctx context.Context, profileID, model string, req group.InvokeRequest) (group.InvokeResult, error) {
+	a := ad.a
+	if a.db == nil {
+		return group.InvokeResult{}, errors.New("storage is not available on this server")
+	}
+	if a.providerKeys == nil {
+		return group.InvokeResult{}, errors.New("provider keys are not configured on this server (PROVIDER_KEY_ENCRYPTION_KEY is unset)")
+	}
+	var profile sqlite.ProviderProfileRecord
+	if err := a.db.WithContext(ctx).Where("id = ?", profileID).First(&profile).Error; err != nil {
+		return group.InvokeResult{}, fmt.Errorf("load provider profile %s: %w", profileID, err)
+	}
+	secret, err := a.providerKeys.Secret(ctx, profile.OwnerUserID, profile.ID)
+	if err != nil {
+		return group.InvokeResult{}, fmt.Errorf("decrypt provider key: %w", err)
+	}
+	var p provider.ModelProvider
+	switch profile.Provider {
+	case "openai":
+		p = openai.New(openai.Config{APIKey: secret, Model: model})
+	case "deepseek":
+		p = deepseek.New(deepseek.Config{APIKey: secret, Model: model})
+	case "anthropic":
+		p = anthropic.New(anthropic.Config{APIKey: secret, Model: model})
+	default:
+		return group.InvokeResult{}, fmt.Errorf("unsupported provider %q", profile.Provider)
+	}
+	p = provider.WithCostMeter(p, a.Metrics())
+
+	msgs := make([]provider.Message, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		msgs = append(msgs, provider.Message{Role: m.Role, Content: m.Content})
+	}
+	preq := provider.Request{Model: model, Messages: msgs, Temperature: req.Temperature}
+	if req.JSONMode {
+		// Approximate schema hint, as in Generate; the group service
+		// parses red-team output tolerantly (extractJSONObject).
+		if schemaJSON, err := json.Marshal(schema.RedTeamReport{}); err == nil {
+			preq.JSONSchema = schemaJSON
+		}
+	}
+	resp, err := p.Generate(ctx, preq)
+	if err != nil {
+		return group.InvokeResult{}, err
+	}
+	return group.InvokeResult{
+		Content:           string(resp.Content),
+		InputTokens:       resp.Usage.InputTokens,
+		OutputTokens:      resp.Usage.OutputTokens,
+		ProviderRequestID: resp.ProviderRequestID,
+	}, nil
+}

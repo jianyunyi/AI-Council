@@ -307,6 +307,9 @@ func (a *API) Routes() []rest.Route {
 			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/review/decision", Handler: a.submitGroupReviewDecision},
 			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/review/force-close", Handler: a.forceCloseGroupReview},
 			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/revise", Handler: a.reviseGroupRequirement},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/approve", Handler: a.approveGroupRequirement},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/pushdown/retry", Handler: a.retryGroupPushdown},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/redteam/retry", Handler: a.retryGroupRedTeam},
 			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id/events", Handler: a.groupEvents},
 		)
 	}

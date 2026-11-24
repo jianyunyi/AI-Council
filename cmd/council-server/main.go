@@ -141,24 +141,45 @@ func main() {
 	// Part B P6: the proposal worker drains the persistent requirement job
 	// queue; it runs on a signal context (the process has no other app
 	// context — the HTTP server stops via /shutdown or process signal).
-	if groupService := transport.InstallGroups(api); groupService != nil {
-		workerCtx, stopWorker := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	var groupService *groupapp.Service
+	var workerCtx context.Context
+	if gs := transport.InstallGroups(api); gs != nil {
+		groupService = gs
+		var stopWorker context.CancelFunc
+		workerCtx, stopWorker = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stopWorker()
 		go groupapp.NewProposalWorker(groupService, "").Run(workerCtx)
 	}
+	// The roles resolver's profile source, shared by the council
+	// factory below and the P8 red-team seat adapter.
+	profileSource := func(ctx context.Context, owner string) ([]roles.ProfileInfo, error) {
+		if providerKeyService == nil {
+			return nil, nil
+		}
+		profiles, err := providerKeyService.List(ctx, owner)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]roles.ProfileInfo, 0, len(profiles))
+		for _, profile := range profiles {
+			out = append(out, roles.ProfileInfo{ID: profile.ID, Provider: profile.Provider, Model: profile.Model, HasKey: profile.HasKey})
+		}
+		return out, nil
+	}
+	// Part B P8: red-team gate + D1 approval + push-down. Needs the
+	// provider key service (seat resolution reads profiles); without it
+	// push-down stays disabled and groups keep the exact P7 behavior.
+	if groupService != nil && providerKeyService != nil {
+		resolver := roles.NewResolver(councilRolesRepo, profileSource)
+		transport.InstallGroupPushdown(api, groupService, resolver)
+		groupService.SetMirrorContext(workerCtx)
+		if err := groupService.ResumeMirrors(workerCtx); err != nil {
+			slog.Warn("resume group pushdown mirrors", "error", err)
+		}
+	}
 	if providerKeyService != nil && rbacService != nil {
 		api.WithCouncilFactory(func(ctx context.Context, ownerID string, workspaceID string) (appTask.CouncilPort, error) {
-			resolver := roles.NewResolver(councilRolesRepo, func(ctx context.Context, owner string) ([]roles.ProfileInfo, error) {
-				profiles, err := providerKeyService.List(ctx, owner)
-				if err != nil {
-					return nil, err
-				}
-				out := make([]roles.ProfileInfo, 0, len(profiles))
-				for _, profile := range profiles {
-					out = append(out, roles.ProfileInfo{ID: profile.ID, Provider: profile.Provider, Model: profile.Model, HasKey: profile.HasKey})
-				}
-				return out, nil
-			})
+			resolver := roles.NewResolver(councilRolesRepo, profileSource)
 			resolved, err := resolver.Resolve(ctx, ownerID, workspaceID)
 			if err != nil {
 				return nil, err
