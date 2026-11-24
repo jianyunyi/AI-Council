@@ -12,6 +12,10 @@ export const REQUIREMENT_STATE_META: Record<RequirementState, { label: string; t
   proposal_failed: { label: '提案失败', tone: 'danger' },
   failed: { label: '派发失败', tone: 'danger' },
   cancelled: { label: '已取消', tone: 'muted' },
+  in_review: { label: '评审中', tone: 'progress' },
+  changes_requested: { label: '评审要求修改', tone: 'danger' },
+  review_passed: { label: '评审通过 · 待人工批准', tone: 'ok' },
+  rejected: { label: '评审否决', tone: 'danger' },
 }
 
 export function stateMeta(state: string): { label: string; tone: string } {
@@ -23,9 +27,39 @@ export function canRetry(req: Pick<RequirementView, 'state'>): boolean {
   return req.state === 'proposal_failed' || req.state === 'failed'
 }
 
-/** Cancel is offered while a requirement is still in flight or proposed. */
+/** Cancel is offered while a requirement is in flight, proposed, under
+ * review, awaiting revision, or review-passed (mirrors the backend). */
 export function canCancel(req: Pick<RequirementView, 'state'>): boolean {
-  return req.state === 'dispatched' || req.state === 'proposing' || req.state === 'proposed'
+  return (
+    req.state === 'dispatched' ||
+    req.state === 'proposing' ||
+    req.state === 'proposed' ||
+    req.state === 'in_review' ||
+    req.state === 'changes_requested' ||
+    req.state === 'review_passed'
+  )
+}
+
+export const REVIEW_OUTCOME_LABEL: Record<string, string> = {
+  passed: '通过',
+  changes_requested: '要求修改',
+  rejected: '否决',
+  inconclusive: '无结论',
+  superseded: '已被取消',
+}
+
+export const REVIEW_VERDICT_LABEL: Record<string, string> = {
+  approve: '通过',
+  request_changes: '要求修改',
+  reject: '否决',
+}
+
+export const DECISION_STATUS_LABEL: Record<string, string> = {
+  pending: '待评审',
+  running: '评审中',
+  decided: '已提交',
+  error: '出错',
+  withdrawn: '已撤回',
 }
 
 export interface DispatchPreview {

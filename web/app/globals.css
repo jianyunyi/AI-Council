@@ -714,3 +714,16 @@ table.management-table tbody tr:hover { background: var(--page-s3); }
 .plan-view ul { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 4px; }
 .plan-view code { font-size: 12.5px; overflow-wrap: anywhere; }
 .plan-diff { max-height: 260px; overflow: auto; background: var(--page-s1); border: 1px solid var(--page-line); border-radius: var(--radius-s); padding: 8px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Part B P7: review rounds inside requirement cards. */
+.review-section { display: grid; gap: 8px; border-top: 1px dashed var(--page-line); padding-top: 8px; }
+.review-steps { display: flex; gap: 4px; list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.review-steps li { padding: 2px 8px; border-radius: 999px; background: var(--page-s3); color: var(--page-text2); }
+.review-steps li.step-current { background: color-mix(in oklab, var(--page-accent) 18%, transparent); color: var(--page-accent); font-weight: 600; }
+.review-steps li.step-done { background: color-mix(in oklab, var(--page-done) 16%, transparent); color: var(--page-done); }
+.review-picker { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0; }
+.review-picker-item { display: inline-flex; gap: 4px; align-items: center; font-size: 13px; }
+.review-decisions { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.review-decisions li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.review-decide { display: grid; gap: 6px; }
+.review-verdicts { display: flex; gap: 6px; }
+.review-round-closed { border-top: 1px dashed var(--page-line); padding-top: 6px; }

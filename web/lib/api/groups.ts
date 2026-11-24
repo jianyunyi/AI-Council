@@ -267,7 +267,17 @@ export function resolveMentions(groupId: string, q: string): Promise<{ items: Me
 
 // ---------- requirements (Part B P6) ----------
 
-export type RequirementState = 'dispatched' | 'proposing' | 'proposed' | 'proposal_failed' | 'failed' | 'cancelled'
+export type RequirementState =
+  | 'dispatched'
+  | 'proposing'
+  | 'proposed'
+  | 'proposal_failed'
+  | 'failed'
+  | 'cancelled'
+  | 'in_review'
+  | 'changes_requested'
+  | 'review_passed'
+  | 'rejected'
 
 export interface ProposalView {
   id: string
@@ -300,6 +310,8 @@ export interface RequirementView {
   version: number
   proposal?: ProposalView
   job?: RequirementJobView
+  /** Per-actor actions computed by the backend (P7). */
+  allowed_actions?: string[]
   created_at: string
   updated_at: string
   state_changed_at: string
@@ -345,6 +357,93 @@ export function cancelRequirement(groupId: string, requirementId: string, reason
     request(`/groups/${encodeURIComponent(groupId)}/requirements/${encodeURIComponent(requirementId)}/cancel`, {
       method: 'POST',
       body: JSON.stringify({ reason: reason ?? '' }),
+    }),
+  )
+}
+
+// ---------- reviews (Part B P7) ----------
+
+export type ReviewVerdict = 'approve' | 'request_changes' | 'reject'
+export type ReviewOutcome = 'passed' | 'changes_requested' | 'rejected' | 'inconclusive' | 'superseded'
+
+export interface ReviewDecisionView {
+  id: string
+  reviewer_member_id: string
+  reviewer_type: string
+  reviewer_handle?: string
+  status: 'pending' | 'running' | 'decided' | 'error' | 'withdrawn'
+  /** Present only after the round closes (verdicts are blind while open). */
+  verdict?: ReviewVerdict
+  rationale?: string
+  error?: string
+  decided_at?: string
+}
+
+export interface ReviewRoundView {
+  id: string
+  proposal_round: number
+  status: 'open' | 'closed'
+  outcome?: ReviewOutcome
+  rule: string
+  quorum?: number
+  started_by_member_id: string
+  deadline_at?: string
+  revision_note?: string
+  created_at: string
+  closed_at?: string
+  decisions: ReviewDecisionView[]
+}
+
+export interface ReviewStateView {
+  requirement_id: string
+  state: RequirementState
+  round: number
+  can_decide: boolean
+  can_force_close: boolean
+  can_revise: boolean
+  rounds: ReviewRoundView[]
+}
+
+function reviewBase(groupId: string, requirementId: string): string {
+  return `/groups/${encodeURIComponent(groupId)}/requirements/${encodeURIComponent(requirementId)}/review`
+}
+
+export function startReview(groupId: string, requirementId: string, reviewerMemberIds: string[]): Promise<ReviewStateView> {
+  return call(
+    request(reviewBase(groupId, requirementId), {
+      method: 'POST',
+      body: JSON.stringify({ reviewer_member_ids: reviewerMemberIds }),
+    }),
+  )
+}
+
+export function getReview(groupId: string, requirementId: string): Promise<ReviewStateView> {
+  return call(request(reviewBase(groupId, requirementId)))
+}
+
+export function submitReviewDecision(
+  groupId: string,
+  requirementId: string,
+  verdict: ReviewVerdict,
+  rationale?: string,
+): Promise<ReviewStateView> {
+  return call(
+    request(`${reviewBase(groupId, requirementId)}/decision`, {
+      method: 'POST',
+      body: JSON.stringify({ verdict, rationale: rationale ?? '' }),
+    }),
+  )
+}
+
+export function forceCloseReview(groupId: string, requirementId: string): Promise<ReviewStateView> {
+  return call(request(`${reviewBase(groupId, requirementId)}/force-close`, { method: 'POST', body: '{}' }))
+}
+
+export function reviseRequirement(groupId: string, requirementId: string, note?: string): Promise<RequirementView> {
+  return call(
+    request(`/groups/${encodeURIComponent(groupId)}/requirements/${encodeURIComponent(requirementId)}/revise`, {
+      method: 'POST',
+      body: JSON.stringify({ note: note ?? '' }),
     }),
   )
 }

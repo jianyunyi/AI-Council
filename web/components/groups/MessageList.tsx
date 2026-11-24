@@ -30,12 +30,14 @@ function Body({ msg }: { msg: MessageView }) {
 
 export default function MessageList({
   messages,
+  members,
   currentMemberId,
   onReply,
   onEdit,
   groupId,
   reqBump,
   canManageGroup,
+  onReviewChat,
 }: {
   messages: MessageView[]
   members: MemberView[]
@@ -46,6 +48,8 @@ export default function MessageList({
   groupId?: string
   reqBump?: number
   canManageGroup?: boolean
+  /** P7: ask the composer to start a chat-driven review of this requirement. */
+  onReviewChat?: (req: import('@/lib/api/groups').RequirementView) => void
 }) {
   if (messages.length === 0) {
     return <p className="muted">暂无消息，来发第一条吧。</p>
@@ -75,6 +79,8 @@ export default function MessageList({
                 bump={reqBump ?? 0}
                 myMemberId={currentMemberId}
                 canManage={canManageGroup}
+                members={members}
+                onReviewChat={onReviewChat}
               />
             ) : (
               <>

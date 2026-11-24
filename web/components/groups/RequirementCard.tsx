@@ -1,9 +1,19 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { cancelRequirement, getRequirement, GroupApiError, retryRequirement, type RequirementView } from '@/lib/api/groups'
+import {
+  cancelRequirement,
+  getRequirement,
+  GroupApiError,
+  retryRequirement,
+  type MemberView,
+  type RequirementView,
+} from '@/lib/api/groups'
 import { canCancel, canRetry, stateMeta } from '@/lib/requirements'
 import PlanView from './PlanView'
+import ReviewSection from './ReviewSection'
+
+const REVIEW_STATES: ReadonlySet<string> = new Set(['proposed', 'in_review', 'changes_requested', 'review_passed', 'rejected'])
 
 /**
  * Live card for one requirement, rendered in place of a dispatch_card /
@@ -17,12 +27,18 @@ export default function RequirementCard({
   bump,
   myMemberId,
   canManage,
+  members,
+  onReviewChat,
 }: {
   groupId: string
   requirementId: string
   bump: number
   myMemberId?: string
   canManage?: boolean
+  /** P7: when provided (the message list always provides it), the card
+   * grows the review section for review-lifecycle states. */
+  members?: MemberView[]
+  onReviewChat?: (req: RequirementView) => void
 }) {
   const [req, setReq] = useState<RequirementView | null>(null)
   const [error, setError] = useState('')
@@ -95,6 +111,16 @@ export default function RequirementCard({
           </button>
           {showPlan && <PlanView plan={req.proposal.plan} />}
         </div>
+      )}
+      {members && REVIEW_STATES.has(req.state) && (
+        <ReviewSection
+          groupId={groupId}
+          requirement={req}
+          members={members}
+          bump={bump}
+          onChanged={() => void load()}
+          onReviewChat={onReviewChat ? () => onReviewChat(req) : undefined}
+        />
       )}
       {error && (
         <p className="alert alert-danger" role="alert">

@@ -26,6 +26,18 @@ describe('requirement helpers', () => {
     expect(canCancel(req('failed'))).toBe(false)
   })
 
+  it('labels the P7 review states and extends cancel to them', () => {
+    expect(stateMeta('in_review').label).toBe('评审中')
+    expect(stateMeta('changes_requested').label).toBe('评审要求修改')
+    expect(stateMeta('review_passed').label).toBe('评审通过 · 待人工批准')
+    expect(stateMeta('rejected').tone).toBe('danger')
+    expect(canCancel(req('in_review'))).toBe(true)
+    expect(canCancel(req('changes_requested'))).toBe(true)
+    expect(canCancel(req('review_passed'))).toBe(true)
+    expect(canCancel(req('rejected'))).toBe(false)
+    expect(canRetry(req('in_review'))).toBe(false)
+  })
+
   it('previews dispatch fan-out from AI mentions only', () => {
     const ai = new Set(['claude-x', 'gpt-y'])
     expect(previewDispatch('@claude-x plan this', ai)).toEqual({ aiHandles: ['claude-x'], ok: true, problem: '' })

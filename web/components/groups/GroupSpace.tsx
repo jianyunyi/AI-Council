@@ -38,6 +38,7 @@ export default function GroupSpace({ id }: { id: string }) {
   const [error, setError] = useState('')
   const [notFound, setNotFound] = useState(false)
   const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null)
+  const [reviewTarget, setReviewTarget] = useState<{ requirementId: string; title: string } | null>(null)
   const [reqBump, setReqBump] = useState(0)
   const [editing, setEditing] = useState<MessageView | null>(null)
   const [editText, setEditText] = useState('')
@@ -113,10 +114,13 @@ export default function GroupSpace({ id }: { id: string }) {
           void loadGroup()
           break
         case 'requirement.state_changed':
+        case 'review.round_opened':
+        case 'review.decision_recorded':
+        case 'review.closed':
           setReqBump((b) => b + 1)
           break
         default:
-          break // P7+: review/dispatch-result events land here
+          break // P8+: dispatch-result events land here
       }
     },
     [loadGroup, upsertMessage],
@@ -140,15 +144,17 @@ export default function GroupSpace({ id }: { id: string }) {
     }
   }
 
-  const send = async (body: string, replyToId?: string, intent?: 'chat' | 'dispatch') => {
+  const send = async (body: string, replyToId?: string, intent?: 'chat' | 'dispatch' | 'review', requirementId?: string) => {
     const res = await postMessage(id, {
       body_md: body,
       client_msg_id: draftKey.current,
       reply_to_message_id: replyToId,
       ...(intent ? { intent } : {}),
+      ...(intent === 'review' && requirementId ? { requirement_id: requirementId } : {}),
     })
     draftKey.current = newClientMsgId() // rotate only after success; failures retry with the same key
     upsertMessage(res.message)
+    if (intent === 'review') setReqBump((b) => b + 1)
   }
 
   const addAi = async (aiModelId: string) => {
@@ -259,6 +265,7 @@ export default function GroupSpace({ id }: { id: string }) {
           reqBump={reqBump}
           canManageGroup={group.can_manage}
           onReply={(m) => setReplyTo({ id: m.id, preview: m.body_md.slice(0, 60) })}
+          onReviewChat={(req) => setReviewTarget({ requirementId: req.id, title: req.title })}
           onEdit={(m) => {
             setEditing(m)
             setEditText(m.body_md)
@@ -288,6 +295,8 @@ export default function GroupSpace({ id }: { id: string }) {
             groupId={id}
             replyTo={replyTo}
             onCancelReply={() => setReplyTo(null)}
+            reviewTarget={reviewTarget}
+            onClearReviewTarget={() => setReviewTarget(null)}
             onSend={send}
             onAddAiMember={addAi}
             canDispatch={group.my_role === 'owner' || group.my_role === 'operator' || group.can_manage}
