@@ -10,10 +10,12 @@ import {
   type RequirementView,
 } from '@/lib/api/groups'
 import { canCancel, canRetry, stateMeta } from '@/lib/requirements'
+import ApprovalSection from './ApprovalSection'
 import PlanView from './PlanView'
 import ReviewSection from './ReviewSection'
 
 const REVIEW_STATES: ReadonlySet<string> = new Set(['proposed', 'in_review', 'changes_requested', 'review_passed', 'rejected'])
+const P8_STATES: ReadonlySet<string> = new Set(['awaiting_approval', 'approved', 'executing', 'executed', 'execution_failed'])
 
 /**
  * Live card for one requirement, rendered in place of a dispatch_card /
@@ -121,6 +123,9 @@ export default function RequirementCard({
           onChanged={() => void load()}
           onReviewChat={onReviewChat ? () => onReviewChat(req) : undefined}
         />
+      )}
+      {(req.redteam || req.pushdown || P8_STATES.has(req.state)) && (
+        <ApprovalSection groupId={groupId} requirement={req} onChanged={() => void load()} />
       )}
       {error && (
         <p className="alert alert-danger" role="alert">

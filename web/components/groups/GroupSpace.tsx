@@ -117,6 +117,11 @@ export default function GroupSpace({ id }: { id: string }) {
         case 'review.round_opened':
         case 'review.decision_recorded':
         case 'review.closed':
+        case 'redteam.queued':
+        case 'redteam.finished':
+        case 'pushdown.created':
+        case 'pushdown.failed':
+        case 'task.mirrored':
           setReqBump((b) => b + 1)
           break
         default:

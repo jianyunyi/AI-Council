@@ -16,6 +16,11 @@ export const REQUIREMENT_STATE_META: Record<RequirementState, { label: string; t
   changes_requested: { label: '评审要求修改', tone: 'danger' },
   review_passed: { label: '评审通过 · 待人工批准', tone: 'ok' },
   rejected: { label: '评审否决', tone: 'danger' },
+  awaiting_approval: { label: '待审批', tone: 'ok' },
+  approved: { label: '已批准', tone: 'progress' },
+  executing: { label: '执行中', tone: 'progress' },
+  executed: { label: '已执行', tone: 'ok' },
+  execution_failed: { label: '执行失败', tone: 'danger' },
 }
 
 export function stateMeta(state: string): { label: string; tone: string } {
@@ -28,7 +33,8 @@ export function canRetry(req: Pick<RequirementView, 'state'>): boolean {
 }
 
 /** Cancel is offered while a requirement is in flight, proposed, under
- * review, awaiting revision, or review-passed (mirrors the backend). */
+ * review, awaiting revision, review-passed, or in the P8 approval /
+ * push-down pipeline (mirrors the backend). */
 export function canCancel(req: Pick<RequirementView, 'state'>): boolean {
   return (
     req.state === 'dispatched' ||
@@ -36,8 +42,31 @@ export function canCancel(req: Pick<RequirementView, 'state'>): boolean {
     req.state === 'proposed' ||
     req.state === 'in_review' ||
     req.state === 'changes_requested' ||
-    req.state === 'review_passed'
+    req.state === 'review_passed' ||
+    req.state === 'awaiting_approval' ||
+    req.state === 'approved' ||
+    req.state === 'executing'
   )
+}
+
+/** Why the approve button is disabled (backend approve_blocked_reason). */
+export const APPROVE_BLOCKED_LABEL: Record<string, string> = {
+  not_owner_or_operator: '只有群主或操作员可以批准',
+  state_review_passed: '等待红队检查完成',
+  redteam_queued: '红队检查排队中',
+  redteam_running: '红队检查进行中',
+  redteam_error: '红队检查出错，等待重试',
+  redteam_flagged: '红队检查未通过',
+  redteam_missing: '红队检查未完成',
+  plan_changed: '计划已变化，需要重新评审',
+  workspace_not_ready: '执行工作区尚未就绪',
+}
+
+export function blockedReasonLabel(reason?: string): string {
+  if (!reason) return ''
+  if (APPROVE_BLOCKED_LABEL[reason]) return APPROVE_BLOCKED_LABEL[reason]
+  if (reason.startsWith('state_')) return '当前状态不能批准'
+  return reason
 }
 
 export const REVIEW_OUTCOME_LABEL: Record<string, string> = {

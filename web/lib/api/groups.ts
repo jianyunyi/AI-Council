@@ -278,6 +278,11 @@ export type RequirementState =
   | 'changes_requested'
   | 'review_passed'
   | 'rejected'
+  | 'awaiting_approval'
+  | 'approved'
+  | 'executing'
+  | 'executed'
+  | 'execution_failed'
 
 export interface ProposalView {
   id: string
@@ -290,6 +295,32 @@ export interface ProposalView {
 export interface RequirementJobView {
   state: string
   attempts: number
+}
+
+/** Part B P8: the red-team check over the current proposal attempt. */
+export interface RedTeamView {
+  check_id: string
+  status: 'queued' | 'running' | 'clear' | 'flagged' | 'error' | 'superseded'
+  independence: string
+  seat_model?: string
+  plan_hash: string
+  summary?: string
+  finished_at?: string
+}
+
+/** Part B P8: the push-down of the current proposal attempt. */
+export interface PushdownView {
+  id: string
+  status: string
+  task_id?: string
+  workspace_id: string
+  plan_hash: string
+  approved_by: string
+  approved_at: string
+  last_phase?: string
+  last_error?: string
+  failure_category?: string
+  finished_at?: string
 }
 
 export interface RequirementView {
@@ -312,6 +343,12 @@ export interface RequirementView {
   job?: RequirementJobView
   /** Per-actor actions computed by the backend (P7). */
   allowed_actions?: string[]
+  /** Part B P8: red-team check + push-down for the current attempt. */
+  redteam?: RedTeamView
+  pushdown?: PushdownView
+  /** Part B P8 (D1): whether the requesting actor may approve. */
+  can_approve?: boolean
+  approve_blocked_reason?: string
   created_at: string
   updated_at: string
   state_changed_at: string
@@ -444,6 +481,40 @@ export function reviseRequirement(groupId: string, requirementId: string, note?:
     request(`/groups/${encodeURIComponent(groupId)}/requirements/${encodeURIComponent(requirementId)}/revise`, {
       method: 'POST',
       body: JSON.stringify({ note: note ?? '' }),
+    }),
+  )
+}
+
+// ---------- approval + push-down (Part B P8) ----------
+
+export function approveRequirement(
+  groupId: string,
+  requirementId: string,
+  planHash: string,
+  expectedVersion: number,
+): Promise<RequirementView> {
+  return call(
+    request(`/groups/${encodeURIComponent(groupId)}/requirements/${encodeURIComponent(requirementId)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ plan_hash: planHash, expected_version: expectedVersion }),
+    }),
+  )
+}
+
+export function retryPushdown(groupId: string, requirementId: string): Promise<RequirementView> {
+  return call(
+    request(`/groups/${encodeURIComponent(groupId)}/requirements/${encodeURIComponent(requirementId)}/pushdown/retry`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  )
+}
+
+export function retryRedTeam(groupId: string, requirementId: string): Promise<RequirementView> {
+  return call(
+    request(`/groups/${encodeURIComponent(groupId)}/requirements/${encodeURIComponent(requirementId)}/redteam/retry`, {
+      method: 'POST',
+      body: '{}',
     }),
   )
 }

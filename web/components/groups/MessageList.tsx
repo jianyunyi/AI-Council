@@ -7,6 +7,15 @@ import RequirementCard from './RequirementCard'
 
 const EDIT_WINDOW_MS = 10 * 60 * 1000
 
+/** Part B P8 system cards posted by the red-team gate / push-down /
+ * mirror into the group stream. */
+const SYSTEM_KIND_LABEL: Record<string, string> = {
+  redteam_result: '红队检查',
+  approval_notice: '人工审批',
+  task_status: '执行状态',
+  execution_failure: '执行失败',
+}
+
 function Body({ msg }: { msg: MessageView }) {
   const resolved = useMemo(
     () => new Set(msg.mentions.filter((m) => m.resolution === 'resolved').map((m) => m.handle)),
@@ -60,10 +69,12 @@ export default function MessageList({
         const mine = m.author?.id === currentMemberId
         const editable = mine && m.kind === 'text' && Date.now() - new Date(m.created_at).getTime() < EDIT_WINDOW_MS
         const isCard = (m.kind === 'dispatch_card' || m.kind === 'proposal') && !!m.requirement_id && !!groupId
+        const systemLabel = SYSTEM_KIND_LABEL[m.kind]
         return (
-          <li key={m.id} className="message" data-seq={m.seq}>
+          <li key={m.id} className={systemLabel ? 'message system-card' : 'message'} data-seq={m.seq}>
             <div className="message-head">
               <strong>{m.author?.display_name ?? (m.author_type === 'system' ? '系统' : '已移除成员')}</strong>
+              {systemLabel && <span className="badge badge-muted">{systemLabel}</span>}
               {m.author?.member_type === 'ai_model' && <span className="badge badge-muted">AI</span>}
               <time className="muted" dateTime={m.created_at}>
                 {new Date(m.created_at).toLocaleTimeString()}
@@ -85,16 +96,18 @@ export default function MessageList({
             ) : (
               <>
                 <Body msg={m} />
-                <div className="message-actions">
-                  <button type="button" className="btn btn-sm" onClick={() => onReply(m)}>
-                    回复
-                  </button>
-                  {editable && (
-                    <button type="button" className="btn btn-sm" onClick={() => onEdit(m)}>
-                      编辑
+                {!systemLabel && (
+                  <div className="message-actions">
+                    <button type="button" className="btn btn-sm" onClick={() => onReply(m)}>
+                      回复
                     </button>
-                  )}
-                </div>
+                    {editable && (
+                      <button type="button" className="btn btn-sm" onClick={() => onEdit(m)}>
+                        编辑
+                      </button>
+                    )}
+                  </div>
+                )}
               </>
             )}
           </li>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canCancel, canRetry, previewDispatch, stateMeta } from './requirements'
+import { blockedReasonLabel, canCancel, canRetry, previewDispatch, stateMeta } from './requirements'
 import type { RequirementView } from './api/groups'
 
 const req = (state: RequirementView['state']): Pick<RequirementView, 'state'> => ({ state })
@@ -36,6 +36,32 @@ describe('requirement helpers', () => {
     expect(canCancel(req('review_passed'))).toBe(true)
     expect(canCancel(req('rejected'))).toBe(false)
     expect(canRetry(req('in_review'))).toBe(false)
+  })
+
+  it('labels the P8 approval/execution states and extends cancel to them', () => {
+    expect(stateMeta('awaiting_approval').label).toBe('待审批')
+    expect(stateMeta('approved').label).toBe('已批准')
+    expect(stateMeta('executing').label).toBe('执行中')
+    expect(stateMeta('executed').label).toBe('已执行')
+    expect(stateMeta('execution_failed').label).toBe('执行失败')
+    expect(stateMeta('execution_failed').tone).toBe('danger')
+    expect(canCancel(req('awaiting_approval'))).toBe(true)
+    expect(canCancel(req('approved'))).toBe(true)
+    expect(canCancel(req('executing'))).toBe(true)
+    expect(canCancel(req('executed'))).toBe(false)
+    expect(canCancel(req('execution_failed'))).toBe(false)
+  })
+
+  it('explains why approval is blocked', () => {
+    expect(blockedReasonLabel('not_owner_or_operator')).toBe('只有群主或操作员可以批准')
+    expect(blockedReasonLabel('state_review_passed')).toBe('等待红队检查完成')
+    expect(blockedReasonLabel('redteam_running')).toBe('红队检查进行中')
+    expect(blockedReasonLabel('redteam_error')).toBe('红队检查出错，等待重试')
+    expect(blockedReasonLabel('plan_changed')).toBe('计划已变化，需要重新评审')
+    expect(blockedReasonLabel('workspace_not_ready')).toBe('执行工作区尚未就绪')
+    expect(blockedReasonLabel('state_executing')).toBe('当前状态不能批准')
+    expect(blockedReasonLabel('')).toBe('')
+    expect(blockedReasonLabel(undefined)).toBe('')
   })
 
   it('previews dispatch fan-out from AI mentions only', () => {

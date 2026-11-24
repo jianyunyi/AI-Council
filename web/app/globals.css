@@ -727,3 +727,9 @@ table.management-table tbody tr:hover { background: var(--page-s3); }
 .review-decide { display: grid; gap: 6px; }
 .review-verdicts { display: flex; gap: 6px; }
 .review-round-closed { border-top: 1px dashed var(--page-line); padding-top: 6px; }
+/* Part B P8: red-team gate, human approval and push-down in requirement cards. */
+.approval-section { display: grid; gap: 8px; border-top: 1px dashed var(--page-line); padding-top: 8px; }
+.approval-block { display: grid; gap: 4px; font-size: 13px; }
+.approval-block p { margin: 0; }
+.approval-warn { color: var(--page-text2); }
+.message.system-card { background: var(--page-s2); border: 1px solid var(--page-line); border-radius: var(--radius-s); padding: 6px 10px; }
