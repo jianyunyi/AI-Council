@@ -19,6 +19,11 @@ type ReviewRoundRecord struct {
 	ProposalID       string     `gorm:"size:64"`
 	ProposalRound    int        // == proposal Attempt (1-based)
 	PlanHash         string     `gorm:"size:64"` // sha256 hex of the proposal's PlanJSON at open
+	// P9: Stage is proposal|result. For result rounds PlanHash holds the
+	// RESULT hash of the submission (no rename — C3) and SubmissionID
+	// names the reviewed result_submissions row.
+	Stage        string `gorm:"size:12;not null;default:proposal;index"`
+	SubmissionID string `gorm:"size:64;not null;default:''"`
 	Status           string     `gorm:"size:16;index:idx_review_rounds_req,priority:2"` // open|closed
 	Outcome          string     `gorm:"size:24"`                                        // ""|passed|changes_requested|rejected|inconclusive|superseded
 	PolicyRule       string     `gorm:"size:16"`                                        // snapshot: unanimous|quorum

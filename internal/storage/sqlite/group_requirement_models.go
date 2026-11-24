@@ -26,6 +26,15 @@ type GroupRequirementRecord struct {
 	AcceptanceJSON      []byte     `gorm:"type:blob"`
 	State               string     `gorm:"size:32;not null;index:idx_req_group_state,priority:2"`
 	CurrentProposalID   string     `gorm:"size:64"`
+	// P9: execution cycles. Cycle counts result submissions (1-based);
+	// CycleStartAttempt is the proposal attempt that opened the cycle.
+	// RevisionSource says which review stage sent the requirement back
+	// (proposal|result, set on entering changes_requested).
+	// CompletionOutcome is set on completed: accepted|accepted_failed.
+	Cycle             int    `gorm:"not null;default:1"`
+	CycleStartAttempt int    `gorm:"not null;default:1"`
+	RevisionSource    string `gorm:"size:16;not null;default:''"`
+	CompletionOutcome string `gorm:"size:20;not null;default:''"`
 	FailureCode         string     `gorm:"size:64"`
 	FailureDetail       string     `gorm:"type:text"`
 	Version             int        `gorm:"not null;default:1"`

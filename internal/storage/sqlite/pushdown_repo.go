@@ -87,6 +87,21 @@ func (r *PushdownRepo) CreatePushdown(ctx context.Context, p *RequirementPushdow
 	return r.db.WithContext(ctx).Create(p).Error
 }
 
+// GetPushdown loads one push-down by id (P9: the result job's target
+// chain starts from the submission, but recovery paths key off the
+// push-down itself).
+func (r *PushdownRepo) GetPushdown(ctx context.Context, id string) (*RequirementPushdownRecord, error) {
+	var p RequirementPushdownRecord
+	err := r.db.WithContext(ctx).Where("id = ?", id).First(&p).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrPushdownNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 func (r *PushdownRepo) GetPushdownForAttempt(ctx context.Context, requirementID string, attempt int) (*RequirementPushdownRecord, error) {
 	var p RequirementPushdownRecord
 	err := r.db.WithContext(ctx).Where("requirement_id = ? AND proposal_attempt = ?", requirementID, attempt).First(&p).Error
