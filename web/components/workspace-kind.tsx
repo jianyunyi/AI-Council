@@ -37,3 +37,11 @@ export function ModelPrivateBanner({modelLabel,readOnly}:{modelLabel?:string;rea
     </div>
   )
 }
+
+export function GroupSharedBanner() {
+  return (
+    <div role="note" className="card">
+      <p>👥 这是群聊的共享工作区，存放群内共享的产出物（需求、提案、评审与结果文件）。它不参与任务执行，请在群聊页面中查看与管理。</p>
+    </div>
+  )
+}

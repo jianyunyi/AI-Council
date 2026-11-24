@@ -230,6 +230,7 @@ function ShellFrame({children}: {children: React.ReactNode}) {
             {item('/', '指挥中心')}
             {item('/tasks', '任务', pendingCount > 0 ? <span className="nav-badge" aria-label={`${pendingCount} 个待批准`}>{pendingCount}</span> : undefined)}
             {item('/tasks/new', '新建任务', <span className="nav-key" aria-hidden="true">Ctrl N</span>)}
+            {item('/groups', '群聊')}
             {item('/artifacts', '制品')}
             <h3>配置</h3>
             {item('/workspaces', '工作区')}

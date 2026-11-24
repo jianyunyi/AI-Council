@@ -2,7 +2,7 @@
 import {useCallback,useEffect,useMemo,useState} from 'react'
 import {ConfirmDialog, ConfirmState, showToast} from '@/components/ui'
 import {createWorkspace,deleteWorkspaceShare,listWorkspaceShares,listWorkspaces,putWorkspaceShare,searchWorkspaceMembers} from '@/lib/api'
-import {KindFilterChips,ModelPrivateBanner,WORKSPACE_KIND_LABEL,WorkspaceKindFilter} from '@/components/workspace-kind'
+import {GroupSharedBanner,KindFilterChips,ModelPrivateBanner,WORKSPACE_KIND_LABEL,WorkspaceKindFilter} from '@/components/workspace-kind'
 import {Workspace,WorkspaceShare} from '@/lib/types'
 import {desktopBridge} from '@/lib/desktop-bridge'
 
@@ -34,6 +34,7 @@ export default function Workspaces(){
    <section className="card"><h2>可访问的工作区</h2><KindFilterChips value={kindFilter} onChange={setKindFilter}/>{loadingWorkspaces?<p role="status">正在读取工作区…</p>:workspaces.length===0?<p className="empty">还没有可访问的工作区。</p>:<div className="tw"><table className="tbl"><thead><tr><th>路径</th><th>类型</th><th>我的权限</th><th>Git 状态</th></tr></thead><tbody>{workspaces.map(workspace=><tr key={workspace.id}><td><button className="text-link" onClick={()=>setSelectedID(workspace.id)} aria-pressed={workspace.id===selectedID}>{workspace.root}</button></td><td>{workspace.kind==='model_private'&&<span aria-label="模型私有">🔒 </span>}{WORKSPACE_KIND_LABEL[workspace.kind]??'标准'}</td><td>{workspace.is_owner?'所有者':workspace.access==='editor'?'编辑者':'查看者'}</td><td>{workspace.is_git?(workspace.dirty?'Git 有未提交更改':'Git 工作区'):'—'}</td></tr>)}</tbody></table></div>}</section>
   </div>
   {selected&&selected.kind==='model_private'&&<ModelPrivateBanner readOnly={!selected.is_owner}/>}
+  {selected&&selected.kind==='group_shared'&&<GroupSharedBanner/>}
   {selected&&selected.kind!=='model_private'&&<section className="card"><h2>共享成员 · {selected.root}</h2>{shares.length===0?<p className="empty">当前没有共享成员。</p>:<div className="tw"><table className="tbl"><thead><tr><th>成员</th><th>访问权限</th>{selected.is_owner&&<th>操作</th>}</tr></thead><tbody>{shares.map(share=><tr key={share.user_id}><td>{share.subject}</td><td>{selected.is_owner?<select aria-label={`${share.subject} 的访问权限`} disabled={busy} value={share.access} onChange={event=>void changeShare(share,event.target.value as WorkspaceShare['access'])}><option value="viewer">查看者</option><option value="editor">编辑者</option></select>:<span>{share.access==='editor'?'编辑者':'查看者'}</span>}</td>{selected.is_owner&&<td><button className="btn small danger" disabled={busy} onClick={()=>revoke(share)} aria-label={`撤销 ${share.subject}`}>撤销</button></td>}</tr>)}</tbody></table></div>}{selected.is_owner&&<div className="share-controls"><label>成员账号<input value={memberQuery} onChange={event=>setMemberQuery(event.target.value)} placeholder="输入至少两个字符搜索" /></label>{memberSuggestions.length>0&&<ul aria-label="成员搜索结果">{memberSuggestions.map(subject=><li key={subject}><button type="button" onClick={()=>setMemberQuery(subject)} aria-label={`选择 ${subject}`}>{subject}</button></li>)}</ul>}<label>访问权限<select value={access} onChange={event=>setAccess(event.target.value as WorkspaceShare['access'])}><option value="editor">编辑者</option><option value="viewer">查看者</option></select></label><button disabled={busy||memberQuery.trim().length<2} onClick={()=>void grant()}>授予访问</button></div>}</section>}
   <ConfirmDialog request={confirm} onResolve={resolveRevoke}/>
  </div>

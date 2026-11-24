@@ -1,0 +1,78 @@
+'use client'
+
+import { useMemo } from 'react'
+import type { MemberView, MessageView } from '@/lib/api/groups'
+import { splitSegments } from '@/lib/mentions'
+
+const EDIT_WINDOW_MS = 10 * 60 * 1000
+
+function Body({ msg }: { msg: MessageView }) {
+  const resolved = useMemo(
+    () => new Set(msg.mentions.filter((m) => m.resolution === 'resolved').map((m) => m.handle)),
+    [msg.mentions],
+  )
+  const segs = useMemo(() => splitSegments(msg.body_md, resolved), [msg.body_md, resolved])
+  return (
+    <p className="message-body">
+      {segs.map((s, i) =>
+        s.mention ? (
+          <span key={i} className={s.mention.resolved ? 'mention mention-resolved' : 'mention mention-unresolved'}>
+            {s.text}
+          </span>
+        ) : (
+          <span key={i}>{s.text}</span>
+        ),
+      )}
+    </p>
+  )
+}
+
+export default function MessageList({
+  messages,
+  currentMemberId,
+  onReply,
+  onEdit,
+}: {
+  messages: MessageView[]
+  members: MemberView[]
+  currentMemberId?: string
+  onReply: (m: MessageView) => void
+  onEdit: (m: MessageView) => void
+}) {
+  if (messages.length === 0) {
+    return <p className="muted">暂无消息，来发第一条吧。</p>
+  }
+  return (
+    <ol className="message-list">
+      {messages.map((m) => {
+        const mine = m.author?.id === currentMemberId
+        const editable = mine && m.kind === 'text' && Date.now() - new Date(m.created_at).getTime() < EDIT_WINDOW_MS
+        return (
+          <li key={m.id} className="message" data-seq={m.seq}>
+            <div className="message-head">
+              <strong>{m.author?.display_name ?? (m.author_type === 'system' ? '系统' : '已移除成员')}</strong>
+              {m.author?.member_type === 'ai_model' && <span className="badge badge-muted">AI</span>}
+              <time className="muted" dateTime={m.created_at}>
+                {new Date(m.created_at).toLocaleTimeString()}
+              </time>
+              {m.edited_at && <span className="muted">(已编辑)</span>}
+              {m.status === 'failed' && <span className="badge badge-warning">发送失败</span>}
+            </div>
+            {m.reply_to_message_id && <div className="message-reply muted">↩ 回复 #{m.reply_to_message_id.slice(0, 8)}</div>}
+            <Body msg={m} />
+            <div className="message-actions">
+              <button type="button" className="btn btn-sm" onClick={() => onReply(m)}>
+                回复
+              </button>
+              {editable && (
+                <button type="button" className="btn btn-sm" onClick={() => onEdit(m)}>
+                  编辑
+                </button>
+              )}
+            </div>
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
