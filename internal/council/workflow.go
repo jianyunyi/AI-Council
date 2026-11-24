@@ -3,7 +3,6 @@ package council
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 )
@@ -188,20 +187,20 @@ func (w *Workflow) deliberateProgress(ctx context.Context, brief schema.TaskBrie
 	return BuildExecutionPlan(decision.Value, report, nil)
 }
 
-func (w *Workflow) judgeWithFailover(ctx context.Context, proposals []Generated[schema.Proposal], reviews []Generated[schema.PeerReview]) (Generated[schema.CouncilDecision], error) {
-	seats := append([]Seat{w.Judge}, w.JudgeFailovers...)
-	var lastErr error
-	for i, seat := range seats {
-		decision, err := w.Engine.Judge(ctx, proposals, reviews, seat)
-		if err == nil {
-			return decision, nil
-		}
-		lastErr = err
-		if i+1 < len(seats) {
-			w.emitSlotSkipped("judge", SeatFailure{Seat: seat, Err: err})
+// slotSkippedHook emits council.slot_skipped only when another seat follows,
+// matching the previous behavior where the final failure emitted nothing.
+func (w *Workflow) slotSkippedHook(role string) FailoverHook {
+	return func(failure SeatFailure, willFailover bool) {
+		if willFailover {
+			w.emitSlotSkipped(role, failure)
 		}
 	}
-	return Generated[schema.CouncilDecision]{}, fmt.Errorf("%w: %v", ErrJudgeUnavailable, lastErr)
+}
+
+func (w *Workflow) judgeWithFailover(ctx context.Context, proposals []Generated[schema.Proposal], reviews []Generated[schema.PeerReview]) (Generated[schema.CouncilDecision], error) {
+	seats := append([]Seat{w.Judge}, w.JudgeFailovers...)
+	decision, _, err := JudgeProposals(ctx, w.Engine, proposals, reviews, seats, OnSeatFailure(w.slotSkippedHook("judge")))
+	return decision, err
 }
 
 func (w *Workflow) redTeamSeats() []Seat {
@@ -213,18 +212,8 @@ func (w *Workflow) redTeamSeats() []Seat {
 }
 
 func (w *Workflow) redTeamWithFailover(ctx context.Context, decision schema.CouncilDecision, seats []Seat) (Generated[schema.RedTeamReport], error) {
-	var lastErr error
-	for i, seat := range seats {
-		report, err := w.Engine.RedTeam(ctx, decision, seat)
-		if err == nil {
-			return report, nil
-		}
-		lastErr = err
-		if i+1 < len(seats) {
-			w.emitSlotSkipped("red_team", SeatFailure{Seat: seat, Err: err})
-		}
-	}
-	return Generated[schema.RedTeamReport]{}, fmt.Errorf("%w: %v", ErrRedTeamUnavailable, lastErr)
+	report, _, err := RedTeamDecision(ctx, w.Engine, decision, seats, OnSeatFailure(w.slotSkippedHook("red_team")))
+	return report, err
 }
 
 func (w *Workflow) ReviewExecution(_ context.Context, _ string, report schema.VerificationReport) error {
