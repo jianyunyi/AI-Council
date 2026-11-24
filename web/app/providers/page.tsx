@@ -1,6 +1,7 @@
 'use client'
 import {useCallback,useEffect,useState} from 'react'
 import {ConfirmDialog, ConfirmState, showToast} from '@/components/ui'
+import {AIModelsSection} from '@/components/ai-models'
 import {createProviderKey,deleteProviderKey,listProviderKeys,ProviderKeyProfile} from '@/lib/api'
 
 export default function Providers(){
@@ -19,7 +20,8 @@ export default function Providers(){
    <label>API Key<span className="key-field"><input type={showKey?'text':'password'} value={key} onChange={event=>setKey(event.target.value)} autoComplete="new-password" /><button type="button" className="small secondary" aria-pressed={showKey} onClick={()=>setShowKey(value=>!value)}>{showKey?'隐藏':'显示'}</button></span></label>
   </div>{message&&<p role="status">{message}</p>}<div className="form-actions"><button onClick={save} disabled={busy||!key.trim()||!model.trim()}>{busy?'正在保存…':'加密保存 Key'}</button></div></section>
   <section className="card"><h2>已配置模型</h2>{profiles.length===0?<p className="empty">还没有配置模型密钥。</p>:<div className="tw"><table className="tbl"><thead><tr><th>厂商</th><th>模型</th><th>密钥</th><th>操作</th></tr></thead><tbody>{profiles.map(profile=><tr key={profile.id}><td>{profile.provider}</td><td>{profile.model}</td><td>{profile.masked_key}</td><td><button className="btn small danger" disabled={busy} onClick={()=>remove(profile)}>删除</button></td></tr>)}</tbody></table></div>}
-  <p className="small muted">议会角色（分析、提案、互评、裁决、红队、执行、验证）使用哪个模型由服务端配置决定，后端暂未提供按角色分配模型的接口，此页不提供该设置。</p></section>
+  <p className="small muted">议会角色（分析、提案、互评、裁决、红队、执行、验证）使用哪个模型在「设置」页的议会角色区分配。</p></section>
+  <AIModelsSection/>
   <ConfirmDialog request={confirm} onResolve={resolveDelete}/>
  </div>
 }

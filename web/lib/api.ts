@@ -1,4 +1,4 @@
-import {ArtifactEnvelope,CreateRoleInput,CreateUserInput,Envelope,Identity,ManagedRole,ManagedUser,Permission,RejectionCategory,Task,TaskListPage,TaskRejection,UpdateRoleInput,UpdateUserInput,Workspace,WorkspaceShare} from './types'
+import {ArtifactEnvelope,CreateRoleInput,CreateUserInput,Envelope,Identity,ManagedRole,ManagedUser,Permission,RejectionCategory,Task,TaskListPage,TaskRejection,UpdateRoleInput,UpdateUserInput,Workspace,WorkspaceKind,WorkspaceShare} from './types'
 import {apiBase,authorizationHeader} from './desktop'
 
 const unauthorizedListeners=new Set<()=>void>()
@@ -47,7 +47,7 @@ export function createRole(input:CreateRoleInput){return request<ManagedRole>('/
 export function updateRole(name:string,input:UpdateRoleInput){return request<ManagedRole>(`/admin/roles/${encodeURIComponent(name)}`,{method:'PATCH',body:JSON.stringify(input)})}
 export function listPermissions(){return request<Permission[]>('/admin/permissions')}
 export function createWorkspace(root:string){return request<Workspace>('/workspaces',{method:'POST',body:JSON.stringify({root})})}
-export function listWorkspaces(){return request<Workspace[]>('/workspaces')}
+export function listWorkspaces(kind?:WorkspaceKind){return request<Workspace[]>(`/workspaces${kind?`?kind=${encodeURIComponent(kind)}`:''}`)}
 export function getWorkspace(id:string){return request<Workspace>(`/workspaces/${encodeURIComponent(id)}`)}
 export function listWorkspaceShares(id:string){return request<WorkspaceShare[]>(`/workspaces/${encodeURIComponent(id)}/shares`)}
 export function searchWorkspaceMembers(id:string,query:string){return request<{subject:string}[]>(`/workspaces/${encodeURIComponent(id)}/members?q=${encodeURIComponent(query)}`)}
@@ -89,3 +89,13 @@ export function getCouncilRoles(scope:CouncilScope){return request<CouncilRolesV
 export function putCouncilRoles(scope:CouncilScope,version:number,slots:CouncilSlot[]){return request<CouncilRolesView>('/council/roles',{method:'PUT',headers:{'if-match':String(version)},body:JSON.stringify({scope_type:scope.scopeType,scope_id:scope.scopeId??'',version,slots})})}
 export function validateCouncilRoles(scope:CouncilScope,slots:CouncilSlot[]){return request<{valid:boolean;errors:CouncilValidationIssue[];warnings:CouncilValidationIssue[]}>('/council/roles/validate',{method:'POST',body:JSON.stringify({scope_type:scope.scopeType,scope_id:scope.scopeId??'',slots})})}
 export function deleteCouncilRoles(scope:CouncilScope){return request<CouncilRolesView>(`/council/roles?${councilScopeQuery(scope)}`,{method:'DELETE'})}
+export type AIModelStatus='active'|'disabled'|'degraded'
+export type AIModelWorkspaceStatus='provisioning'|'ready'|'error'|'archived'
+export type AIModelWorkspace={workspace_id:string;kind:'model_private';status:AIModelWorkspaceStatus;last_error?:string;attempts:number;runner_ready:boolean;updated_at:string}
+export type AIModel={id:string;provider_profile_id:string;provider_name:string;provider_type:string;model:string;handle:string;display_name:string;default_params:Record<string,unknown>;status:AIModelStatus;workspace:AIModelWorkspace|null;warnings?:string[];created_at:string;updated_at:string}
+export type CreateAIModelInput={provider_profile_id:string;model:string;handle:string;display_name?:string;default_params?:Record<string,unknown>}
+export function listAIModels(){return request<AIModel[]>('/ai-models')}
+export function createAIModel(input:CreateAIModelInput){return request<AIModel>('/ai-models',{method:'POST',body:JSON.stringify(input)})}
+export function updateAIModel(id:string,input:{display_name?:string;default_params?:Record<string,unknown>;status?:AIModelStatus}){return request<AIModel>(`/ai-models/${encodeURIComponent(id)}`,{method:'PATCH',body:JSON.stringify(input)})}
+export function disableAIModel(id:string){return request<AIModel>(`/ai-models/${encodeURIComponent(id)}`,{method:'DELETE'})}
+export function retryAIModelWorkspace(id:string){return request<AIModel>(`/ai-models/${encodeURIComponent(id)}/workspace/retry`,{method:'POST'})}
