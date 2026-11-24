@@ -16,6 +16,7 @@ import (
 	appTask "github.com/aicouncil/aicouncil/internal/app/task"
 	"github.com/aicouncil/aicouncil/internal/approval"
 	artifactcore "github.com/aicouncil/aicouncil/internal/core/artifact"
+	councilengine "github.com/aicouncil/aicouncil/internal/council"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
 	"github.com/aicouncil/aicouncil/internal/observability/metrics"
 	runnerv1 "github.com/aicouncil/aicouncil/internal/runner/rpc/generated"
@@ -40,7 +41,8 @@ type API struct {
 	artifactRepo    *sqlite.ArtifactRepository
 	runnerClient    runClient
 	council         appTask.CouncilPort
-	councilFactory  func(context.Context, string) (appTask.CouncilPort, error)
+	councilFactory  func(context.Context, string, string) (appTask.CouncilPort, error)
+	councilRoles    *sqlite.CouncilRolesRepository
 	providerKeys    *providerkeysvc.Service
 	signer          *approval.Signer
 	workspaceAccess *workspaceaccess.Service
@@ -201,8 +203,15 @@ func (a *API) WithReadinessCheck(check func(context.Context) error) *API {
 	}
 	return a
 }
-func (a *API) WithCouncilFactory(factory func(context.Context, string) (appTask.CouncilPort, error)) *API {
+func (a *API) WithCouncilFactory(factory func(context.Context, string, string) (appTask.CouncilPort, error)) *API {
 	a.councilFactory = factory
+	return a
+}
+
+// WithCouncilRoles installs the role-assignment store used by the council
+// roles endpoints and for saving run-start configuration snapshots.
+func (a *API) WithCouncilRoles(repo *sqlite.CouncilRolesRepository) *API {
+	a.councilRoles = repo
 	return a
 }
 func (a *API) WithProviderKeys(service *providerkeysvc.Service) *API {
@@ -235,7 +244,7 @@ func originOf(r sqlite.TaskRecord) string {
 }
 
 func (a *API) Routes() []rest.Route {
-	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks", Handler: a.listTasks}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/rejections", Handler: a.listTaskRejections}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}}
+	return []rest.Route{{Method: http.MethodPost, Path: "/api/v1/workspaces", Handler: a.createWorkspace}, {Method: http.MethodGet, Path: "/api/v1/workspaces", Handler: a.listWorkspaces}, {Method: http.MethodGet, Path: "/api/v1/workspaces/:id", Handler: a.getWorkspace}, {Method: http.MethodPost, Path: "/api/v1/tasks", Handler: a.createTask}, {Method: http.MethodGet, Path: "/api/v1/tasks", Handler: a.listTasks}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id", Handler: a.getTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/start", Handler: a.startTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/approve", Handler: a.approveTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/reject", Handler: a.rejectTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/rejections", Handler: a.listTaskRejections}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/execute", Handler: a.executeTask}, {Method: http.MethodPost, Path: "/api/v1/tasks/:id/cancel", Handler: a.cancelTask}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/artifacts/:artifactId", Handler: a.getArtifact}, {Method: http.MethodGet, Path: "/api/v1/tasks/:id/events", Handler: a.events}, {Method: http.MethodGet, Path: "/api/v1/council/roles", Handler: a.getCouncilRoles}, {Method: http.MethodPut, Path: "/api/v1/council/roles", Handler: a.putCouncilRoles}, {Method: http.MethodDelete, Path: "/api/v1/council/roles", Handler: a.deleteCouncilRoles}, {Method: http.MethodPost, Path: "/api/v1/council/roles/validate", Handler: a.validateCouncilRoles}}
 }
 
 func (a *API) getWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -405,11 +414,30 @@ func (a *API) startTask(w http.ResponseWriter, r *http.Request) {
 	a.mu.Unlock()
 	if a.councilFactory != nil {
 		var err error
-		council, err = a.councilFactory(r.Context(), ownerID)
+		council, err = a.councilFactory(r.Context(), ownerID, workspaceID)
 		if err != nil {
 			writeErr(w, http.StatusBadGateway, "council_unavailable", "could not configure the account's model providers")
 			return
 		}
+	}
+	// A workflow built from role assignments carries the resolved-config
+	// snapshot: persist it on the run row and route its slot events into
+	// the task's event log.
+	if snapshotter, ok := council.(interface{ CouncilSnapshot() []byte }); ok && a.councilRoles != nil {
+		if snapshot := snapshotter.CouncilSnapshot(); len(snapshot) > 0 {
+			_ = a.councilRoles.SaveCouncilConfig(r.Context(), taskID(r), "DRAFT", snapshot)
+		}
+	}
+	if setter, ok := council.(interface {
+		SetEventHook(councilengine.EventHook)
+	}); ok {
+		setter.SetEventHook(func(eventType string, data map[string]any) {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			if current := a.tasks[taskID(r)]; current != nil {
+				_ = a.append(current, eventType, data)
+			}
+		})
 	}
 	var workspaceFiles []schema.WorkspaceFile
 	if _, ok := council.(appTask.WorkspaceCouncilPort); ok {

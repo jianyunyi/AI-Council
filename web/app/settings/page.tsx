@@ -2,6 +2,7 @@
 
 import {useEffect, useState} from 'react'
 import {usePrefs} from '@/components/theme'
+import {CouncilRolesSection} from '@/components/council-roles'
 import {ConfirmDialog, ConfirmState, showToast} from '@/components/ui'
 import {apiBase} from '@/lib/desktop'
 import {desktopBridge, DesktopStatus} from '@/lib/desktop-bridge'
@@ -131,6 +132,8 @@ export default function SettingsPage() {
           </>
         )}
       </section>
+
+      <CouncilRolesSection />
 
       <section className="card" aria-labelledby="data-title">
         <h2 id="data-title">本机数据</h2>

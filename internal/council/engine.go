@@ -25,7 +25,23 @@ const (
 	maxWorkspaceTotalBytes = 2 << 20
 )
 
-type Seat struct{ ID, Provider, Model, Role, ProposalAlias string }
+type Seat struct {
+	ID, Provider, Model, Role, ProposalAlias string
+	// ProfileID and Ordinal identify the assignment slot the seat came from
+	// (empty for seats built by the legacy static configuration).
+	ProfileID string
+	Ordinal   int
+	// Temperature, when set, is forwarded to the provider request.
+	Temperature *float64
+}
+
+func seatTemperature(seat Seat) float64 {
+	if seat.Temperature == nil {
+		return 0
+	}
+	return *seat.Temperature
+}
+
 type Generated[T any] struct {
 	Seat  Seat
 	Value T
@@ -45,15 +61,37 @@ func NewEngine(registry *provider.Registry, store ArtifactStore, limits Limits) 
 	return &Engine{registry: registry, store: store, limits: limits}
 }
 
+// SeatFailure records one seat that could not produce a result, for the
+// lenient engine variants that drop failed seats instead of failing the run.
+type SeatFailure struct {
+	Seat Seat
+	Err  error
+}
+
 func (e *Engine) Propose(ctx context.Context, brief schema.TaskBrief, seats []Seat) ([]Generated[schema.Proposal], error) {
+	results, failures, err := e.ProposeWithFailures(ctx, brief, seats)
+	if err != nil {
+		return nil, err
+	}
+	if len(failures) > 0 {
+		return nil, failures[0].Err
+	}
+	return results, nil
+}
+
+// ProposeWithFailures runs every proposer seat and keeps the successes. A
+// seat that errors (provider down, invalid output) is reported as a failure
+// and dropped; the call only errors when no proposal survives or the brief
+// itself is invalid.
+func (e *Engine) ProposeWithFailures(ctx context.Context, brief schema.TaskBrief, seats []Seat) ([]Generated[schema.Proposal], []SeatFailure, error) {
 	if e.registry == nil {
-		return nil, errors.New("provider registry is required")
+		return nil, nil, errors.New("provider registry is required")
 	}
 	if len(seats) == 0 {
-		return nil, errors.New("at least one proposer seat is required")
+		return nil, nil, errors.New("at least one proposer seat is required")
 	}
 	if err := validateWorkspaceFiles(brief.WorkspaceFiles); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ctx, cancel := withTimeout(ctx, e.limits.Timeout)
 	defer cancel()
@@ -75,7 +113,7 @@ func (e *Engine) Propose(ctx context.Context, brief schema.TaskBrief, seats []Se
 				errs[i] = fmt.Errorf("provider %q not found", seat.Provider)
 				return
 			}
-			resp, err := p.Generate(ctx, provider.Request{Model: seat.Model, Messages: []provider.Message{{Role: "user", Content: fmt.Sprintf("Task brief JSON:\n%s\nReturn only JSON matching this schema:\n%s", briefJSON, schemaJSON)}}})
+			resp, err := p.Generate(ctx, provider.Request{Model: seat.Model, Temperature: seatTemperature(seat), Messages: []provider.Message{{Role: "user", Content: fmt.Sprintf("Task brief JSON:\n%s\nReturn only JSON matching this schema:\n%s", briefJSON, schemaJSON)}}})
 			if err != nil {
 				errs[i] = err
 				return
@@ -90,36 +128,55 @@ func (e *Engine) Propose(ctx context.Context, brief schema.TaskBrief, seats []Se
 		}()
 	}
 	wg.Wait()
-	for _, err := range errs {
+	kept := make([]Generated[schema.Proposal], 0, len(seats))
+	var failures []SeatFailure
+	for i, err := range errs {
 		if err != nil {
-			return nil, err
+			failures = append(failures, SeatFailure{Seat: results[i].Seat, Err: err})
+			continue
 		}
+		kept = append(kept, results[i])
+	}
+	if len(kept) == 0 {
+		return nil, failures, errors.New("all proposer seats failed")
+	}
+	return kept, failures, nil
+}
+
+func (e *Engine) Review(ctx context.Context, proposals []Generated[schema.Proposal], reviewers []Seat) ([]Generated[schema.PeerReview], error) {
+	results, failures, err := e.ReviewWithFailures(ctx, proposals, reviewers)
+	if err != nil {
+		return nil, err
+	}
+	if len(failures) > 0 {
+		return nil, failures[0].Err
 	}
 	return results, nil
 }
 
-func (e *Engine) Review(ctx context.Context, proposals []Generated[schema.Proposal], reviewers []Seat) ([]Generated[schema.PeerReview], error) {
+// ReviewWithFailures is the lenient Review: a reviewer seat that fails is
+// dropped and reported; the call only errors when no review survives.
+func (e *Engine) ReviewWithFailures(ctx context.Context, proposals []Generated[schema.Proposal], reviewers []Seat) ([]Generated[schema.PeerReview], []SeatFailure, error) {
 	if len(proposals) == 0 || len(reviewers) == 0 {
-		return nil, errors.New("proposals and reviewers are required")
+		return nil, nil, errors.New("proposals and reviewers are required")
 	}
 	ctx, cancel := withTimeout(ctx, e.limits.Timeout)
 	defer cancel()
-	results := make([]Generated[schema.PeerReview], 0, len(reviewers)*len(proposals))
-	var mu sync.Mutex
+	type reviewerOutcome struct {
+		results []Generated[schema.PeerReview]
+		err     error
+	}
+	outcomes := make([]reviewerOutcome, len(reviewers))
 	var wg sync.WaitGroup
-	var firstErr error
 	for ri, reviewer := range reviewers {
 		ri, reviewer := ri, reviewer
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			outcome := &outcomes[ri]
 			model, ok := e.registry.Get(reviewer.Provider)
 			if !ok {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = fmt.Errorf("provider %q not found", reviewer.Provider)
-				}
-				mu.Unlock()
+				outcome.err = fmt.Errorf("provider %q not found", reviewer.Provider)
 				return
 			}
 			for offset := 1; offset <= len(proposals); offset++ {
@@ -131,36 +188,35 @@ func (e *Engine) Review(ctx context.Context, proposals []Generated[schema.Propos
 				anonymous := map[string]any{"alias": proposalAlias(pi), "proposal": target.Value}
 				payload, _ := json.Marshal(anonymous)
 				schemaJSON, _ := json.Marshal(schema.PeerReview{})
-				resp, err := model.Generate(ctx, provider.Request{Model: reviewer.Model, Messages: []provider.Message{{Role: "user", Content: fmt.Sprintf("Review the anonymous proposal JSON below. Do not infer vendor or model identity.\n%s\nReturn only JSON matching this schema:\n%s", payload, schemaJSON)}}})
+				resp, err := model.Generate(ctx, provider.Request{Model: reviewer.Model, Temperature: seatTemperature(reviewer), Messages: []provider.Message{{Role: "user", Content: fmt.Sprintf("Review the anonymous proposal JSON below. Do not infer vendor or model identity.\n%s\nReturn only JSON matching this schema:\n%s", payload, schemaJSON)}}})
 				if err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					mu.Unlock()
+					outcome.err = err
 					return
 				}
 				var value schema.PeerReview
 				if json.Unmarshal(resp.Content, &value) != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = ErrInvalidArtifact
-					}
-					mu.Unlock()
+					outcome.err = ErrInvalidArtifact
 					return
 				}
 				value.ReviewerSeatID, value.ProposalAlias = reviewer.ID, proposalAlias(pi)
-				mu.Lock()
-				results = append(results, Generated[schema.PeerReview]{Seat: reviewer, Value: value, Usage: resp.Usage})
-				mu.Unlock()
+				outcome.results = append(outcome.results, Generated[schema.PeerReview]{Seat: reviewer, Value: value, Usage: resp.Usage})
 			}
 		}()
 	}
 	wg.Wait()
-	if firstErr != nil {
-		return nil, firstErr
+	var results []Generated[schema.PeerReview]
+	var failures []SeatFailure
+	for ri, outcome := range outcomes {
+		if outcome.err != nil {
+			failures = append(failures, SeatFailure{Seat: reviewers[ri], Err: outcome.err})
+			continue
+		}
+		results = append(results, outcome.results...)
 	}
-	return results, nil
+	if len(results) == 0 {
+		return nil, failures, errors.New("all reviewer seats failed")
+	}
+	return results, failures, nil
 }
 
 func (e *Engine) Judge(ctx context.Context, proposals []Generated[schema.Proposal], reviews []Generated[schema.PeerReview], judge Seat) (Generated[schema.CouncilDecision], error) {
@@ -175,13 +231,13 @@ func (e *Engine) Judge(ctx context.Context, proposals []Generated[schema.Proposa
 	}
 	payload, _ := json.Marshal(map[string]any{"proposals": proposals, "reviews": reviews})
 	schemaJSON, _ := json.Marshal(schema.CouncilDecision{})
-	resp, err := p.Generate(ctx, provider.Request{Model: judge.Model, Messages: []provider.Message{{Role: "user", Content: fmt.Sprintf("Select the best proposals from this council record:\n%s\nReturn only JSON matching this schema:\n%s", payload, schemaJSON)}}})
+	resp, err := p.Generate(ctx, provider.Request{Model: judge.Model, Temperature: seatTemperature(judge), Messages: []provider.Message{{Role: "user", Content: fmt.Sprintf("Select the best proposals from this council record:\n%s\nReturn only JSON matching this schema:\n%s", payload, schemaJSON)}}})
 	if err != nil {
 		return Generated[schema.CouncilDecision]{}, err
 	}
 	var decision schema.CouncilDecision
 	if json.Unmarshal(resp.Content, &decision) != nil {
-		resp, err = p.Generate(ctx, provider.Request{Model: judge.Model, Messages: []provider.Message{{Role: "user", Content: "Repair the previous response into valid JSON only for the CouncilDecision schema."}}})
+		resp, err = p.Generate(ctx, provider.Request{Model: judge.Model, Temperature: seatTemperature(judge), Messages: []provider.Message{{Role: "user", Content: "Repair the previous response into valid JSON only for the CouncilDecision schema."}}})
 		if err != nil || json.Unmarshal(resp.Content, &decision) != nil {
 			return Generated[schema.CouncilDecision]{}, ErrInvalidArtifact
 		}
@@ -197,7 +253,7 @@ func (e *Engine) RedTeam(ctx context.Context, decision schema.CouncilDecision, r
 	payload, _ := json.Marshal(decision)
 	schemaJSON, _ := json.Marshal(schema.RedTeamReport{})
 	message := fmt.Sprintf("Find blocking risks in this decision:\n%s\nReturn only JSON matching this schema:\n%s", payload, schemaJSON)
-	resp, err := p.Generate(ctx, provider.Request{Model: redTeam.Model, Messages: []provider.Message{{Role: "user", Content: message}}})
+	resp, err := p.Generate(ctx, provider.Request{Model: redTeam.Model, Temperature: seatTemperature(redTeam), Messages: []provider.Message{{Role: "user", Content: message}}})
 	if err != nil {
 		return Generated[schema.RedTeamReport]{}, err
 	}

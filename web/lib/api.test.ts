@@ -1,6 +1,7 @@
 import {afterEach,describe,expect,it,vi} from 'vitest'
 import {approveTask,createTask,createWorkspace,executeTask,listWorkspaces,startTask} from './api'
 import {ApiError,request,login,me,logout,listUsers,createUser,updateUser,listRoles,createRole,updateRole,listPermissions} from './api'
+import {deleteCouncilRoles,getCouncilRoles,listProviderModels,putCouncilRoles,validateCouncilRoles,CouncilSlot} from './api'
 
 describe('task lifecycle API',()=>{
  afterEach(()=>{vi.restoreAllMocks()})
@@ -79,5 +80,33 @@ describe('browser authentication and management API',()=>{
   expect(calls[2][1]).toMatchObject({method:'PATCH',body:JSON.stringify({disabled:true,roles:[]})})
   expect(calls[4][1]).toMatchObject({method:'POST',body:JSON.stringify({name:'ops team',permissions:['task:read']})})
   expect(calls[5][1]).toMatchObject({method:'PATCH',body:JSON.stringify({permissions:['admin:*']})})
+ })
+})
+
+describe('council roles API',()=>{
+ afterEach(()=>{vi.restoreAllMocks()})
+ const slots:CouncilSlot[]=[{role:'proposer',ordinal:0,provider_profile_id:'p-1',model:'gpt-4o',enabled:true},{role:'judge',ordinal:0,provider_profile_id:'p-2',model:'deepseek-chat',enabled:true}]
+ it('builds scoped role requests with If-Match on save',async()=>{
+  const fetchMock=vi.spyOn(globalThis,'fetch').mockImplementation(async()=>new Response(JSON.stringify({data:{scope_type:'global',version:1,effective_source:'global',roles:slots,resolved_preview:{source:'global',version:1,proposers:[],reviewers:[],judge:[],red_team:[]},warnings:[]},request_id:'r'}),{status:200,headers:{'content-type':'application/json'}}))
+  await getCouncilRoles({scopeType:'workspace',scopeId:'ws-1'})
+  expect(fetchMock.mock.calls[0][0]).toContain('/council/roles?scope_type=workspace&scope_id=ws-1')
+  await putCouncilRoles({scopeType:'global'},3,slots)
+  const putInit=fetchMock.mock.calls[1][1]!
+  expect(fetchMock.mock.calls[1][0]).toContain('/council/roles')
+  expect(new Headers(putInit.headers).get('if-match')).toBe('3')
+  expect(JSON.parse(String(putInit.body)).version).toBe(3)
+  await validateCouncilRoles({scopeType:'global'},slots)
+  expect(fetchMock.mock.calls[2][0]).toContain('/council/roles/validate')
+  await deleteCouncilRoles({scopeType:'workspace',scopeId:'ws-1'})
+  expect(fetchMock.mock.calls[3][1]?.method).toBe('DELETE')
+  await listProviderModels('p-1')
+  expect(fetchMock.mock.calls[4][0]).toContain('/providers/p-1/models')
+ })
+ it('surfaces 422 validation issues on ApiError',async()=>{
+  vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response(JSON.stringify({error:{code:'validation_failed',message:'invalid',issues:[{code:'cardinality',role:'judge',message:'judge needs exactly 1 enabled primary'}]},request_id:'r'}),{status:422,headers:{'content-type':'application/json'}}))
+  const error=await putCouncilRoles({scopeType:'global'},0,slots).catch(e=>e)
+  expect(error).toBeInstanceOf(ApiError)
+  expect(error.status).toBe(422)
+  expect(error.issues?.[0].code).toBe('cardinality')
  })
 })
