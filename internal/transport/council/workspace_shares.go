@@ -18,7 +18,7 @@ type shareRequest struct {
 
 func (a *API) WorkspaceShareRoutes() []rest.Route {
 	return []rest.Route{
-		{Method:http.MethodGet, Path:"/api/v1/workspaces/:id/members", Handler:a.searchWorkspaceMembers},
+		{Method: http.MethodGet, Path: "/api/v1/workspaces/:id/members", Handler: a.searchWorkspaceMembers},
 		{Method: http.MethodGet, Path: "/api/v1/workspaces/:id/shares", Handler: a.listWorkspaceShares},
 		{Method: http.MethodPut, Path: "/api/v1/workspaces/:id/shares/:subject", Handler: a.putWorkspaceShare},
 		{Method: http.MethodDelete, Path: "/api/v1/workspaces/:id/shares/:subject", Handler: a.deleteWorkspaceShare},
@@ -26,11 +26,17 @@ func (a *API) WorkspaceShareRoutes() []rest.Route {
 }
 
 func (a *API) searchWorkspaceMembers(w http.ResponseWriter, r *http.Request) {
-	if a.workspaceAccess == nil { writeErr(w,http.StatusServiceUnavailable,"sharing_unavailable","workspace sharing is unavailable"); return }
+	if a.workspaceAccess == nil {
+		writeErr(w, http.StatusServiceUnavailable, "sharing_unavailable", "workspace sharing is unavailable")
+		return
+	}
 	prefix := strings.TrimSpace(r.URL.Query().Get("q"))
-	members, err := a.workspaceAccess.SearchMembers(r.Context(),pathvar.Vars(r)["id"],requestOwnerID(r),prefix)
-	if err != nil { a.writeShareError(w,err); return }
-	writeData(w,http.StatusOK,members)
+	members, err := a.workspaceAccess.SearchMembers(r.Context(), pathvar.Vars(r)["id"], requestOwnerID(r), prefix)
+	if err != nil {
+		a.writeShareError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, members)
 }
 
 func (a *API) listWorkspaceShares(w http.ResponseWriter, r *http.Request) {

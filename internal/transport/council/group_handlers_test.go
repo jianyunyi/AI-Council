@@ -89,11 +89,13 @@ func TestGroupEndpointsEndToEnd(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &posted))
 	require.True(t, posted.Data.Duplicate)
 
-	// P6 semantics are locked off: dispatch intent and requirement links 422.
+	// P6: dispatch is live now — bob is an operator, but the message
+	// mentions no AI member, so it fails as no_ai_mention (the group has
+	// no AI members at all). Requirement links on plain messages stay 422.
 	code, body = callAIModel(t, api.postGroupMessage, http.MethodPost, "/api/v1/groups/"+g.ID+"/messages",
 		`{"body_md":"do it","client_msg_id":"c2","intent":"dispatch"}`, groupBob, vars)
 	require.Equal(t, http.StatusUnprocessableEntity, code, string(body))
-	require.Contains(t, string(body), "intent_not_available")
+	require.Contains(t, string(body), "no_ai_mention")
 	code, body = callAIModel(t, api.postGroupMessage, http.MethodPost, "/api/v1/groups/"+g.ID+"/messages",
 		`{"body_md":"x","client_msg_id":"c3","requirement_id":"req_1"}`, groupBob, vars)
 	require.Equal(t, http.StatusUnprocessableEntity, code, string(body))

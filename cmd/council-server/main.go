@@ -10,12 +10,15 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	groupapp "github.com/aicouncil/aicouncil/internal/app/group"
 	appTask "github.com/aicouncil/aicouncil/internal/app/task"
 	"github.com/aicouncil/aicouncil/internal/approval"
 	councilengine "github.com/aicouncil/aicouncil/internal/council"
@@ -135,7 +138,14 @@ func main() {
 	}
 	// Group chat (Part B P5): shared group workspaces, members (incl. AI
 	// members), messages, mentions and the group event stream.
-	transport.InstallGroups(api)
+	// Part B P6: the proposal worker drains the persistent requirement job
+	// queue; it runs on a signal context (the process has no other app
+	// context — the HTTP server stops via /shutdown or process signal).
+	if groupService := transport.InstallGroups(api); groupService != nil {
+		workerCtx, stopWorker := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stopWorker()
+		go groupapp.NewProposalWorker(groupService, "").Run(workerCtx)
+	}
 	if providerKeyService != nil && rbacService != nil {
 		api.WithCouncilFactory(func(ctx context.Context, ownerID string, workspaceID string) (appTask.CouncilPort, error) {
 			resolver := roles.NewResolver(councilRolesRepo, func(ctx context.Context, owner string) ([]roles.ProfileInfo, error) {

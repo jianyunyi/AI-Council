@@ -17,9 +17,9 @@ import (
 // with hasCouncilPermission.
 
 const (
-	permAIModelManage  = "ai_model:manage"
-	permAIModelRead    = "provider:read"
-	permModelWSRead    = "model_workspace:read"
+	permAIModelManage = "ai_model:manage"
+	permAIModelRead   = "provider:read"
+	permModelWSRead   = "model_workspace:read"
 )
 
 func (a *API) aiModelsReady(w http.ResponseWriter) bool {

@@ -290,6 +290,10 @@ func (a *API) Routes() []rest.Route {
 			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/messages", Handler: a.postGroupMessage},
 			rest.Route{Method: http.MethodPatch, Path: "/api/v1/groups/:id/messages/:mid", Handler: a.patchGroupMessage},
 			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id/mentions/resolve", Handler: a.resolveGroupMentions},
+			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id/requirements", Handler: a.listGroupRequirements},
+			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id/requirements/:rid", Handler: a.getGroupRequirement},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/retry", Handler: a.retryGroupRequirement},
+			rest.Route{Method: http.MethodPost, Path: "/api/v1/groups/:id/requirements/:rid/cancel", Handler: a.cancelGroupRequirement},
 			rest.Route{Method: http.MethodGet, Path: "/api/v1/groups/:id/events", Handler: a.groupEvents},
 		)
 	}
