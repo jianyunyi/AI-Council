@@ -384,12 +384,48 @@ func TestLoadMirrorApplyDedupe(t *testing.T) {
 	g := e.groups[0]
 	ctx := context.Background()
 	rid := e.requirements(t, g)[0].ID
+	// Give this test its own cancellable mirror context (the harness sets one
+	// too, but does not keep its cancel func) so the background mirror started
+	// by the approve below can be stopped before the applies.
+	mirrorCtx, stopMirror := context.WithCancel(context.Background())
+	e.svc.SetMirrorContext(mirrorCtx)
 	if err := e.ldApprove(ctx, g.owner, g, rid); err != nil {
 		t.Fatal(err)
 	}
 	pd, err := e.svc.pd().LatestPushdown(ctx, rid)
 	if err != nil || pd == nil || pd.TaskID == nil {
 		t.Fatalf("pushdown: %+v %v", pd, err)
+	}
+	// Stop the live background mirror before applying. Approving starts one
+	// (pushdown_service.go: startMirror), and it races this test's own
+	// mirrorApply calls through the shared LastMirroredState CAS: whichever
+	// mirror wins the CAS posts the card and the loser silently drops its
+	// apply. Observed non-race failures: the background mirror posts an
+	// EXECUTING card first, so all 16 VERIFYING applies lose the CAS and no
+	// VERIFYING card is ever posted (task_status=map[COMPLETED:1
+	// EXECUTING:1]); a background COMPLETED apply (phase "running",
+	// non-final — PhaseOf("COMPLETED") is "running") can likewise steal the
+	// finish and leave the requirement executing. Merely ignoring the
+	// EXECUTING card in the counts below cannot fix that: the card is not
+	// extra, it suppresses the VERIFYING card. The test env's service is
+	// per-test, so cancelling its mirror root context only affects this
+	// test's mirrors. Wait until the mirror goroutine has exited (its
+	// registry slot is released) so no in-flight apply can still race the
+	// applies below. An EXECUTING card posted by the reconcile step before
+	// the stop is harmless: the counts below never assert on EXECUTING.
+	stopMirror()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		e.svc.mirrors.mu.Lock()
+		_, running := e.svc.mirrors.runs[pd.ID]
+		e.svc.mirrors.mu.Unlock()
+		if !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("background mirror did not stop")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	e.bridge.mu.Lock()
 	hash := e.bridge.tasks[*pd.TaskID].planHash
@@ -535,7 +571,11 @@ func TestLoadCrossGroupIsolationSharedModels(t *testing.T) {
 			Kind: "report", MediaType: "text/markdown", WorkspaceID: pd.ModelWorkspaceID},
 			[]byte(fmt.Sprintf("# g%d", gi)))
 		e.bridge.mu.Lock()
-		e.bridge.tasks[*pd.TaskID].state = "COMPLETED"
+		// SUCCEEDED, not COMPLETED: PhaseOf only recognizes the landed
+		// vocabulary (SUCCEEDED/FAILED/CANCELLED); "COMPLETED" derives
+		// phase "running", so mirrorApply would never finish the pushdown
+		// and no result job would ever be queued.
+		e.bridge.tasks[*pd.TaskID].state = "SUCCEEDED"
 		e.bridge.mu.Unlock()
 		st, err := e.bridge.TaskStatus(ctx, *pd.TaskID)
 		if err != nil {
