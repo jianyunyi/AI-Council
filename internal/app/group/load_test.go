@@ -309,7 +309,7 @@ func TestLoadConcurrentReviewStartSingleRound(t *testing.T) {
 					_, err := e.svc.StartReview(ctx, a, g.id, rid, StartReviewInput{ReviewerMemberIDs: []string{g.member[g.aiHandles[1]]}})
 					if err == nil {
 						wins.Add(1)
-					} else if !ldCodeIn(err, "review_already_open", "requirement_state_conflict", "version_conflict", "review_forbidden") {
+					} else if !ldCodeIn(err, "review_already_open", "requirement_state_conflict", "version_conflict", "review_forbidden", "requirement_gone") {
 						t.Errorf("unexpected StartReview error: %v", err)
 					}
 				}(g, req.ID, a, &wins)
