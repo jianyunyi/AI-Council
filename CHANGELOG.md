@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **存量数据库权限纠正脚本**：新增 `docs/operations/upgrade-member-role-permissions.sql`。修复代码（member 角色不再默认授予 `task:approve`/`task:execute`）只影响新注册，旧数据库里已存的授权不会自动撤销；对修复前创建的 Council 数据库运行该脚本一次即可移除 member 角色的这两项越权授权。脚本按权限名（而非 id）关联、幂等、不影响其他角色，并有回归测试直接执行该文件验证。
+
 ## [0.2.0] - 2026-11-16
 
 ### Added
