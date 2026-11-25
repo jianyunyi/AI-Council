@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -27,7 +28,12 @@ func Open(path string) (*gorm.DB, error) {
 		separator = "&"
 	}
 	dsn := path + separator + "_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
-	pool, err := sql.Open("sqlite", dsn)
+	// P10 fix (Finding 1): every transaction opens with BEGIN IMMEDIATE, so a
+	// read-then-write transaction never has to upgrade its lock mid-flight
+	// (deferred upgrades fail immediately with SQLITE_BUSY, ignoring the
+	// busy timeout). Landed Open uses a raw *sql.DB pool, so the DSN is
+	// routed through the helper here rather than at a gorm.Open call.
+	pool, err := sql.Open("sqlite", withImmediateTxLock(dsn))
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +76,19 @@ func Open(path string) (*gorm.DB, error) {
 	db, err := gorm.Open(sqlite.Dialector{DriverName: "sqlite", Conn: pool}, &gorm.Config{})
 	if err != nil {
 		return nil, err
+	}
+	// Fail startup instead of silently keeping deferred transactions (F1).
+	// The probe is skipped for :memory:: each pooled connection gets its own
+	// private in-memory database (no shared cache in the DSN), so the second
+	// connection's BEGIN would succeed against its own empty DB and the probe
+	// would false-positive. The driver/DSN combination is the same code path
+	// proven by file DBs, and _txlock stays in the DSN for :memory: too.
+	// (Quick's design added the check unconditionally; the landed Open has a
+	// :memory: branch it did not account for.)
+	if path != ":memory:" {
+		if err := verifyImmediateTxLock(context.Background(), db); err != nil {
+			return nil, err
+		}
 	}
 	if err := db.AutoMigrate(&RunRecord{}, &AuditRecord{}, &ArtifactRecord{}, &ProviderProfileRecord{}, &WorkspaceRecord{}, &WorkspaceShareRecord{}, &RunnerWorkspaceRecord{}, &TaskRecord{}, &SeatRecord{}, &ModelInvocationRecord{}, &EventRecord{}, &ApprovalRecord{}, &ExecutionRecord{}, &UserRecord{}, &IdentityTokenRecord{}, &OAuthFlowRecord{}, &OAuthIdentityRecord{}, &RoleRecord{}, &UserRoleRecord{}, &PermissionRecord{}, &RolePermissionRecord{}, &AccessTokenRecord{}, &ApprovalNonceRecord{}, &TaskRejectionRecord{}, &CouncilRoleAssignmentRecord{}, &CouncilRoleAssignmentSetRecord{}, &AIModelRecord{}, &ModelWorkspaceRecord{}, &ChatGroupRecord{}, &ChatGroupMemberRecord{}, &ChatMessageRecord{}, &ChatMentionRecord{}, &ChatMessageEditRecord{}, &GroupEventRecord{}, &GroupRequirementRecord{}, &RequirementProposalRecord{}, &GroupJobRecord{}, &GroupModelInvocationRecord{}, &ReviewRoundRecord{}, &ReviewDecisionRecord{}, &RedTeamCheckRecord{}, &RequirementPushdownRecord{}, &ResultSubmissionRecord{}, &GroupArtifactRecord{}); err != nil {
 		return nil, err

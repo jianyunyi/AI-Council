@@ -453,8 +453,14 @@ func TestReviewRejectIsTerminal(t *testing.T) {
 	if got.State != ReqRejected || got.FailureCode != FailReviewRejected || got.TerminalAt == nil {
 		t.Fatalf("state/code/terminal = %s/%s/%v, want rejected/review_rejected/set", got.State, got.FailureCode, got.TerminalAt)
 	}
-	if _, err := e.svc.CancelRequirement(ctx, alice, g.ID, req.ID, "too late"); code(err) != "requirement_state_conflict" {
-		t.Fatalf("cancel rejected err = %v, want requirement_state_conflict", err)
+	// Idempotent cancel (owner-decided 2026-11-25): cancelling an
+	// already-terminal requirement succeeds and returns it as it stands.
+	cancelled, err := e.svc.CancelRequirement(ctx, alice, g.ID, req.ID, "too late")
+	if err != nil {
+		t.Fatalf("cancel rejected err = %v, want idempotent success", err)
+	}
+	if cancelled.State != ReqRejected {
+		t.Fatalf("cancel rejected state = %s, want rejected (unchanged)", cancelled.State)
 	}
 }
 
