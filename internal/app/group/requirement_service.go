@@ -363,13 +363,11 @@ var cancelBeforeCAS func(rid string)
 // to the caller. It never returns requirement_gone because of a race.
 // Side effects run once, for the state the winning attempt actually cancelled from.
 //
-// CONTRACT (landed, kept deliberately — see below): cancelling an already-terminal
-// requirement is still a 409 requirement_state_conflict, exactly as before.
-// Quick's design claimed cancel was "idempotent, as before", but that is false
-// against the landed code: review_service_test.go (cancel on rejected) and
-// transport requirement_handlers_test.go ("a second cancel conflicts too")
-// both pin the 409. The retry loop therefore keeps the landed terminal
-// behavior; only the lost-race path is new.
+// CONTRACT (idempotent, owner-decided 2026-11-25): cancelling an already-terminal
+// requirement succeeds and returns the requirement as it stands — a second
+// cancel is a no-op, not a 409. (The P10 fix landing kept the old 409 because
+// two tests pinned it; the owner has since decided idempotent, and those tests
+// were updated with it.)
 func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reason string) (*RequirementView, error) {
 	_, m, err := s.access(ctx, a, gid)
 	if err != nil {
@@ -397,7 +395,12 @@ func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reas
 			// open result round is superseded like a proposal round.
 			ReqExecuted, ReqExecutionFailed, ReqResultSubmitted, ReqResultInReview:
 		default:
-			return nil, errRequirementState
+			// Idempotent cancel: already terminal — return the
+			// requirement as it stands. The case list above is exactly
+			// the non-terminal states, so default fires only for the
+			// five terminal states (cancelled, failed,
+			// proposal_failed, rejected, completed).
+			return s.GetRequirement(ctx, a, gid, rid)
 		}
 		if cancelBeforeCAS != nil {
 			cancelBeforeCAS(rid)

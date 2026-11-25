@@ -78,7 +78,8 @@ func TestGroupRequirementEndpointsEndToEnd(t *testing.T) {
 	require.Contains(t, string(body), "requirement_not_found")
 
 	// Retry from "dispatched" is a state conflict; cancel works; a second
-	// cancel conflicts too.
+	// cancel is idempotent (owner-decided 2026-11-25) and returns the
+	// requirement as it stands.
 	code, body = callAIModel(t, api.retryGroupRequirement, http.MethodPost, "/api/v1/groups/"+g.ID+"/requirements/"+req.ID+"/retry", "", groupAlice, rvars)
 	require.Equal(t, http.StatusConflict, code, string(body))
 	require.Contains(t, string(body), "requirement_state_conflict")
@@ -90,7 +91,9 @@ func TestGroupRequirementEndpointsEndToEnd(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(body, &cancelled))
 	require.Equal(t, group.ReqCancelled, cancelled.Data.State)
-	code, _ = callAIModel(t, api.cancelGroupRequirement, http.MethodPost, "/api/v1/groups/"+g.ID+"/requirements/"+req.ID+"/cancel",
+	code, body = callAIModel(t, api.cancelGroupRequirement, http.MethodPost, "/api/v1/groups/"+g.ID+"/requirements/"+req.ID+"/cancel",
 		`{"reason":"again"}`, groupAlice, rvars)
-	require.Equal(t, http.StatusConflict, code)
+	require.Equal(t, http.StatusOK, code, string(body))
+	require.NoError(t, json.Unmarshal(body, &cancelled))
+	require.Equal(t, group.ReqCancelled, cancelled.Data.State)
 }

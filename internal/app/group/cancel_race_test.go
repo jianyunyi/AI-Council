@@ -47,12 +47,9 @@ func TestCancelRetriesAfterLosingRaceToVerdict(t *testing.T) {
 	if len(rv.Rounds) != 1 || rv.Rounds[0].Outcome != OutcomePassed || len(rv.Rounds[0].Decisions) != 1 {
 		t.Fatalf("round closed by the verdict keeps its outcome and reveal: %+v", rv.Rounds[0])
 	}
-	// Landed contract, kept deliberately: cancelling an already-terminal
-	// requirement is a 409, not an idempotent success. Quick's design claimed
-	// cancel was "idempotent, as before", but two existing tests pin the 409
-	// (review_service_test.go cancel-on-rejected; transport
-	// requirement_handlers_test.go "a second cancel conflicts too").
-	if _, err := e.svc.CancelRequirement(ctx, alice, g.ID, req.ID, "again"); code(err) != "requirement_state_conflict" {
-		t.Fatalf("second cancel must still conflict (landed contract): %v", err)
+	// Idempotent cancel (owner-decided 2026-11-25): cancelling an
+	// already-terminal requirement succeeds and returns it as it stands.
+	if again, err := e.svc.CancelRequirement(ctx, alice, g.ID, req.ID, "again"); err != nil || again.State != ReqCancelled {
+		t.Fatalf("second cancel must be idempotent: %+v %v", again, err)
 	}
 }
