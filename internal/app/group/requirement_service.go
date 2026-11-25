@@ -350,6 +350,26 @@ func (s *Service) RetryRequirement(ctx context.Context, a Actor, gid, rid string
 	return s.GetRequirement(ctx, a, gid, rid)
 }
 
+// cancelMaxAttempts bounds the internal re-read/retry when a concurrent writer moves the
+// requirement between cancel's read and its CAS (Finding 2). Each attempt is one CAS.
+const cancelMaxAttempts = 5
+
+// cancelBeforeCAS is a test seam: when set, it runs after the state read and before
+// the CAS, so tests can force the lost-race path deterministically.
+var cancelBeforeCAS func(rid string)
+
+// CancelRequirement cancels a requirement in any non-terminal state. If its CAS loses
+// to a concurrent transition, it re-reads and retries instead of reporting the race
+// to the caller. It never returns requirement_gone because of a race.
+// Side effects run once, for the state the winning attempt actually cancelled from.
+//
+// CONTRACT (landed, kept deliberately — see below): cancelling an already-terminal
+// requirement is still a 409 requirement_state_conflict, exactly as before.
+// Quick's design claimed cancel was "idempotent, as before", but that is false
+// against the landed code: review_service_test.go (cancel on rejected) and
+// transport requirement_handlers_test.go ("a second cancel conflicts too")
+// both pin the 409. The retry loop therefore keeps the landed terminal
+// behavior; only the lost-race path is new.
 func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reason string) (*RequirementView, error) {
 	_, m, err := s.access(ctx, a, gid)
 	if err != nil {
@@ -358,70 +378,77 @@ func (s *Service) CancelRequirement(ctx context.Context, a Actor, gid, rid, reas
 	if s.reqRepo == nil {
 		return nil, errIntentUnavailable
 	}
-	rec, err := s.reqRepo.GetRequirementInGroup(ctx, gid, rid)
-	if err != nil {
-		if errors.Is(err, sqlite.ErrRequirementNotFound) {
-			return nil, errRequirementMissing
-		}
-		return nil, err
-	}
-	if rec.RequestedByUserID != a.UserID && !canManage(a, m) {
-		return nil, errForbidden
-	}
-	switch rec.State {
-	case ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed,
-		ReqAwaitingApproval, ReqApproved, ReqExecuting,
-		// P9: cancelling during result collection/submission/review is
-		// allowed; the result job observes the state and stops, and an
-		// open result round is superseded like a proposal round.
-		ReqExecuted, ReqExecutionFailed, ReqResultSubmitted, ReqResultInReview:
-	default:
-		return nil, errRequirementState
-	}
-	now := s.now()
-	_, err = s.mutate(ctx, gid, "requirement.state_changed", func(tx *sqlite.GroupRepo, at time.Time) (any, error) {
-		txReq := sqlite.NewRequirementRepo(tx.DB())
-		ok, err := txReq.UpdateRequirementState(ctx, rid,
-			[]string{ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed,
-				ReqAwaitingApproval, ReqApproved, ReqExecuting,
-				ReqExecuted, ReqExecutionFailed, ReqResultSubmitted, ReqResultInReview}, rec.Version, map[string]any{
-				"state": ReqCancelled, "cancelled_by_user_id": a.UserID,
-				"cancelled_by_member_id": memberIDOf(m), "cancel_reason": truncate(reason, 2000),
-				"terminal_at": now, "state_changed_at": now, "updated_at": now,
-			})
+	for attempt := 0; attempt < cancelMaxAttempts; attempt++ {
+		rec, err := s.reqRepo.GetRequirementInGroup(ctx, gid, rid)
 		if err != nil {
+			if errors.Is(err, sqlite.ErrRequirementNotFound) {
+				return nil, errRequirementMissing
+			}
 			return nil, err
 		}
-		if !ok {
-			return nil, errRequirementGone
+		if rec.RequestedByUserID != a.UserID && !canManage(a, m) {
+			return nil, errForbidden
 		}
-		if err := txReq.CancelQueuedJobsForRequirement(ctx, rid, now); err != nil {
-			return nil, err
+		switch rec.State {
+		case ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed,
+			ReqAwaitingApproval, ReqApproved, ReqExecuting,
+			// P9: cancelling during result collection/submission/review is
+			// allowed; the result job observes the state and stops, and an
+			// open result round is superseded like a proposal round.
+			ReqExecuted, ReqExecutionFailed, ReqResultSubmitted, ReqResultInReview:
+		default:
+			return nil, errRequirementState
 		}
-		// P8: a queued/running red-team check for a cancelled
-		// requirement must never finish it later.
-		if rec.State == ReqReviewPassed && s.pushdownEnabled() {
-			if err := sqlite.NewPushdownRepo(tx.DB()).SupersedeOpenChecks(ctx, rid, now); err != nil {
+		if cancelBeforeCAS != nil {
+			cancelBeforeCAS(rid)
+		}
+		from := rec.State
+		_, err = s.mutate(ctx, gid, "requirement.state_changed", func(tx *sqlite.GroupRepo, at time.Time) (any, error) {
+			txReq := sqlite.NewRequirementRepo(tx.DB())
+			ok, err := txReq.UpdateRequirementState(ctx, rid,
+				[]string{from}, rec.Version, map[string]any{
+					"state": ReqCancelled, "cancelled_by_user_id": a.UserID,
+					"cancelled_by_member_id": memberIDOf(m), "cancel_reason": truncate(reason, 2000),
+					"terminal_at": at, "state_changed_at": at, "updated_at": at,
+				})
+			if err != nil {
 				return nil, err
 			}
+			if !ok {
+				return nil, errRequirementGone // lost the race: retry with a fresh read
+			}
+			if err := txReq.CancelQueuedJobsForRequirement(ctx, rid, at); err != nil {
+				return nil, err
+			}
+			// P8: a queued/running red-team check for a cancelled
+			// requirement must never finish it later.
+			if rec.State == ReqReviewPassed && s.pushdownEnabled() {
+				if err := sqlite.NewPushdownRepo(tx.DB()).SupersedeOpenChecks(ctx, rid, at); err != nil {
+					return nil, err
+				}
+			}
+			return RequirementEventData{RequirementID: rid, State: ReqCancelled, Version: rec.Version + 1}, nil
+		})
+		if err != nil {
+			if errors.Is(err, errRequirementGone) {
+				continue
+			}
+			return nil, err
 		}
-		return RequirementEventData{RequirementID: rid, State: ReqCancelled, Version: rec.Version + 1}, nil
-	})
-	if err != nil {
-		return nil, err
+		// P7: cancelling mid-review closes the open round as superseded —
+		// outstanding decisions are withdrawn and verdicts stay hidden.
+		if err := s.CloseOpenReviewAfterCancel(ctx, gid, rid); err != nil {
+			return nil, err
+		}
+		// P8: cancelling an approved/executing requirement also cancels
+		// its pushed-down task (best-effort; see cancelPushdown).
+		if from == ReqApproved || from == ReqExecuting {
+			s.cancelPushdown(ctx, a.UserID, rid)
+		}
+		s.record(ctx, a.UserID, "group.requirement_cancelled", gid, "group_requirement", rid, map[string]any{"reason": truncate(reason, 200)})
+		return s.GetRequirement(ctx, a, gid, rid)
 	}
-	// P7: cancelling mid-review closes the open round as superseded —
-	// outstanding decisions are withdrawn and verdicts stay hidden.
-	if err := s.CloseOpenReviewAfterCancel(ctx, gid, rid); err != nil {
-		return nil, err
-	}
-	// P8: cancelling an approved/executing requirement also cancels
-	// its pushed-down task (best-effort; see cancelPushdown).
-	if rec.State == ReqApproved || rec.State == ReqExecuting {
-		s.cancelPushdown(ctx, a.UserID, rid)
-	}
-	s.record(ctx, a.UserID, "group.requirement_cancelled", gid, "group_requirement", rid, map[string]any{"reason": truncate(reason, 200)})
-	return s.GetRequirement(ctx, a, gid, rid)
+	return nil, errVersionConflict // only after 5 consecutive lost races; never requirement_gone
 }
 
 func memberIDOf(m *sqlite.ChatGroupMemberRecord) string {
