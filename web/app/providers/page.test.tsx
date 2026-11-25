@@ -2,7 +2,7 @@
 import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react'
 import {afterEach,describe,expect,it,vi} from 'vitest'
 
-const api=vi.hoisted(()=>({listProviderKeys:vi.fn(),createProviderKey:vi.fn(),deleteProviderKey:vi.fn()}))
+const api=vi.hoisted(()=>({listProviderKeys:vi.fn(),createProviderKey:vi.fn(),deleteProviderKey:vi.fn(),listAIModels:vi.fn(async()=>[] as unknown[]),listProviderModels:vi.fn(async()=>({models:[] as {id:string;verified:boolean}[]})),createAIModel:vi.fn(),updateAIModel:vi.fn(),disableAIModel:vi.fn(),retryAIModelWorkspace:vi.fn()}))
 vi.mock('@/lib/api',()=>api)
 import Providers from './page'
 
@@ -10,7 +10,10 @@ afterEach(()=>{cleanup();vi.clearAllMocks()})
 
 describe('Provider keys page',()=>{
  it('loads profiles and stores a key without showing its plaintext',async()=>{
-  api.listProviderKeys.mockResolvedValueOnce([]).mockResolvedValueOnce([{id:'k1',provider:'openai',model:'gpt-4o',masked_key:'••••cret',has_key:true,created_at:'2026-01-01'}])
+  // The AI models section also lists provider keys; use a counter so call
+  // order between the page and the section does not matter.
+  let keyCalls=0
+  api.listProviderKeys.mockImplementation(async()=>{keyCalls++;return keyCalls===1?[]:[{id:'k1',provider:'openai',model:'gpt-4o',masked_key:'••••cret',has_key:true,created_at:'2026-01-01'}]})
   api.createProviderKey.mockResolvedValue({id:'k1'})
   render(<Providers/>)
   fireEvent.change(screen.getByLabelText('API Key'),{target:{value:'sk-live-super-secret'}})

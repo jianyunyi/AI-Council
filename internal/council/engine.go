@@ -265,28 +265,9 @@ func (e *Engine) RedTeam(ctx context.Context, decision schema.CouncilDecision, r
 }
 
 func BuildExecutionPlan(decision schema.CouncilDecision, report schema.RedTeamReport, acceptance []string) (schema.ExecutionPlan, error) {
-	if len(report.Blocking) > 0 {
-		return schema.ExecutionPlan{}, errors.New("red-team report contains blocking findings")
-	}
 	plan := decision.Plan
-	if len(plan.Patches) == 0 && len(plan.Commands) == 0 {
-		return schema.ExecutionPlan{}, errors.New("execution plan must include patches or commands")
-	}
-	if plan.Version <= 0 {
-		return schema.ExecutionPlan{}, errors.New("execution plan version must be positive")
-	}
-	for _, patch := range plan.Patches {
-		if !isSafeRelativePath(patch.Path) {
-			return schema.ExecutionPlan{}, errors.New("execution plan patch path must be a nonempty relative path")
-		}
-	}
-	for _, command := range append(append([]schema.Command(nil), plan.Commands...), plan.VerificationCommands...) {
-		if strings.TrimSpace(command.Executable) == "" || command.TimeoutSeconds <= 0 {
-			return schema.ExecutionPlan{}, errors.New("execution plan commands require an executable and positive timeout")
-		}
-		if !isSafeWorkDir(command.WorkDir) {
-			return schema.ExecutionPlan{}, errors.New("execution plan command work directory must be empty, dot, or a relative path")
-		}
+	if issues := ValidatePlan(plan, report); len(issues) > 0 {
+		return schema.ExecutionPlan{}, errors.New(issues[0].Message)
 	}
 	plan.Acceptance = append([]string(nil), acceptance...)
 	return plan, nil

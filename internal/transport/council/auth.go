@@ -216,6 +216,12 @@ func rbacRoutePermission(method, path string) (string, bool) {
 		return "", true
 	case method == http.MethodPost && path == "/api/v1/council/roles/validate":
 		return "", true
+	case strings.HasPrefix(path, "/api/v1/groups"):
+		// Part B P5 group chat: fine-grained checks (group:create /
+		// group:read:any / group:manage:any) and membership rules happen in
+		// the group service, which reports non-member access as 404; any
+		// authenticated user may reach the handlers.
+		return "", true
 	case method == http.MethodPost && path == "/api/v1/tasks":
 		return "task:write", true
 	case method == http.MethodGet && path == "/api/v1/tasks":

@@ -10,12 +10,15 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	groupapp "github.com/aicouncil/aicouncil/internal/app/group"
 	appTask "github.com/aicouncil/aicouncil/internal/app/task"
 	"github.com/aicouncil/aicouncil/internal/approval"
 	councilengine "github.com/aicouncil/aicouncil/internal/council"
@@ -126,19 +129,61 @@ func main() {
 	}
 	councilRolesRepo := storage.NewCouncilRolesRepository(db)
 	api.WithCouncilRoles(councilRolesRepo)
+	// AI model registry (Part B P4): build the service against the API's
+	// stores and re-drive any provisioning interrupted by a restart.
+	if aiModelService := transport.InstallAIModels(api); aiModelService != nil {
+		if err := aiModelService.ResumePending(context.Background()); err != nil {
+			slog.Warn("resume pending ai model provisioning", "error", err)
+		}
+	}
+	// Group chat (Part B P5): shared group workspaces, members (incl. AI
+	// members), messages, mentions and the group event stream.
+	// Part B P6: the proposal worker drains the persistent requirement job
+	// queue; it runs on a signal context (the process has no other app
+	// context — the HTTP server stops via /shutdown or process signal).
+	var groupService *groupapp.Service
+	var workerCtx context.Context
+	if gs := transport.InstallGroups(api); gs != nil {
+		groupService = gs
+		var stopWorker context.CancelFunc
+		workerCtx, stopWorker = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stopWorker()
+		go groupapp.NewProposalWorker(groupService, "").Run(workerCtx)
+	}
+	// The roles resolver's profile source, shared by the council
+	// factory below and the P8 red-team seat adapter.
+	profileSource := func(ctx context.Context, owner string) ([]roles.ProfileInfo, error) {
+		if providerKeyService == nil {
+			return nil, nil
+		}
+		profiles, err := providerKeyService.List(ctx, owner)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]roles.ProfileInfo, 0, len(profiles))
+		for _, profile := range profiles {
+			out = append(out, roles.ProfileInfo{ID: profile.ID, Provider: profile.Provider, Model: profile.Model, HasKey: profile.HasKey})
+		}
+		return out, nil
+	}
+	// Part B P8: red-team gate + D1 approval + push-down. Needs the
+	// provider key service (seat resolution reads profiles); without it
+	// push-down stays disabled and groups keep the exact P7 behavior.
+	if groupService != nil && providerKeyService != nil {
+		resolver := roles.NewResolver(councilRolesRepo, profileSource)
+		transport.InstallGroupPushdown(api, groupService, resolver)
+		// Part B P9: result copy-up + result review over the Part A
+		// artifact store. Without it, requirements keep the exact P8
+		// behavior at executed/execution_failed.
+		transport.InstallGroupResults(api, groupService)
+		groupService.SetMirrorContext(workerCtx)
+		if err := groupService.ResumeMirrors(workerCtx); err != nil {
+			slog.Warn("resume group pushdown mirrors", "error", err)
+		}
+	}
 	if providerKeyService != nil && rbacService != nil {
 		api.WithCouncilFactory(func(ctx context.Context, ownerID string, workspaceID string) (appTask.CouncilPort, error) {
-			resolver := roles.NewResolver(councilRolesRepo, func(ctx context.Context, owner string) ([]roles.ProfileInfo, error) {
-				profiles, err := providerKeyService.List(ctx, owner)
-				if err != nil {
-					return nil, err
-				}
-				out := make([]roles.ProfileInfo, 0, len(profiles))
-				for _, profile := range profiles {
-					out = append(out, roles.ProfileInfo{ID: profile.ID, Provider: profile.Provider, Model: profile.Model, HasKey: profile.HasKey})
-				}
-				return out, nil
-			})
+			resolver := roles.NewResolver(councilRolesRepo, profileSource)
 			resolved, err := resolver.Resolve(ctx, ownerID, workspaceID)
 			if err != nil {
 				return nil, err
@@ -254,6 +299,11 @@ func migrateRunnerWorkspaces(ctx context.Context, db *gorm.DB, runner workspaceR
 	}
 	migrations := make([]migration, 0, len(records))
 	for _, record := range records {
+		if record.Archived || record.Kind == "group_shared" {
+			// Archived workspaces stay unregistered; group_shared workspaces
+			// never have a Runner workspace (wskind guard).
+			continue
+		}
 		relative := record.RunnerPath
 		if relative == "" {
 			relative, err = filepath.Rel(root, record.CanonicalRoot)

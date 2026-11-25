@@ -632,3 +632,112 @@ table.management-table tbody tr:hover { background: var(--page-s3); }
 .form-hint { color: var(--txt-2); font-size: 13px; }
 .oauth-options { display: grid; gap: 8px; }
 .trust-note { color: var(--txt-2); font-size: 12.5px; border-top: 1px solid var(--line); padding-top: 10px; }
+
+/* ---------- Group chat (Part B P5) ---------- */
+/* Scoped under .group-ui: Quick's components use semantic class names that
+   the base design system doesn't define; everything here reuses --page-*
+   tokens so light/dark themes both work. */
+.group-ui .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.group-ui .head-actions { display: flex; gap: 8px; }
+.group-ui .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.group-ui .tabs { display: flex; gap: 6px; }
+.group-ui .chip { border: 1px solid var(--page-line); background: var(--page-s1); color: var(--page-text2); cursor: pointer; padding: 3px 10px; border-radius: var(--radius-s); font-size: 13px; line-height: 22px; }
+.group-ui .chip-active { background: var(--page-accent); border-color: var(--page-accent); color: var(--page-accent-ink); }
+.group-ui .btn { border: 1px solid var(--page-line2); background: var(--page-s1); color: var(--page-text); border-radius: var(--radius-s); padding: 5px 12px; cursor: pointer; font-size: 13.5px; }
+.group-ui .btn:hover { background: var(--page-s2); }
+.group-ui .btn:disabled { opacity: .5; cursor: default; }
+.group-ui .btn-primary { background: var(--page-accent); border-color: var(--page-accent); color: var(--page-accent-ink); }
+.group-ui .btn-primary:hover { background: var(--page-accent); filter: brightness(1.08); }
+.group-ui .btn-sm { padding: 2px 8px; font-size: 12.5px; }
+.group-ui .text-danger { color: var(--page-fail); }
+.group-ui .alert { border-radius: var(--radius-s); padding: 8px 12px; margin: 8px 0; font-size: 13.5px; }
+.group-ui .alert-danger { border: 1px solid var(--page-fail); color: var(--page-fail); background: color-mix(in oklab, var(--page-fail) 8%, transparent); }
+.group-ui .badge { display: inline-flex; align-items: center; padding: 0 6px; border-radius: var(--radius-s); font-size: 11.5px; line-height: 18px; background: var(--page-s2); color: var(--page-text2); }
+.group-ui .badge-muted { background: var(--page-s2); color: var(--page-text2); }
+.group-ui .badge-success { background: color-mix(in oklab, var(--page-done) 16%, transparent); color: var(--page-done); }
+.group-ui .badge-warning { background: color-mix(in oklab, var(--page-wait) 18%, transparent); color: var(--page-wait); }
+.group-ui label { display: grid; gap: 5px; font-size: 13.5px; color: var(--page-text2); margin-bottom: 10px; }
+.group-ui fieldset { border: 1px solid var(--page-line); border-radius: var(--radius-m); padding: 10px 12px; margin: 0 0 12px; }
+.group-ui .check-row { display: flex; gap: 8px; align-items: center; color: var(--page-text); margin-bottom: 6px; }
+.group-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.group-card { border: 1px solid var(--page-line); border-radius: var(--radius-m); background: var(--page-s1); }
+.group-card-link { display: grid; gap: 2px; padding: 10px 14px; color: var(--page-text); text-decoration: none; }
+.group-card-name { font-weight: 600; font-size: 15px; }
+.group-card-meta { font-size: 12.5px; }
+.group-create { max-width: 560px; border: 1px solid var(--page-line); border-radius: var(--radius-m); padding: 14px; margin-bottom: 16px; background: var(--page-s1); }
+.group-space { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 20px; align-items: start; }
+.group-main { display: flex; flex-direction: column; min-height: 60dvh; }
+.message-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; flex: 1; }
+.message { border: 1px solid var(--page-line); border-radius: var(--radius-m); padding: 8px 12px; background: var(--page-s1); }
+.message-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 13px; }
+.message-head time { font-size: 12px; }
+.message-body { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.message-reply { font-size: 12.5px; }
+.message-actions { display: flex; gap: 6px; }
+.mention { color: var(--page-accent); font-weight: 600; }
+.mention-unresolved { color: var(--page-text3); font-weight: 400; }
+.composer { margin-top: 12px; }
+.composer-reply { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.composer-box { position: relative; display: flex; gap: 8px; align-items: flex-end; }
+.composer-box textarea { flex: 1; }
+.mention-picker { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 20; list-style: none; margin: 0; padding: 4px; min-width: 280px; max-height: 260px; overflow: auto; background: var(--page-s1); border: 1px solid var(--page-line2); border-radius: var(--radius-m); box-shadow: var(--overlay-shadow); }
+.mention-option { display: flex; gap: 8px; align-items: center; width: 100%; text-align: left; background: transparent; border: 0; padding: 6px 8px; border-radius: var(--radius-s); cursor: pointer; color: var(--page-text); }
+.mention-option-active { background: var(--page-s3); }
+.mention-option-handle { font-weight: 600; }
+.mention-option-name { color: var(--page-text2); }
+.member-sidebar { border: 1px solid var(--page-line); border-radius: var(--radius-m); padding: 12px; background: var(--page-s1); }
+.member-sidebar h2 { font-size: 13.5px; margin: 10px 0 6px; color: var(--page-text2); }
+.member-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.member-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.member-main { display: flex; gap: 6px; align-items: center; flex: 1; flex-wrap: wrap; }
+.member-name { font-weight: 600; }
+.add-member { margin-top: 10px; display: grid; gap: 4px; }
+.add-member-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.edit-box { border: 1px solid var(--page-line); border-radius: var(--radius-m); padding: 10px 12px; margin-top: 10px; background: var(--page-s1); }
+.edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
+@media (max-width: 900px) { .group-space { grid-template-columns: minmax(0, 1fr); } }
+/* Part B P6: requirement cards + composer dispatch mode (same .group-ui
+   section conventions, --page-* tokens). */
+.composer-intent { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+.requirement-card { border: 1px solid var(--page-line2); border-radius: var(--radius-m); padding: 8px 10px; background: var(--page-s2); display: grid; gap: 6px; }
+.requirement-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.requirement-title { font-weight: 600; }
+.requirement-failure { color: var(--page-fail); margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.requirement-proposal p { margin: 0 0 6px; }
+.requirement-actions { display: flex; gap: 6px; }
+.req-tone-info { background: color-mix(in oklab, var(--page-accent) 16%, transparent); color: var(--page-accent); }
+.req-tone-progress { background: color-mix(in oklab, var(--page-wait) 18%, transparent); color: var(--page-wait); }
+.req-tone-ok { background: color-mix(in oklab, var(--page-done) 16%, transparent); color: var(--page-done); }
+.req-tone-danger { background: color-mix(in oklab, var(--page-fail) 14%, transparent); color: var(--page-fail); }
+.req-tone-muted { background: var(--page-s3); color: var(--page-text2); }
+.plan-view { display: grid; gap: 8px; font-size: 13.5px; margin-top: 6px; }
+.plan-view ul { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+.plan-view code { font-size: 12.5px; overflow-wrap: anywhere; }
+.plan-diff { max-height: 260px; overflow: auto; background: var(--page-s1); border: 1px solid var(--page-line); border-radius: var(--radius-s); padding: 8px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Part B P7: review rounds inside requirement cards. */
+.review-section { display: grid; gap: 8px; border-top: 1px dashed var(--page-line); padding-top: 8px; }
+.review-steps { display: flex; gap: 4px; list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.review-steps li { padding: 2px 8px; border-radius: 999px; background: var(--page-s3); color: var(--page-text2); }
+.review-steps li.step-current { background: color-mix(in oklab, var(--page-accent) 18%, transparent); color: var(--page-accent); font-weight: 600; }
+.review-steps li.step-done { background: color-mix(in oklab, var(--page-done) 16%, transparent); color: var(--page-done); }
+.review-picker { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0; }
+.review-picker-item { display: inline-flex; gap: 4px; align-items: center; font-size: 13px; }
+.review-decisions { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.review-decisions li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.review-decide { display: grid; gap: 6px; }
+.review-verdicts { display: flex; gap: 6px; }
+.review-round-closed { border-top: 1px dashed var(--page-line); padding-top: 6px; }
+/* Part B P8: red-team gate, human approval and push-down in requirement cards. */
+.approval-section { display: grid; gap: 8px; border-top: 1px dashed var(--page-line); padding-top: 8px; }
+.approval-block { display: grid; gap: 4px; font-size: 13px; }
+.approval-block p { margin: 0; }
+.approval-warn { color: var(--page-text2); }
+.message.system-card { background: var(--page-s2); border: 1px solid var(--page-line); border-radius: var(--radius-s); padding: 6px 10px; }
+/* Part B P9: execution results inside requirement cards. */
+.result-section { display: grid; gap: 8px; border-top: 1px dashed var(--page-line); padding-top: 8px; }
+.result-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.result-summary { margin: 0; font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.result-acceptance { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.result-acceptance li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.result-artifacts { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.result-artifacts li { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

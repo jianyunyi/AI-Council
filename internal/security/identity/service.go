@@ -84,7 +84,7 @@ func AssignDefaultMemberRole(tx *gorm.DB, userID string) error {
 	// New self-service members may draft and start tasks, but NOT approve or
 	// execute them: approval/execution are privileged and granted explicitly by
 	// an administrator. This preserves separation of duties.
-	for _, name := range []string{"workspace:read", "workspace:write", "provider:read", "provider:write", "task:read", "task:write"} {
+	for _, name := range []string{"workspace:read", "workspace:write", "provider:read", "provider:write", "task:read", "task:write", "group:create"} {
 		var permission sqlite.PermissionRecord
 		if err := tx.Where("name = ?", name).First(&permission).Error; err != nil {
 			return err

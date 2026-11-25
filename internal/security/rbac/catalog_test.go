@@ -11,7 +11,7 @@ import (
 )
 
 var expectedStandardPermissions = []string{
-	"workspace:read", "workspace:write", "provider:read", "provider:write", "council:read", "council:configure", "task:read", "task:read:any", "task:write", "task:approve", "task:execute",
+	"workspace:read", "workspace:write", "provider:read", "provider:write", "council:read", "council:configure", "ai_model:manage", "model_workspace:read", "group:create", "group:read:any", "group:manage:any", "task:read", "task:read:any", "task:write", "task:approve", "task:execute",
 	"admin:users", "admin:roles", "admin:permissions", "admin:*",
 }
 

@@ -1,0 +1,1161 @@
+package group
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/aicouncil/aicouncil/internal/storage/sqlite"
+)
+
+// Part B P7 service surface: review rounds. See review.go for the model.
+//
+// Transaction discipline matches the landed code: multi-event
+// operations run inside the per-group lock + one GroupRepo.Tx, using
+// tx-bound repos (NewReviewRepo(tx.DB()) / NewRequirementRepo(tx.DB())),
+// and publish their events only after commit, in allocation order.
+// Event seqs stay gapless: NextSeqs(false) allocates ONLY an event seq
+// (its message-seq return is the current value, not a fresh one), and
+// NextSeqs(true) allocates a message seq + event seq pair that must be
+// used together (the system notice below does exactly that).
+
+func (s *Service) reviewRepo() *sqlite.ReviewRepo {
+	return sqlite.NewReviewRepo(s.repo.DB())
+}
+
+// reviewCommit runs fn inside the group lock + one tx and publishes the
+// events fn returns, in order, after commit.
+func (s *Service) reviewCommit(ctx context.Context, gid string, fn func(tx *sqlite.GroupRepo, at time.Time) ([]Event, error)) error {
+	mu := s.lock(gid)
+	mu.Lock()
+	defer mu.Unlock()
+	at := s.now()
+	var evs []Event
+	err := s.repo.Tx(ctx, func(tx *sqlite.GroupRepo) error {
+		var err error
+		evs, err = fn(tx, at)
+		return err
+	})
+	if err != nil {
+		return mapRepoErr(err)
+	}
+	for _, e := range evs {
+		s.hub.Publish(gid, e)
+	}
+	return nil
+}
+
+// rvAppendEvent allocates ONE event seq inside tx and appends the event.
+func rvAppendEvent(ctx context.Context, tx *sqlite.GroupRepo, gid, typ string, data any, at time.Time) (Event, error) {
+	_, evSeq, err := tx.NextSeqs(ctx, gid, false, at)
+	if err != nil {
+		return Event{}, err
+	}
+	rec, ev, err := buildEvent(gid, evSeq, typ, data, at)
+	if err != nil {
+		return Event{}, err
+	}
+	if err := tx.AppendEvent(ctx, rec); err != nil {
+		return Event{}, err
+	}
+	return ev, nil
+}
+
+// rvPostSystemTx posts a system notice message inside tx; its
+// message.created event uses the SAME NextSeqs(true) allocation.
+func rvPostSystemTx(ctx context.Context, tx *sqlite.GroupRepo, gid, rid, body string, payloadMap map[string]any, at time.Time) (Event, error) {
+	payload, _ := json.Marshal(payloadMap)
+	msgSeq, evSeq, err := tx.NextSeqs(ctx, gid, true, at)
+	if err != nil {
+		return Event{}, err
+	}
+	msg := &sqlite.ChatMessageRecord{
+		ID: newID("msg_"), GroupID: gid, Seq: msgSeq, AuthorType: AuthorSystem,
+		Kind: KindText, BodyMD: body, Payload: payload, RequirementID: rid,
+		Status: "final", CreatedAt: at,
+	}
+	if err := tx.CreateMessage(ctx, msg); err != nil {
+		return Event{}, err
+	}
+	rec, ev, err := buildEvent(gid, evSeq, "message.created", messageView(*msg, nil, nil), at)
+	if err != nil {
+		return Event{}, err
+	}
+	if err := tx.AppendEvent(ctx, rec); err != nil {
+		return Event{}, err
+	}
+	return ev, nil
+}
+
+// reviewerIDsFromMentions returns the distinct resolved member ids a
+// review message mentions (humans and AIs), excluding the author.
+func reviewerIDsFromMentions(mentions []sqlite.ChatMentionRecord, selfID string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, mn := range mentions {
+		if mn.Resolution != MentionResolved || mn.TargetMemberID == "" || mn.TargetMemberID == selfID {
+			continue
+		}
+		if seen[mn.TargetMemberID] {
+			continue
+		}
+		seen[mn.TargetMemberID] = true
+		out = append(out, mn.TargetMemberID)
+	}
+	return out
+}
+
+// ---------- opening a round ----------
+
+type reviewerSpec struct {
+	MemberID   string
+	MemberType string
+	AIModelID  string
+	Handle     string
+}
+
+type reviewStartPlan struct {
+	req       *sqlite.GroupRequirementRecord
+	proposal  *sqlite.RequirementProposalRecord
+	reviewers []reviewerSpec
+	rule      string
+	quorum    int
+	deadline  int    // minutes, 0 = none
+	roundID   string // set by rvStartReviewTx
+	// P9: stage is "" (proposal) or StageResult; submission is the
+	// reviewed result for stage=result rounds.
+	stage      string
+	submission *sqlite.ResultSubmissionRecord
+}
+
+func (p *reviewStartPlan) fromState() string {
+	if p.stage == StageResult {
+		return ReqResultSubmitted
+	}
+	return ReqProposed
+}
+
+func (p *reviewStartPlan) toState() string {
+	if p.stage == StageResult {
+		return ReqResultInReview
+	}
+	return ReqInReview
+}
+
+// subjectHash binds the round to its subject: the plan hash for
+// proposal rounds, the RESULT hash for result rounds (C3).
+func (p *reviewStartPlan) subjectHash() string {
+	if p.stage == StageResult {
+		return p.submission.ResultHash
+	}
+	return planHashOf(p.proposal.PlanJSON)
+}
+
+func (p *reviewStartPlan) subjectProposalID() string {
+	if p.stage == StageResult {
+		return p.req.CurrentProposalID
+	}
+	return p.proposal.ID
+}
+
+func (p *reviewStartPlan) subjectRound() int {
+	if p.stage == StageResult {
+		return p.submission.ProposalAttempt
+	}
+	return p.proposal.Attempt
+}
+
+// rvPrepareReview validates everything that can fail BEFORE any write:
+// the caller (endpoint or chat path) runs it ahead of its transaction.
+func (s *Service) rvPrepareReview(ctx context.Context, a Actor, g *sqlite.ChatGroupRecord, me *sqlite.ChatGroupMemberRecord, rid string, reviewerIDs []string) (*reviewStartPlan, error) {
+	return s.rvPrepareReviewStage(ctx, a, g, me, rid, reviewerIDs, StageProposal)
+}
+
+// rvPrepareReviewStage is rvPrepareReview for either stage. The
+// reviewer rule set is IDENTICAL for both stages (the P7 rules the
+// Quick draft re-specified as validateReviewerSet); only the required
+// requirement state, the subject (proposal vs latest submission) and
+// the rule/quorum policy fields differ.
+func (s *Service) rvPrepareReviewStage(ctx context.Context, a Actor, g *sqlite.ChatGroupRecord, me *sqlite.ChatGroupMemberRecord, rid string, reviewerIDs []string, stage string) (*reviewStartPlan, error) {
+	rec, err := s.reqRepo.GetRequirementInGroup(ctx, g.ID, rid)
+	if err != nil {
+		if errors.Is(err, sqlite.ErrRequirementNotFound) {
+			return nil, errRequirementMissing
+		}
+		return nil, err
+	}
+	if rec.RequestedByUserID != a.UserID && !canManage(a, me) {
+		return nil, errReviewForbidden
+	}
+	if stage == StageResult {
+		if rec.State != ReqResultSubmitted {
+			return nil, errNotResultReviewable
+		}
+	} else if rec.State != ReqProposed {
+		return nil, errRequirementState
+	}
+	if _, err := s.reviewRepo().GetOpenRound(ctx, rid); err == nil {
+		return nil, errReviewAlreadyOpen
+	} else if !errors.Is(err, sqlite.ErrReviewNotFound) {
+		return nil, err
+	}
+	policy := decodePolicy(g.Policy)
+	plan := &reviewStartPlan{req: rec, stage: stage, deadline: policy.ReviewDeadlineMinutes}
+	if stage == StageResult {
+		sub, err := s.results().LatestSubmission(ctx, rid)
+		if err != nil {
+			return nil, err
+		}
+		if sub == nil || sub.Status != SubSubmitted || sub.Cycle != rec.Cycle {
+			return nil, errNotResultReviewable
+		}
+		plan.submission = sub
+		plan.rule = policy.ResultReviewRule
+		if policy.ResultQuorum != nil {
+			plan.quorum = *policy.ResultQuorum
+		}
+	} else {
+		proposal, err := s.reqRepo.GetProposal(ctx, rec.CurrentProposalID)
+		if err != nil {
+			return nil, err
+		}
+		plan.proposal = proposal
+		plan.rule = policy.ProposalReviewRule
+		if policy.ProposalQuorum != nil {
+			plan.quorum = *policy.ProposalQuorum
+		}
+	}
+	minReviewers := policy.MinReviewers
+	if minReviewers < 1 {
+		minReviewers = 1
+	}
+	maxReviewers := policy.MaxReviewers
+	if maxReviewers < minReviewers {
+		maxReviewers = 5
+	}
+	if len(reviewerIDs) == 0 {
+		return nil, errNoReviewerMention
+	}
+	if len(reviewerIDs) < minReviewers || len(reviewerIDs) > maxReviewers {
+		return nil, errReviewerCount
+	}
+	_, views, err := s.authorMap(ctx, g.ID)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]MemberView, len(views))
+	for _, v := range views {
+		byID[v.ID] = v
+	}
+	if plan.rule == "" {
+		plan.rule = "unanimous"
+	}
+	for _, id := range reviewerIDs {
+		v, ok := byID[id]
+		if !ok || v.RemovedAt != nil {
+			return nil, errReviewerNotMember
+		}
+		if id == rec.AssigneeMemberID {
+			return nil, errSelfReview
+		}
+		spec := reviewerSpec{MemberID: id, MemberType: v.MemberType, Handle: v.Handle}
+		if v.MemberType == MemberAI {
+			if v.AIStatus != "active" {
+				return nil, errReviewerUnavailable
+			}
+			spec.AIModelID = v.AIModelID
+		} else if v.GroupRole != RoleOwner && v.GroupRole != RoleOperator {
+			return nil, errReviewerRole
+		}
+		plan.reviewers = append(plan.reviewers, spec)
+	}
+	return plan, nil
+}
+
+// rvStartReviewTx performs the proposed -> in_review transition, round +
+// decision creation, AI job enqueue and the three events, all inside
+// the caller's transaction. Events come back in publish order.
+func (s *Service) rvStartReviewTx(ctx context.Context, tx *sqlite.GroupRepo, g *sqlite.ChatGroupRecord, actorUserID, actorMemberID, requestMessageID string, plan *reviewStartPlan, at time.Time) ([]Event, error) {
+	txReq := sqlite.NewRequirementRepo(tx.DB())
+	txRev := sqlite.NewReviewRepo(tx.DB())
+	rec := plan.req
+	ok, err := txReq.UpdateRequirementState(ctx, rec.ID, []string{plan.fromState()}, rec.Version, map[string]any{
+		"state": plan.toState(), "state_changed_at": at, "updated_at": at,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errRequirementGone
+	}
+	stage := plan.stage
+	if stage == "" {
+		stage = StageProposal
+	}
+	submissionID := ""
+	if plan.submission != nil {
+		submissionID = plan.submission.ID
+	}
+	round := &sqlite.ReviewRoundRecord{
+		ID: newID("rnd_"), GroupID: g.ID, RequirementID: rec.ID,
+		ProposalID: plan.subjectProposalID(), ProposalRound: plan.subjectRound(),
+		PlanHash: plan.subjectHash(), Status: RoundOpen,
+		Stage: stage, SubmissionID: submissionID,
+		PolicyRule: plan.rule, PolicyQuorum: plan.quorum,
+		StartedByUserID: actorUserID, StartedByMember: actorMemberID,
+		RequestMessageID: requestMessageID, CreatedAt: at,
+	}
+	if plan.deadline > 0 {
+		d := at.Add(time.Duration(plan.deadline) * time.Minute)
+		round.DeadlineAt = &d
+	}
+	if err := txRev.CreateRound(ctx, round); err != nil {
+		return nil, err
+	}
+	plan.roundID = round.ID
+	refs := make([]ReviewerRef, 0, len(plan.reviewers))
+	handles := make([]string, 0, len(plan.reviewers))
+	for _, rv := range plan.reviewers {
+		dec := &sqlite.ReviewDecisionRecord{
+			ID: newID("rdc_"), RoundID: round.ID, GroupID: g.ID, RequirementID: rec.ID,
+			ReviewerMember: rv.MemberID, ReviewerType: rv.MemberType,
+			ReviewerAIModel: rv.AIModelID, Status: DecisionPending,
+			CreatedAt: at, UpdatedAt: at,
+		}
+		if err := txRev.CreateDecision(ctx, dec); err != nil {
+			return nil, err
+		}
+		if rv.MemberType == MemberAI {
+			job := &sqlite.GroupJobRecord{
+				ID: newID("job_"), GroupID: g.ID, RequirementID: rec.ID,
+				Kind: JobKindReview, TargetID: dec.ID, State: "queued",
+				SerialKey: g.ID + ":" + rv.MemberID, Priority: 10, MaxAttempts: 3,
+				AvailableAt: at, CreatedAt: at, UpdatedAt: at,
+			}
+			if err := txReq.EnqueueJob(ctx, job); err != nil {
+				return nil, err
+			}
+			if err := txRev.UpdateDecisionFields(ctx, dec.ID, map[string]any{"job_id": job.ID}); err != nil {
+				return nil, err
+			}
+		}
+		refs = append(refs, ReviewerRef{MemberID: rv.MemberID, MemberType: rv.MemberType, Handle: rv.Handle})
+		handles = append(handles, "@"+rv.Handle)
+	}
+	evs := make([]Event, 0, 3)
+	ev, err := rvAppendEvent(ctx, tx, g.ID, "requirement.state_changed",
+		RequirementEventData{RequirementID: rec.ID, State: plan.toState(), Version: rec.Version + 1}, at)
+	if err != nil {
+		return nil, err
+	}
+	evs = append(evs, ev)
+	ev, err = rvAppendEvent(ctx, tx, g.ID, "review.round_opened",
+		ReviewEventData{RequirementID: rec.ID, RoundID: round.ID, ProposalRound: round.ProposalRound, Reviewers: refs, Stage: stage}, at)
+	if err != nil {
+		return nil, err
+	}
+	evs = append(evs, ev)
+	body := fmt.Sprintf("Review round %d opened for @%s's proposal. Reviewers: %s.",
+		round.ProposalRound, rec.AssigneeHandle, strings.Join(handles, ", "))
+	if stage == StageResult {
+		body = fmt.Sprintf("Result review opened for @%s's execution result (cycle %d). Reviewers: %s.",
+			rec.AssigneeHandle, plan.submission.Cycle, strings.Join(handles, ", "))
+	}
+	ev, err = rvPostSystemTx(ctx, tx, g.ID, rec.ID, body,
+		map[string]any{"kind": "review_notice", "requirement_id": rec.ID, "round_id": round.ID, "stage": stage}, at)
+	if err != nil {
+		return nil, err
+	}
+	evs = append(evs, ev)
+	return evs, nil
+}
+
+// ---------- closing a round ----------
+
+// rvCloseRoundTx closes the round and moves the requirement per the
+// outcome. Superseded skips the requirement transition (the caller is
+// cancelling it in the same flow). Caller guarantees no decision is
+// pending/running, except for superseded where that is handled by the
+// caller withdrawing them first. When push-down is enabled, a passed
+// close also queues the red-team check in the same transaction (§2.6a).
+func (s *Service) rvCloseRoundTx(ctx context.Context, tx *sqlite.GroupRepo, round *sqlite.ReviewRoundRecord, outcome, closedBy string, at time.Time) ([]Event, error) {
+	txReq := sqlite.NewRequirementRepo(tx.DB())
+	txRev := sqlite.NewReviewRepo(tx.DB())
+	if err := txRev.UpdateRound(ctx, round.ID, map[string]any{
+		"status": RoundClosed, "outcome": outcome, "closed_at": at, "closed_by": closedBy,
+	}); err != nil {
+		return nil, err
+	}
+	evs := make([]Event, 0, 2)
+	if outcome != OutcomeSuperseded {
+		req, err := txReq.GetRequirement(ctx, round.RequirementID)
+		if err != nil {
+			return nil, err
+		}
+		fields := map[string]any{"state_changed_at": at, "updated_at": at}
+		var toState string
+		fromState := ReqInReview
+		if round.Stage == StageResult {
+			// P9 (§2.8c): result-stage close mapping. A passed result
+			// completes the requirement — with accepted_failed when
+			// the execution itself did not succeed, so a failed
+			// execution is never presented as a success.
+			fromState = ReqResultInReview
+			switch outcome {
+			case OutcomePassed:
+				toState = ReqCompleted
+				completion := CompletionAccepted
+				if sub, serr := sqlite.NewResultRepo(tx.DB()).GetSubmission(ctx, round.SubmissionID); serr == nil && sub.ExecutionOutcome != ExecSucceeded {
+					completion = CompletionAcceptedFailed
+				}
+				fields["completion_outcome"] = completion
+				fields["terminal_at"] = at
+			case OutcomeChangesRequested:
+				toState = ReqChangesRequested
+				fields["revision_source"] = RevisionFromResult
+			case OutcomeRejected:
+				toState = ReqRejected
+				fields["failure_code"] = "result_rejected"
+				fields["failure_detail"] = fmt.Sprintf("result rejected by review round %d", round.ProposalRound)
+				fields["terminal_at"] = at
+			default: // inconclusive: a new result review can start
+				toState = ReqResultSubmitted
+			}
+		} else {
+			switch outcome {
+			case OutcomePassed:
+				toState = ReqReviewPassed
+			case OutcomeChangesRequested:
+				toState = ReqChangesRequested
+				fields["revision_source"] = RevisionFromProposal
+			case OutcomeRejected:
+				toState = ReqRejected
+				fields["failure_code"] = FailReviewRejected
+				fields["failure_detail"] = fmt.Sprintf("proposal rejected by review round %d", round.ProposalRound)
+				fields["terminal_at"] = at
+			default: // inconclusive
+				toState = ReqProposed
+			}
+		}
+		fields["state"] = toState
+		ok, err := txReq.UpdateRequirementState(ctx, req.ID, []string{fromState}, req.Version, fields)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, errRequirementGone
+		}
+		ev, err := rvAppendEvent(ctx, tx, round.GroupID, "requirement.state_changed",
+			RequirementEventData{RequirementID: req.ID, State: toState, Version: req.Version + 1}, at)
+		if err != nil {
+			return nil, err
+		}
+		evs = append(evs, ev)
+		if outcome == OutcomePassed && round.Stage != StageResult && s.pushdownEnabled() {
+			prop, err := txReq.GetProposal(ctx, round.ProposalID)
+			if err != nil {
+				return nil, err
+			}
+			ev, err := s.rtEnqueueTx(ctx, tx, round.GroupID, req, prop, round, at)
+			if err != nil {
+				return nil, err
+			}
+			evs = append(evs, ev)
+		}
+	}
+	ev, err := rvAppendEvent(ctx, tx, round.GroupID, "review.closed",
+		ReviewEventData{RequirementID: round.RequirementID, RoundID: round.ID, Outcome: outcome, Stage: round.Stage}, at)
+	if err != nil {
+		return nil, err
+	}
+	evs = append(evs, ev)
+	return evs, nil
+}
+
+// rvMaybeCloseTx closes the round when every decision is final.
+func (s *Service) rvMaybeCloseTx(ctx context.Context, tx *sqlite.GroupRepo, round *sqlite.ReviewRoundRecord, closedBy string, at time.Time) ([]Event, error) {
+	txRev := sqlite.NewReviewRepo(tx.DB())
+	decs, err := txRev.ListDecisions(ctx, round.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range decs {
+		if d.Status == DecisionPending || d.Status == DecisionRunning {
+			return nil, nil
+		}
+	}
+	outcome := aggregateRound(decs, round.PolicyRule, round.PolicyQuorum)
+	return s.rvCloseRoundTx(ctx, tx, round, outcome, closedBy, at)
+}
+
+// ---------- endpoints' service methods ----------
+
+type StartReviewInput struct {
+	ReviewerMemberIDs []string `json:"reviewer_member_ids"`
+}
+
+func (s *Service) StartReview(ctx context.Context, a Actor, gid, rid string, in StartReviewInput) (*ReviewStateView, error) {
+	g, me, err := s.access(ctx, a, gid)
+	if err != nil {
+		return nil, err
+	}
+	if s.reqRepo == nil || s.provider == nil {
+		return nil, errIntentUnavailable
+	}
+	plan, err := s.rvPrepareReview(ctx, a, g, me, rid, in.ReviewerMemberIDs)
+	if err != nil {
+		return nil, err
+	}
+	err = s.reviewCommit(ctx, gid, func(tx *sqlite.GroupRepo, at time.Time) ([]Event, error) {
+		return s.rvStartReviewTx(ctx, tx, g, a.UserID, memberIDOf(me), "", plan, at)
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.record(ctx, a.UserID, "group.review_started", gid, "group_requirement", rid,
+		map[string]any{"round_id": plan.roundID, "reviewers": len(plan.reviewers)})
+	return s.GetReview(ctx, a, gid, rid)
+}
+
+func (s *Service) GetReview(ctx context.Context, a Actor, gid, rid string) (*ReviewStateView, error) {
+	g, me, err := s.access(ctx, a, gid)
+	if err != nil {
+		return nil, err
+	}
+	if s.reqRepo == nil {
+		return nil, errIntentUnavailable
+	}
+	rec, err := s.reqRepo.GetRequirementInGroup(ctx, gid, rid)
+	if err != nil {
+		if errors.Is(err, sqlite.ErrRequirementNotFound) {
+			return nil, errRequirementMissing
+		}
+		return nil, err
+	}
+	return s.buildReviewState(ctx, a, g, me, rec)
+}
+
+type SubmitDecisionInput struct {
+	Verdict   string `json:"verdict"`
+	Rationale string `json:"rationale"`
+}
+
+func (s *Service) SubmitDecision(ctx context.Context, a Actor, gid, rid string, in SubmitDecisionInput) (*ReviewStateView, error) {
+	_, me, err := s.access(ctx, a, gid)
+	if err != nil {
+		return nil, err
+	}
+	if s.reqRepo == nil {
+		return nil, errIntentUnavailable
+	}
+	switch in.Verdict {
+	case VerdictApprove, VerdictRequestChanges, VerdictReject:
+	default:
+		return nil, errInvalidVerdict
+	}
+	if utf8.RuneCountInString(in.Rationale) > 4000 {
+		return nil, invalidParams("rationale must be at most 4000 characters")
+	}
+	rec, err := s.reqRepo.GetRequirementInGroup(ctx, gid, rid)
+	if err != nil {
+		if errors.Is(err, sqlite.ErrRequirementNotFound) {
+			return nil, errRequirementMissing
+		}
+		return nil, err
+	}
+	if (rec.State != ReqInReview && rec.State != ReqResultInReview) || me == nil {
+		return nil, errNoOpenRound
+	}
+	var roundID string
+	err = s.reviewCommit(ctx, gid, func(tx *sqlite.GroupRepo, at time.Time) ([]Event, error) {
+		txRev := sqlite.NewReviewRepo(tx.DB())
+		round, err := txRev.GetOpenRound(ctx, rid)
+		if err != nil {
+			if errors.Is(err, sqlite.ErrReviewNotFound) {
+				return nil, errNoOpenRound
+			}
+			return nil, err
+		}
+		roundID = round.ID
+		dec, err := txRev.FindDecision(ctx, round.ID, me.ID)
+		if err != nil {
+			if errors.Is(err, sqlite.ErrReviewNotFound) {
+				return nil, errNotAReviewer
+			}
+			return nil, err
+		}
+		if dec.Status != DecisionPending {
+			return nil, errDecisionFinal
+		}
+		ok, err := txRev.TransitionDecision(ctx, dec.ID, []string{DecisionPending}, map[string]any{
+			"status": DecisionDecided, "verdict": in.Verdict,
+			"rationale":  truncateRunes(in.Rationale, 4000),
+			"decided_at": at, "updated_at": at,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, errDecisionFinal
+		}
+		ev, err := rvAppendEvent(ctx, tx, gid, "review.decision_recorded",
+			ReviewEventData{RequirementID: rid, RoundID: round.ID, DecisionID: dec.ID, ReviewerMemberID: me.ID}, at)
+		if err != nil {
+			return nil, err
+		}
+		evs := []Event{ev}
+		closeEvs, err := s.rvMaybeCloseTx(ctx, tx, round, a.UserID, at)
+		if err != nil {
+			return nil, err
+		}
+		return append(evs, closeEvs...), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// The audit trail is server-side only; the group stream stays blind.
+	s.record(ctx, a.UserID, "group.review_decision", gid, "group_requirement", rid,
+		map[string]any{"round_id": roundID, "verdict": in.Verdict})
+	return s.GetReview(ctx, a, gid, rid)
+}
+
+func (s *Service) ForceCloseReview(ctx context.Context, a Actor, gid, rid string) (*ReviewStateView, error) {
+	_, me, err := s.access(ctx, a, gid)
+	if err != nil {
+		return nil, err
+	}
+	if s.reqRepo == nil {
+		return nil, errIntentUnavailable
+	}
+	if !canManage(a, me) {
+		return nil, errReviewForbidden
+	}
+	rec, err := s.reqRepo.GetRequirementInGroup(ctx, gid, rid)
+	if err != nil {
+		if errors.Is(err, sqlite.ErrRequirementNotFound) {
+			return nil, errRequirementMissing
+		}
+		return nil, err
+	}
+	if rec.State != ReqInReview && rec.State != ReqResultInReview {
+		return nil, errNoOpenRound
+	}
+	err = s.reviewCommit(ctx, gid, func(tx *sqlite.GroupRepo, at time.Time) ([]Event, error) {
+		txRev := sqlite.NewReviewRepo(tx.DB())
+		round, err := txRev.GetOpenRound(ctx, rid)
+		if err != nil {
+			if errors.Is(err, sqlite.ErrReviewNotFound) {
+				return nil, errNoOpenRound
+			}
+			return nil, err
+		}
+		decs, err := txRev.ListDecisions(ctx, round.ID)
+		if err != nil {
+			return nil, err
+		}
+		for i := range decs {
+			d := &decs[i]
+			if d.Status == DecisionPending || d.Status == DecisionRunning {
+				ok, err := txRev.TransitionDecision(ctx, d.ID, []string{DecisionPending, DecisionRunning},
+					map[string]any{"status": DecisionWithdrawn, "updated_at": at})
+				if err != nil {
+					return nil, err
+				}
+				if ok {
+					d.Status = DecisionWithdrawn
+				}
+			}
+		}
+		outcome := aggregateRound(decs, round.PolicyRule, round.PolicyQuorum)
+		return s.rvCloseRoundTx(ctx, tx, round, outcome, a.UserID, at)
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.record(ctx, a.UserID, "group.review_force_closed", gid, "group_requirement", rid, nil)
+	return s.GetReview(ctx, a, gid, rid)
+}
+
+type ReviseInput struct {
+	Note string `json:"note"`
+}
+
+// ReviseRequirement restarts the proposal pipeline after a
+// changes_requested round: the closed round's revealed feedback (plus
+// the requester's note) is fed into the next proposal prompt by
+// priorReviewFeedback.
+func (s *Service) ReviseRequirement(ctx context.Context, a Actor, gid, rid string, in ReviseInput) (*RequirementView, error) {
+	g, me, err := s.access(ctx, a, gid)
+	if err != nil {
+		return nil, err
+	}
+	if s.reqRepo == nil {
+		return nil, errIntentUnavailable
+	}
+	if utf8.RuneCountInString(in.Note) > 2000 {
+		return nil, invalidParams("note must be at most 2000 characters")
+	}
+	rec, err := s.reqRepo.GetRequirementInGroup(ctx, gid, rid)
+	if err != nil {
+		if errors.Is(err, sqlite.ErrRequirementNotFound) {
+			return nil, errRequirementMissing
+		}
+		return nil, err
+	}
+	if rec.RequestedByUserID != a.UserID && !canManage(a, me) {
+		return nil, errReviewForbidden
+	}
+	if rec.State != ReqChangesRequested {
+		return nil, errRequirementState
+	}
+	// P9: for a RESULT revision the relevant round is the closed
+	// stage=result round that sent the requirement back — not
+	// GetLatestRound, whose proposal_round ordering cannot tell the
+	// two stage rounds of one attempt apart.
+	var round *sqlite.ReviewRoundRecord
+	if rec.RevisionSource == RevisionFromResult {
+		rounds, lerr := s.reviewRepo().ListRounds(ctx, rid)
+		if lerr != nil {
+			return nil, lerr
+		}
+		for i := len(rounds) - 1; i >= 0; i-- {
+			r := &rounds[i]
+			if r.Stage == StageResult && r.Status == RoundClosed && r.Outcome == OutcomeChangesRequested {
+				round = r
+				break
+			}
+		}
+		if round == nil {
+			return nil, errRequirementState
+		}
+	} else {
+		round, err = s.reviewRepo().GetLatestRound(ctx, rid)
+		if err != nil {
+			return nil, errRequirementState
+		}
+	}
+	roundRevisable := round.Status == RoundClosed && round.Outcome == OutcomeChangesRequested
+	if !roundRevisable && s.pushdownEnabled() && round.Status == RoundClosed && round.Outcome == OutcomePassed {
+		// P8: the red team, not the round, sent this attempt back — the
+		// round legitimately passed, and the flagged check is what
+		// makes the requirement revisable. The findings reach the next
+		// prompt via priorFeedback/redTeamFeedback.
+		if prop, perr := s.reqRepo.GetProposal(ctx, rec.CurrentProposalID); perr == nil {
+			if c, cerr := s.pd().LatestCheck(ctx, rid, prop.Attempt); cerr == nil && c != nil && c.Status == RTFlagged {
+				roundRevisable = true
+			}
+		}
+	}
+	if !roundRevisable {
+		return nil, errRequirementState
+	}
+	count, err := s.reqRepo.CountProposals(ctx, rid)
+	if err != nil {
+		return nil, err
+	}
+	// P9 (§2.8d): two caps. A RESULT revision starts a new execution
+	// cycle, bounded by maxCycles (policy.MaxResultRounds); a proposal
+	// revision is bounded per cycle (C4) — for cycle 1 with
+	// cycle_start_attempt 1 this is exactly the P7 total cap.
+	policy := decodePolicy(g.Policy)
+	next := int(count) + 1
+	now := s.now()
+	fields := map[string]any{
+		"state": ReqDispatched, "failure_code": "", "failure_detail": "",
+		"current_proposal_id": "", "terminal_at": nil, "revision_source": "",
+		"state_changed_at": now, "updated_at": now,
+	}
+	if rec.RevisionSource == RevisionFromResult {
+		if rec.Cycle >= maxCycles(policy) {
+			return nil, errCycleLimit
+		}
+		fields["cycle"] = rec.Cycle + 1
+		fields["cycle_start_attempt"] = next
+	} else if int(count)-rec.CycleStartAttempt+1 >= maxAttemptsPerCycle(policy) {
+		return nil, errRoundLimit
+	}
+	if err := s.reviewRepo().UpdateRound(ctx, round.ID, map[string]any{"revision_note": in.Note}); err != nil {
+		return nil, err
+	}
+	_, err = s.mutate(ctx, gid, "requirement.state_changed", func(tx *sqlite.GroupRepo, at time.Time) (any, error) {
+		txReq := sqlite.NewRequirementRepo(tx.DB())
+		ok, err := txReq.UpdateRequirementState(ctx, rid, []string{ReqChangesRequested}, rec.Version, fields)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, errRequirementGone
+		}
+		job := &sqlite.GroupJobRecord{
+			ID: newID("job_"), GroupID: gid, RequirementID: rid, Kind: JobKindPropose,
+			State: "queued", SerialKey: gid + ":" + rec.AssigneeMemberID, MaxAttempts: 3,
+			AvailableAt: now, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := txReq.EnqueueJob(ctx, job); err != nil {
+			return nil, err
+		}
+		return RequirementEventData{RequirementID: rid, State: ReqDispatched, Version: rec.Version + 1}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	body := fmt.Sprintf("Revision requested for @%s's proposal (round %d).", rec.AssigneeHandle, count+1)
+	if note := strings.TrimSpace(in.Note); note != "" {
+		body += " Note: " + truncateRunes(note, 500)
+	}
+	_ = s.postSystemCard(ctx, rec, "review_notice", body, map[string]any{
+		"kind": "review_notice", "requirement_id": rid, "round": count + 1,
+	})
+	s.record(ctx, a.UserID, "group.requirement_revised", gid, "group_requirement", rid,
+		map[string]any{"round": count + 1})
+	return s.GetRequirement(ctx, a, gid, rid)
+}
+
+// CloseOpenReviewAfterCancel closes a still-open round as superseded
+// when its requirement is cancelled: outstanding decisions are
+// withdrawn and verdicts are NEVER revealed for a superseded round.
+func (s *Service) CloseOpenReviewAfterCancel(ctx context.Context, gid, rid string) error {
+	if s.reqRepo == nil {
+		return nil
+	}
+	return s.reviewCommit(ctx, gid, func(tx *sqlite.GroupRepo, at time.Time) ([]Event, error) {
+		txRev := sqlite.NewReviewRepo(tx.DB())
+		round, err := txRev.GetOpenRound(ctx, rid)
+		if err != nil {
+			if errors.Is(err, sqlite.ErrReviewNotFound) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		decs, err := txRev.ListDecisions(ctx, round.ID)
+		if err != nil {
+			return nil, err
+		}
+		for i := range decs {
+			d := &decs[i]
+			if d.Status == DecisionPending || d.Status == DecisionRunning {
+				if _, err := txRev.TransitionDecision(ctx, d.ID, []string{DecisionPending, DecisionRunning},
+					map[string]any{"status": DecisionWithdrawn, "updated_at": at}); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return s.rvCloseRoundTx(ctx, tx, round, OutcomeSuperseded, "system", at)
+	})
+}
+
+// ---------- allowed actions (per-actor, for RequirementView) ----------
+
+func (s *Service) allowedActions(ctx context.Context, a Actor, me *sqlite.ChatGroupMemberRecord, rec *sqlite.GroupRequirementRecord) []string {
+	canAct := rec.RequestedByUserID == a.UserID || canManage(a, me)
+	var out []string
+	switch rec.State {
+	case ReqProposed:
+		if canAct {
+			out = append(out, "start_review")
+		}
+	case ReqInReview, ReqResultInReview:
+		if me != nil {
+			if round, err := s.reviewRepo().GetOpenRound(ctx, rec.ID); err == nil {
+				if d, err := s.reviewRepo().FindDecision(ctx, round.ID, me.ID); err == nil && d.Status == DecisionPending {
+					out = append(out, "submit_decision")
+				}
+			}
+		}
+		if canManage(a, me) {
+			out = append(out, "force_close")
+		}
+	case ReqResultSubmitted:
+		// P9: a submitted result can be sent to result review.
+		if canAct {
+			out = append(out, "request_result_review")
+		}
+	case ReqChangesRequested:
+		// P9 (§2.8i): hide "revise" when the matching cap is reached,
+		// so the card shows the cap instead of a button that would 409.
+		if canAct && s.reviseAllowed(ctx, rec) {
+			out = append(out, "revise")
+		}
+	case ReqProposalFailed, ReqFailed:
+		if canAct {
+			out = append(out, "retry")
+		}
+	case ReqReviewPassed:
+		// P8: an errored red-team check can be retried by a manager.
+		if s.pushdownEnabled() && canManage(a, me) && rec.CurrentProposalID != "" {
+			if p, err := s.reqRepo.GetProposal(ctx, rec.CurrentProposalID); err == nil {
+				if c, err := s.pd().LatestCheck(ctx, rec.ID, p.Attempt); err == nil && c != nil && c.Status == RTError {
+					out = append(out, "retry_redteam")
+				}
+			}
+		}
+	case ReqAwaitingApproval:
+		if canApprove(a, me) {
+			out = append(out, "approve")
+		}
+	case ReqApproved:
+		if canApprove(a, me) {
+			out = append(out, "retry_pushdown")
+		}
+	}
+	switch rec.State {
+	case ReqDispatched, ReqProposing, ReqProposed, ReqInReview, ReqChangesRequested, ReqReviewPassed,
+		ReqAwaitingApproval, ReqApproved, ReqExecuting,
+		// P9: cancel stays available while the result is collected,
+		// submitted or under result review.
+		ReqExecuted, ReqExecutionFailed, ReqResultSubmitted, ReqResultInReview:
+		if canAct {
+			out = append(out, "cancel")
+		}
+	}
+	return out
+}
+
+// reviseAllowed mirrors ReviseRequirement's two caps for display:
+// result revisions are bounded by the cycle cap, proposal revisions
+// by the per-cycle attempt cap. It fails open (the service method is
+// the enforcer) so a read error never hides a legitimate action.
+func (s *Service) reviseAllowed(ctx context.Context, rec *sqlite.GroupRequirementRecord) bool {
+	g, err := s.repo.GetGroup(ctx, rec.GroupID)
+	if err != nil {
+		return true
+	}
+	policy := decodePolicy(g.Policy)
+	if rec.RevisionSource == RevisionFromResult {
+		return rec.Cycle < maxCycles(policy)
+	}
+	count, err := s.reqRepo.CountProposals(ctx, rec.ID)
+	if err != nil {
+		return true
+	}
+	return int(count)-rec.CycleStartAttempt+1 < maxAttemptsPerCycle(policy)
+}
+
+// ---------- revision feedback for the next proposal ----------
+
+// priorReviewFeedback returns the revealed feedback of the closed
+// changes_requested round over the CURRENT latest proposal, or "" when
+// the next proposal is not a revision.
+func (s *Service) priorReviewFeedback(ctx context.Context, req *sqlite.GroupRequirementRecord) string {
+	if s.reqRepo == nil {
+		return ""
+	}
+	count, err := s.reqRepo.CountProposals(ctx, req.ID)
+	if err != nil || count == 0 {
+		return ""
+	}
+	rounds, err := s.reviewRepo().ListRounds(ctx, req.ID)
+	if err != nil {
+		return ""
+	}
+	for i := len(rounds) - 1; i >= 0; i-- {
+		r := &rounds[i]
+		// P9: result rounds share ProposalRound numbering with the
+		// attempt that produced them; their feedback travels via
+		// resultFeedback instead, never through this proposal path.
+		if r.Stage == StageResult {
+			continue
+		}
+		if r.Status != RoundClosed || r.Outcome != OutcomeChangesRequested || r.ProposalRound != int(count) {
+			continue
+		}
+		decs, err := s.reviewRepo().ListDecisions(ctx, r.ID)
+		if err != nil {
+			return ""
+		}
+		authors, _, _ := s.authorMap(ctx, req.GroupID)
+		return formatPriorFeedback(r, decs, authors)
+	}
+	return ""
+}
+
+// ---------- the review worker ----------
+
+// runReviewJob executes one claimed kind="review" job: it invokes the
+// reviewer's model for a verdict on the round's bound plan and records
+// the decision. Safe to re-run after a crash: a decision already final
+// (or a round already closed/superseded) drains the job quietly, and a
+// decision left "running" by a dead worker is simply re-executed — the
+// final TransitionDecision CAS keeps the write single.
+func (s *Service) runReviewJob(ctx context.Context, workerID string, job *sqlite.GroupJobRecord) error {
+	if job.TargetID == "" {
+		return s.completeJob(ctx, workerID, job)
+	}
+	dec, err := s.reviewRepo().GetDecision(ctx, job.TargetID)
+	if err != nil {
+		return s.completeJob(ctx, workerID, job) // decision gone; nothing to do
+	}
+	if dec.Status != DecisionPending && dec.Status != DecisionRunning {
+		return s.completeJob(ctx, workerID, job) // already final
+	}
+	req, err := s.reqRepo.GetRequirement(ctx, job.RequirementID)
+	if err != nil {
+		return err
+	}
+	round, err := s.reviewRepo().GetRound(ctx, dec.RoundID)
+	if err != nil || round.Status != RoundOpen {
+		return s.completeJob(ctx, workerID, job)
+	}
+	if req.State != expectedReviewState(round.Stage) {
+		return s.completeJob(ctx, workerID, job) // cancelled / superseded meanwhile
+	}
+	if dec.Status == DecisionPending {
+		ok, err := s.reviewRepo().TransitionDecision(ctx, dec.ID, []string{DecisionPending},
+			map[string]any{"status": DecisionRunning, "updated_at": s.now()})
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return s.completeJob(ctx, workerID, job) // another worker owns it
+		}
+	}
+	info, err := s.models.GetAIModel(ctx, dec.ReviewerAIModel)
+	if err != nil || info.Status != "active" {
+		return s.failReviewDecision(ctx, workerID, job, dec, FailReviewerModelGone)
+	}
+	g, err := s.repo.GetGroup(ctx, job.GroupID)
+	if err != nil {
+		return err
+	}
+	var acceptance []string
+	if len(req.AcceptanceJSON) > 0 {
+		_ = json.Unmarshal(req.AcceptanceJSON, &acceptance)
+	}
+	// The round's subject depends on its stage (§2.8b): the bound plan
+	// for proposal rounds; the submitted result — re-verified against
+	// the round's hash — for result rounds.
+	var system, user string
+	if round.Stage == StageResult {
+		sub, err := s.results().GetSubmission(ctx, round.SubmissionID)
+		if err != nil {
+			return s.failReviewDecision(ctx, workerID, job, dec, FailInternal)
+		}
+		if sub.ResultHash != round.PlanHash {
+			return s.failReviewDecision(ctx, workerID, job, dec, FailReviewPlanChanged)
+		}
+		arts, err := s.results().ListArtifactsForSubmission(ctx, sub.ID)
+		if err != nil {
+			return s.failReviewDecision(ctx, workerID, job, dec, FailInternal)
+		}
+		system, user = s.buildResultReviewPrompt(ctx, req, sub, arts, acceptance)
+	} else {
+		proposal, err := s.reqRepo.GetProposal(ctx, round.ProposalID)
+		if err != nil {
+			return s.failReviewDecision(ctx, workerID, job, dec, FailInternal)
+		}
+		if planHashOf(proposal.PlanJSON) != round.PlanHash {
+			return s.failReviewDecision(ctx, workerID, job, dec, FailReviewPlanChanged)
+		}
+		system, user = buildReviewPrompt(req.Title, string(proposal.PlanJSON), acceptance)
+	}
+	msgs := []InvokeMessage{{Role: "system", Content: system}, {Role: "user", Content: user}}
+	if err := s.checkBudget(ctx, g, req.ID, info.Model, estimateTokens(msgs)); err != nil {
+		if strings.HasPrefix(err.Error(), FailBudgetExhausted) {
+			return s.failReviewDecision(ctx, workerID, job, dec, FailBudgetExhausted)
+		}
+		return err
+	}
+	res, invID, invErr := s.invokeAs(ctx, job, req, dec.ReviewerAIModel, info, msgs, PurposeReview)
+	if invErr != nil {
+		// Same retry discipline as proposals: requeue with backoff;
+		// attempts exhausted -> the decision errors out.
+		state, err := s.reqRepo.FailOrRetryJob(ctx, job.ID, workerID, s.now(), jobBackoff(job.Attempts), invErr)
+		if err != nil {
+			return err
+		}
+		if state == "failed" {
+			return s.failReviewDecisionOnly(ctx, dec, FailProviderError)
+		}
+		return nil
+	}
+	verdict, rationale, ok := parseReviewVerdict(res.Content)
+	if !ok {
+		return s.failReviewDecision(ctx, workerID, job, dec, FailReviewInvalidReply)
+	}
+	err = s.reviewCommit(ctx, job.GroupID, func(tx *sqlite.GroupRepo, at time.Time) ([]Event, error) {
+		txRev := sqlite.NewReviewRepo(tx.DB())
+		okT, err := txRev.TransitionDecision(ctx, dec.ID, []string{DecisionPending, DecisionRunning}, map[string]any{
+			"status": DecisionDecided, "verdict": verdict,
+			"rationale": truncateRunes(rationale, 4000), "invocation_id": invID,
+			"decided_at": at, "updated_at": at,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if !okT {
+			return nil, nil // force-closed / superseded while the model ran
+		}
+		ev, err := rvAppendEvent(ctx, tx, job.GroupID, "review.decision_recorded",
+			ReviewEventData{RequirementID: req.ID, RoundID: round.ID, DecisionID: dec.ID, ReviewerMemberID: dec.ReviewerMember}, at)
+		if err != nil {
+			return nil, err
+		}
+		evs := []Event{ev}
+		roundNow, err := txRev.GetRound(ctx, round.ID)
+		if err != nil {
+			return nil, err
+		}
+		if roundNow.Status == RoundOpen {
+			closeEvs, err := s.rvMaybeCloseTx(ctx, tx, roundNow, "system", at)
+			if err != nil {
+				return nil, err
+			}
+			evs = append(evs, closeEvs...)
+		}
+		return evs, nil
+	})
+	if err != nil {
+		return err
+	}
+	return s.completeJob(ctx, workerID, job)
+}
+
+// failReviewDecision marks a decision errored (terminal for the job),
+// closes the round if it was the last outstanding decision, and
+// completes the job.
+func (s *Service) failReviewDecision(ctx context.Context, workerID string, job *sqlite.GroupJobRecord, dec *sqlite.ReviewDecisionRecord, code string) error {
+	if err := s.failReviewDecisionOnly(ctx, dec, code); err != nil {
+		return err
+	}
+	return s.completeJob(ctx, workerID, job)
+}
+
+func (s *Service) failReviewDecisionOnly(ctx context.Context, dec *sqlite.ReviewDecisionRecord, code string) error {
+	return s.reviewCommit(ctx, dec.GroupID, func(tx *sqlite.GroupRepo, at time.Time) ([]Event, error) {
+		txRev := sqlite.NewReviewRepo(tx.DB())
+		ok, err := txRev.TransitionDecision(ctx, dec.ID, []string{DecisionPending, DecisionRunning}, map[string]any{
+			"status": DecisionError, "error": code, "updated_at": at,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, nil
+		}
+		round, err := txRev.GetRound(ctx, dec.RoundID)
+		if err != nil || round.Status != RoundOpen {
+			return nil, nil
+		}
+		return s.rvMaybeCloseTx(ctx, tx, round, "system", at)
+	})
+}
+
+// expireReviewJob runs when a review job's lease died for the last
+// time: its decision errors out so the round can still close.
+func (s *Service) expireReviewJob(ctx context.Context, job *sqlite.GroupJobRecord) error {
+	if job.TargetID == "" {
+		return nil
+	}
+	dec, err := s.reviewRepo().GetDecision(ctx, job.TargetID)
+	if err != nil {
+		return nil
+	}
+	if dec.Status != DecisionPending && dec.Status != DecisionRunning {
+		return nil
+	}
+	return s.failReviewDecisionOnly(ctx, dec, FailReviewJobExhausted)
+}

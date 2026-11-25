@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/aicouncil/aicouncil/internal/app/wskind"
 	"github.com/aicouncil/aicouncil/internal/approval"
 	"github.com/aicouncil/aicouncil/internal/core/runstate"
 	"github.com/aicouncil/aicouncil/internal/council/schema"
@@ -72,8 +73,16 @@ type Service struct {
 	runner     RunnerPort
 	store      TaskStore
 	maxReplans int
+	kinds      wskind.KindLookup // optional; when set, Execute is kind-guarded
 	mu         sync.Mutex
 	tasks      map[string]*Task
+}
+
+// WithKindLookup installs the workspace-kind guard consulted by Execute
+// before any approval is consumed or the Runner is called.
+func (s *Service) WithKindLookup(lookup wskind.KindLookup) *Service {
+	s.kinds = lookup
+	return s
 }
 
 func NewService(runs *sqlite.RunRepository, approvals *sqlite.ApprovalRepository, events EventPort, council CouncilPort, runner RunnerPort, maxReplans int) *Service {
@@ -164,6 +173,11 @@ func (s *Service) Execute(ctx context.Context, id, requestID string) (schema.Ver
 	s.mu.Unlock()
 	if t == nil {
 		return schema.VerificationReport{}, errors.New("task not found")
+	}
+	if s.kinds != nil {
+		if err := wskind.GuardExecution(ctx, s.kinds, t.WorkspaceID); err != nil {
+			return schema.VerificationReport{}, err
+		}
 	}
 	approval, err := s.approvals.Current(ctx, t.RunID, t.PlanVersion)
 	if err != nil || approval.Decision != "approved" {

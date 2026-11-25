@@ -519,6 +519,7 @@ func TestPersistentAPIResumesPersistedExecutingTaskWithStableRequestID(t *testin
 	require.Equal(t, "task-1:1", runner.req.RequestId)
 	require.Equal(t, "SUCCEEDED", a.tasks["task-1"].State)
 }
+
 // Cancelling a task that is mid-execution is refused with a conflict rather than
 // silently marking it CANCELLED while the Runner keeps going.
 func TestCancelRefusedWhileExecuting(t *testing.T) {
