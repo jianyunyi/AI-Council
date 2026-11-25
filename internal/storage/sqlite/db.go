@@ -78,8 +78,17 @@ func Open(path string) (*gorm.DB, error) {
 		return nil, err
 	}
 	// Fail startup instead of silently keeping deferred transactions (F1).
-	if err := verifyImmediateTxLock(context.Background(), db); err != nil {
-		return nil, err
+	// The probe is skipped for :memory:: each pooled connection gets its own
+	// private in-memory database (no shared cache in the DSN), so the second
+	// connection's BEGIN would succeed against its own empty DB and the probe
+	// would false-positive. The driver/DSN combination is the same code path
+	// proven by file DBs, and _txlock stays in the DSN for :memory: too.
+	// (Quick's design added the check unconditionally; the landed Open has a
+	// :memory: branch it did not account for.)
+	if path != ":memory:" {
+		if err := verifyImmediateTxLock(context.Background(), db); err != nil {
+			return nil, err
+		}
 	}
 	if err := db.AutoMigrate(&RunRecord{}, &AuditRecord{}, &ArtifactRecord{}, &ProviderProfileRecord{}, &WorkspaceRecord{}, &WorkspaceShareRecord{}, &RunnerWorkspaceRecord{}, &TaskRecord{}, &SeatRecord{}, &ModelInvocationRecord{}, &EventRecord{}, &ApprovalRecord{}, &ExecutionRecord{}, &UserRecord{}, &IdentityTokenRecord{}, &OAuthFlowRecord{}, &OAuthIdentityRecord{}, &RoleRecord{}, &UserRoleRecord{}, &PermissionRecord{}, &RolePermissionRecord{}, &AccessTokenRecord{}, &ApprovalNonceRecord{}, &TaskRejectionRecord{}, &CouncilRoleAssignmentRecord{}, &CouncilRoleAssignmentSetRecord{}, &AIModelRecord{}, &ModelWorkspaceRecord{}, &ChatGroupRecord{}, &ChatGroupMemberRecord{}, &ChatMessageRecord{}, &ChatMentionRecord{}, &ChatMessageEditRecord{}, &GroupEventRecord{}, &GroupRequirementRecord{}, &RequirementProposalRecord{}, &GroupJobRecord{}, &GroupModelInvocationRecord{}, &ReviewRoundRecord{}, &ReviewDecisionRecord{}, &RedTeamCheckRecord{}, &RequirementPushdownRecord{}, &ResultSubmissionRecord{}, &GroupArtifactRecord{}); err != nil {
 		return nil, err
